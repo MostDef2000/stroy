@@ -1,5 +1,14 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { api, Project, SceneDocument, SceneRevision, Worker } from "./api";
+import {
+  api,
+  Asset,
+  Job,
+  Project,
+  RevisionSummary,
+  SceneDocument,
+  SceneRevision,
+  Worker
+} from "./api";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
 
@@ -12,28 +21,44 @@ function goldenRoom(projectId: string): SceneDocument {
       {
         id: "surface.floor.living",
         kind: "floor",
-        transform: { translation_mm: [0, 0, -50], rotation_deg: [0, 0, 0], scale: [1, 1, 1] },
+        transform: {
+          translation_mm: [0, 0, -50],
+          rotation_deg: [0, 0, 0],
+          scale: [1, 1, 1]
+        },
         geometry: { dimensions_mm: [5000, 4000, 100] },
         locks: { geometry: true, transform: true, material: false }
       },
       {
         id: "surface.wall.living.north",
         kind: "wall",
-        transform: { translation_mm: [0, 2000, 1400], rotation_deg: [0, 0, 0], scale: [1, 1, 1] },
+        transform: {
+          translation_mm: [0, 2000, 1400],
+          rotation_deg: [0, 0, 0],
+          scale: [1, 1, 1]
+        },
         geometry: { dimensions_mm: [5000, 120, 2800] },
         locks: { geometry: true, transform: true, material: false }
       },
       {
         id: "surface.wall.living.west",
         kind: "wall",
-        transform: { translation_mm: [-2500, 0, 1400], rotation_deg: [0, 0, 90], scale: [1, 1, 1] },
+        transform: {
+          translation_mm: [-2500, 0, 1400],
+          rotation_deg: [0, 0, 90],
+          scale: [1, 1, 1]
+        },
         geometry: { dimensions_mm: [4000, 120, 2800] },
         locks: { geometry: true, transform: true, material: false }
       },
       {
         id: "object.sofa.main",
         kind: "furniture",
-        transform: { translation_mm: [0, 1200, 450], rotation_deg: [0, 0, 0], scale: [1, 1, 1] },
+        transform: {
+          translation_mm: [0, 1200, 450],
+          rotation_deg: [0, 0, 0],
+          scale: [1, 1, 1]
+        },
         geometry: { dimensions_mm: [2200, 900, 900] },
         locks: { geometry: false, transform: false, material: false },
         metadata: { color: "#b8b0a4" }
@@ -41,7 +66,11 @@ function goldenRoom(projectId: string): SceneDocument {
       {
         id: "object.coffee_table.main",
         kind: "furniture",
-        transform: { translation_mm: [0, 0, 250], rotation_deg: [0, 0, 0], scale: [1, 1, 1] },
+        transform: {
+          translation_mm: [0, 0, 250],
+          rotation_deg: [0, 0, 0],
+          scale: [1, 1, 1]
+        },
         geometry: { dimensions_mm: [1000, 600, 500] },
         locks: { geometry: false, transform: false, material: false }
       }
@@ -60,8 +89,8 @@ function Login({ onLogin }: { onLogin: () => void }) {
       setError("");
       await api.login(username, password);
       onLogin();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -84,38 +113,70 @@ function Login({ onLogin }: { onLogin: () => void }) {
   );
 }
 
+function shortId(value: string | null | undefined) {
+  return value ? value.slice(0, 8) : "—";
+}
+
 export default function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [revision, setRevision] = useState<SceneRevision | null>(null);
+  const [revisions, setRevisions] = useState<RevisionSummary[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [newProject, setNewProject] = useState("");
   const [message, setMessage] = useState("");
 
-  const refresh = useCallback(async () => {
+  const refreshProjectsAndWorkers = useCallback(async () => {
     const [projectList, workerList] = await Promise.all([api.projects(), api.workers()]);
     setProjects(projectList);
     setWorkers(workerList);
     setSelected((current) => current ?? projectList[0]?.id ?? null);
   }, []);
 
+  const refreshProject = useCallback(async (projectId: string) => {
+    const [scene, history, projectAssets, projectJobs] = await Promise.all([
+      api.scene(projectId),
+      api.revisions(projectId),
+      api.assets(projectId),
+      api.jobs(projectId)
+    ]);
+    setRevision(scene);
+    setRevisions(history);
+    setAssets(projectAssets);
+    setJobs(projectJobs);
+  }, []);
+
   useEffect(() => {
     api.me()
       .then(() => {
         setAuthenticated(true);
-        return refresh();
+        return refreshProjectsAndWorkers();
       })
       .catch(() => setAuthenticated(false));
-  }, [refresh]);
+  }, [refreshProjectsAndWorkers]);
 
   useEffect(() => {
     if (!selected) {
       setRevision(null);
+      setRevisions([]);
+      setAssets([]);
+      setJobs([]);
       return;
     }
-    api.scene(selected).then(setRevision).catch((e) => setMessage(String(e)));
-  }, [selected]);
+    refreshProject(selected).catch((error) => setMessage(String(error)));
+  }, [selected, refreshProject]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    const timer = window.setInterval(() => {
+      void refreshProjectsAndWorkers();
+      if (selected) void refreshProject(selected);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, refreshProject, refreshProjectsAndWorkers, selected]);
 
   if (authenticated === null) return <main className="loading">STROY</main>;
   if (!authenticated) {
@@ -123,27 +184,28 @@ export default function App() {
       <Login
         onLogin={() => {
           setAuthenticated(true);
-          void refresh();
+          void refreshProjectsAndWorkers();
         }}
       />
     );
   }
 
-  const online = workers.filter((worker) => worker.online);
+  const onlineWorkers = workers.filter((worker) => worker.online);
+  const currentProject = projects.find((project) => project.id === selected);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
     if (!newProject.trim()) return;
     const project = await api.createProject(newProject.trim());
     setNewProject("");
-    await refresh();
+    await refreshProjectsAndWorkers();
     setSelected(project.id);
   }
 
   async function createDemoScene() {
     if (!selected) return;
-    const created = await api.createScene(selected, goldenRoom(selected));
-    setRevision(created);
+    await api.createScene(selected, goldenRoom(selected));
+    await refreshProject(selected);
   }
 
   async function upload(file: File | null) {
@@ -151,21 +213,41 @@ export default function App() {
     setMessage("Загрузка...");
     const asset = await api.upload(selected, file);
     setMessage(`Asset ${asset.id} uploaded`);
+    await refreshProject(selected);
+  }
+
+  async function queueFakeGeneration() {
+    if (!selected) return;
+    await api.createJob(
+      selected,
+      "image.generate",
+      ["image_generation"],
+      revision ? { scene_revision_id: revision.revision_id } : {}
+    );
+    setMessage("Generation job queued");
+    await refreshProject(selected);
+  }
+
+  async function restore(targetRevisionId: string) {
+    if (!selected || !revision || targetRevisionId === revision.revision_id) return;
+    await api.revert(selected, revision.revision_id, targetRevisionId);
+    setMessage(`Restored revision ${shortId(targetRevisionId)}`);
+    await refreshProject(selected);
   }
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">STROY</div>
-        <div className={online.length ? "worker online" : "worker offline"}>
-          GPU worker: {online.length ? "online" : "offline"}
+        <div className={onlineWorkers.length ? "worker online" : "worker offline"}>
+          GPU worker: {onlineWorkers.length ? "online" : "offline"}
         </div>
 
         <form onSubmit={createProject} className="new-project">
           <input
             placeholder="Новый проект"
             value={newProject}
-            onChange={(e) => setNewProject(e.target.value)}
+            onChange={(event) => setNewProject(event.target.value)}
           />
           <button>+</button>
         </form>
@@ -193,16 +275,23 @@ export default function App() {
       <main className="workspace">
         <header>
           <div>
-            <h1>{projects.find((p) => p.id === selected)?.name ?? "Проект"}</h1>
-            <span>{revision ? `revision ${revision.revision_id.slice(0, 8)}` : "scene not initialized"}</span>
+            <h1>{currentProject?.name ?? "Проект"}</h1>
+            <span>
+              {revision ? `revision ${shortId(revision.revision_id)}` : "scene not initialized"}
+            </span>
           </div>
           <div className="actions">
-            {!revision && selected && <button onClick={() => void createDemoScene()}>Golden room</button>}
+            {!revision && selected && (
+              <button onClick={() => void createDemoScene()}>Golden room</button>
+            )}
             {selected && (
-              <label className="upload">
-                Загрузить файл
-                <input type="file" onChange={(e) => void upload(e.target.files?.[0] ?? null)} />
-              </label>
+              <>
+                <button onClick={() => void queueFakeGeneration()}>Test generation</button>
+                <label className="upload">
+                  Загрузить файл
+                  <input type="file" onChange={(event) => void upload(event.target.files?.[0] ?? null)} />
+                </label>
+              </>
             )}
           </div>
         </header>
@@ -211,17 +300,65 @@ export default function App() {
           <SceneViewer scene={revision?.scene ?? null} />
         </section>
 
-        <section className="status-panel">
-          <strong>Compute</strong>
-          {workers.length === 0 && <span>worker ещё не зарегистрирован</span>}
-          {workers.map((worker) => (
-            <span key={worker.id}>
-              {worker.display_name ?? worker.id}: {worker.online ? "online" : "offline"} ·{" "}
-              {worker.models.join(", ")}
-            </span>
-          ))}
-          {message && <span>{message}</span>}
+        <section className="dashboard-grid">
+          <article className="panel">
+            <h2>Compute</h2>
+            {workers.length === 0 && <p className="muted">worker ещё не зарегистрирован</p>}
+            {workers.map((worker) => (
+              <div className="row" key={worker.id}>
+                <span>{worker.display_name ?? worker.id}</span>
+                <span className={worker.online ? "tag online" : "tag offline"}>
+                  {worker.online ? "online" : "offline"}
+                </span>
+                <small>{worker.models.join(", ")}</small>
+              </div>
+            ))}
+          </article>
+
+          <article className="panel">
+            <h2>Jobs</h2>
+            {jobs.length === 0 && <p className="muted">очередь пуста</p>}
+            {jobs.slice(0, 8).map((job) => (
+              <div className="row" key={job.id}>
+                <span>{job.job_type}</span>
+                <span className="tag">{job.status}</span>
+                <small>#{shortId(job.id)} · attempt {job.attempt}</small>
+              </div>
+            ))}
+          </article>
+
+          <article className="panel">
+            <h2>Assets</h2>
+            {assets.length === 0 && <p className="muted">файлов пока нет</p>}
+            {assets.slice(0, 8).map((asset) => (
+              <div className="row" key={asset.id}>
+                <span>{asset.original_name ?? shortId(asset.id)}</span>
+                <span className="tag">{asset.provenance}</span>
+                <small>{asset.media_type} · {Math.ceil(asset.size_bytes / 1024)} KB</small>
+              </div>
+            ))}
+          </article>
+
+          <article className="panel">
+            <h2>Scene history</h2>
+            {revisions.length === 0 && <p className="muted">ревизий пока нет</p>}
+            {revisions.slice(0, 8).map((item) => (
+              <div className="row history-row" key={item.revision_id}>
+                <span>rev {shortId(item.revision_id)}</span>
+                <small>{item.command_id ? `command ${shortId(item.command_id)}` : "snapshot"}</small>
+                {item.revision_id === revision?.revision_id ? (
+                  <span className="tag">current</span>
+                ) : (
+                  <button className="secondary" onClick={() => void restore(item.revision_id)}>
+                    Restore
+                  </button>
+                )}
+              </div>
+            ))}
+          </article>
         </section>
+
+        {message && <section className="status-panel">{message}</section>}
       </main>
     </div>
   );
