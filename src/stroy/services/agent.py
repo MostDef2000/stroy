@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,20 +123,40 @@ async def apply_design_agent_result(
 
     preview_job_ids: list[str] = []
     for preview in preview_requests:
-        camera_id = preview["camera_id"]
+        requested_camera_id = preview["camera_id"]
+        if requested_camera_id is not None:
+            camera = next(
+                (
+                    item
+                    for item in validation_scene.cameras
+                    if item.id == requested_camera_id
+                ),
+                None,
+            )
+            if camera is None:
+                raise ValueError(f"unknown camera: {requested_camera_id}")
+        else:
+            camera = validation_scene.cameras[0] if validation_scene.cameras else None
+        if camera is None:
+            raise ValueError("render_preview requires at least one canonical camera")
+
+        render_id = str(uuid4())
         preview_job = await create_job(
             session,
             project_id=job.project_id,
             job_type="render.blender",
             required_capabilities=["blender_render"],
             idempotency_key=(
-                f"agent-preview:{job.id}:{camera_id or 'default'}:{actual_base}"
+                f"agent-preview:{job.id}:{camera.id}:{actual_base}"
             ),
             correlation_id=job.correlation_id,
             payload={
                 "purpose": "agent_preview",
+                "render_id": render_id,
                 "scene_revision_id": actual_base,
-                "camera_id": camera_id,
+                "camera_id": camera.id,
+                "scene": validation_scene.model_dump(mode="json", exclude_none=True),
+                "renderer_profile": "blender-cycles-v0",
                 "requested_by_job_id": job.id,
             },
             dispatcher=dispatcher,

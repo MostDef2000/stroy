@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from stroy.generation import GenerationContext, finalize_generation_manifest
+from stroy.rendering import RenderContext, finalize_render_manifest
 from stroy.services.adapters import AdapterError
 from stroy.worker.client import WorkerClient
 
@@ -104,6 +105,7 @@ class WorkerRunner:
                 raise ValueError("executor _artifacts must be a list")
 
             output_asset_ids: list[str] = []
+            semantic_asset_ids: dict[str, str] = {}
             for artifact in raw_artifacts:
                 if not isinstance(artifact, dict):
                     raise ValueError("executor artifact must be an object")
@@ -112,14 +114,22 @@ class WorkerRunner:
                 media_type = artifact.get("media_type", "application/octet-stream")
                 if not isinstance(filename, str) or not isinstance(data, bytes):
                     raise ValueError("executor artifact requires filename and bytes")
+                semantic_name = artifact.get("semantic_name")
                 uploaded = await self.client.upload_output(
                     job_id,
                     lease_id,
                     filename=filename,
                     data=data,
                     media_type=str(media_type),
+                    semantic_name=(
+                        str(semantic_name)
+                        if isinstance(semantic_name, str) and semantic_name
+                        else None
+                    ),
                 )
                 output_asset_ids.append(uploaded["id"])
+                if isinstance(semantic_name, str) and semantic_name:
+                    semantic_asset_ids[semantic_name] = uploaded["id"]
 
             raw_generation = result.pop("_generation_context", None)
             if raw_generation is not None:
@@ -143,6 +153,17 @@ class WorkerRunner:
                     output_asset_ids=output_asset_ids,
                 )
                 result["generation_manifest"] = manifest.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+            raw_render = result.pop("_render_context", None)
+            if raw_render is not None:
+                render_context = RenderContext.model_validate(raw_render)
+                render_manifest = finalize_render_manifest(
+                    context=render_context,
+                    pass_asset_ids=semantic_asset_ids,
+                )
+                result["render_manifest"] = render_manifest.model_dump(
                     mode="json",
                     exclude_none=True,
                 )

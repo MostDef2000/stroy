@@ -88,6 +88,19 @@ class StyleProfileRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class RenderManifestRow(Base):
+    __tablename__ = "render_manifests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    job_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    scene_revision_id: Mapped[str] = mapped_column(String(36), index=True)
+    design_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    camera_id: Mapped[str] = mapped_column(String(255))
+    manifest_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class JobRow(Base):
     __tablename__ = "jobs"
     __table_args__ = (

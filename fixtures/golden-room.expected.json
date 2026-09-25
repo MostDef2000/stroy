@@ -1,0 +1,24 @@
+{
+  "scene_revision_id": "revision.golden-room",
+  "camera_id": "camera.living.entry",
+  "renderable_semantic_ids": [
+    "light.ceiling.main",
+    "object.sofa.main",
+    "opening.door.living.west",
+    "opening.window.living.north",
+    "surface.ceiling.living",
+    "surface.floor.living",
+    "surface.wall.living.north",
+    "surface.wall.living.west"
+  ],
+  "resolution": [1600, 1000],
+  "floor_dimensions_m": [5.0, 4.0, 0.1],
+  "floor_translation_m": [0.0, 0.0, -0.05],
+  "passes": [
+    "rgb",
+    "depth",
+    "normals",
+    "object_ids",
+    "material_ids"
+  ]
+}

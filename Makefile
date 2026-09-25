@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down infra-logs install lint test check api web worker-fake password-hash
+.PHONY: infra-up infra-down infra-logs install lint test check api web worker-fake password-hash render-golden
 
 infra-up:
 	docker compose up -d postgres redis minio
@@ -36,3 +36,7 @@ web:
 
 worker-fake:
 	stroy-worker
+
+
+render-golden:
+	python3 scripts/render_golden_room.py

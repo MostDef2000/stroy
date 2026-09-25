@@ -87,10 +87,14 @@ class WorkerClient:
         filename: str,
         data: bytes,
         media_type: str = "application/octet-stream",
+        semantic_name: str | None = None,
     ) -> dict[str, Any]:
+        form = {"worker_id": self.worker_id, "lease_id": lease_id}
+        if semantic_name:
+            form["semantic_name"] = semantic_name
         response = await self.client.post(
             f"{self.server_url}/api/v1/workers/jobs/{job_id}/outputs",
-            data={"worker_id": self.worker_id, "lease_id": lease_id},
+            data=form,
             files={"file": (filename, data, media_type)},
         )
         response.raise_for_status()
