@@ -13,6 +13,8 @@ export type Worker = {
   last_heartbeat: string;
 };
 
+export type AssetRole = "apartment" | "reference" | "derived";
+
 export type Asset = {
   id: string;
   original_name: string | null;
@@ -20,7 +22,11 @@ export type Asset = {
   size_bytes: number;
   sha256: string;
   provenance: string;
+  role: AssetRole;
+  metadata: Record<string, unknown>;
   source_asset_id: string | null;
+  source_asset_ids: string[];
+  duplicate_of_asset_id: string | null;
   created_at: string;
 };
 
@@ -30,6 +36,10 @@ export type Job = {
   job_type: string;
   status: string;
   attempt: number;
+  idempotency_key: string | null;
+  progress: Record<string, unknown>;
+  correlation_id: string | null;
+  runtime_provenance: Record<string, unknown>;
   result: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
   leased_to: string | null;
@@ -97,7 +107,12 @@ export type SceneRevision = {
   scene: SceneDocument;
 };
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
+
+function apiPath(path: string) {
+  return `${API_BASE}${path}`;
+}
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
@@ -107,7 +122,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.method && !["GET", "HEAD"].includes(init.method.toUpperCase()) && csrfToken) {
     headers.set("X-CSRF-Token", csrfToken);
   }
-  const response = await fetch(path, {
+  const response = await fetch(apiPath(path), {
     ...init,
     headers,
     credentials: "include"
@@ -155,7 +170,7 @@ export const api = {
   },
 
   async scene(projectId: string): Promise<SceneRevision | null> {
-    const response = await fetch(`/api/v1/projects/${projectId}/scene`, {
+    const response = await fetch(apiPath(`/api/v1/projects/${projectId}/scene`), {
       credentials: "include"
     });
     if (response.status === 404) return null;
@@ -196,6 +211,10 @@ export const api = {
     return request<Job[]>(`/api/v1/projects/${projectId}/jobs`);
   },
 
+  cancelJob(jobId: string) {
+    return request<Job>(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" });
+  },
+
   designInstruction(projectId: string, text: string) {
     return request<Job>(`/api/v1/projects/${projectId}/design/instructions`, {
       method: "POST",
@@ -207,24 +226,51 @@ export const api = {
     projectId: string,
     jobType: string,
     requiredCapabilities: string[],
-    payload: Record<string, unknown> = {}
+    payload: Record<string, unknown> = {},
+    idempotencyKey?: string
   ) {
     return request<Job>(`/api/v1/projects/${projectId}/jobs`, {
       method: "POST",
       body: JSON.stringify({
         job_type: jobType,
         required_capabilities: requiredCapabilities,
-        payload
+        payload,
+        idempotency_key: idempotencyKey
       })
     });
   },
 
-  upload(projectId: string, file: File) {
-    const form = new FormData();
-    form.append("file", file);
-    return request<{ id: string; sha256: string }>(`/api/v1/projects/${projectId}/assets`, {
-      method: "POST",
-      body: form
+  upload(
+    projectId: string,
+    file: File,
+    role: AssetRole,
+    onProgress: (percent: number) => void
+  ) {
+    return new Promise<{ id: string; sha256: string; role: AssetRole }>((resolve, reject) => {
+      const form = new FormData();
+      form.append("role", role);
+      form.append("file", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", apiPath(`/api/v1/projects/${projectId}/assets`));
+      xhr.withCredentials = true;
+      if (csrfToken) xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress(Math.round((event.loaded / event.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress(100);
+          resolve(JSON.parse(xhr.responseText));
+          return;
+        }
+        reject(new Error(`${xhr.status}: ${xhr.responseText}`));
+      };
+      xhr.onerror = () => reject(new Error("upload network error"));
+      xhr.send(form);
     });
   }
 };
