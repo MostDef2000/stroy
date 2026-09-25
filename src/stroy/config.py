@@ -46,6 +46,7 @@ class Settings(BaseSettings):
 
     worker_token: str = "development-worker-token"
     worker_token_hash: str = ""
+    worker_token_hashes: str = ""
     worker_lease_seconds: int = 120
     worker_heartbeat_grace_seconds: int = 60
 
