@@ -164,7 +164,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
         render_layers.outputs["Depth"],
         output_dir,
         "depth",
-        color_mode="BW",
+        color_mode="RGB",
     )
     _file_output(
         tree.nodes,
@@ -180,7 +180,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
         render_layers.outputs["IndexOB"],
         output_dir,
         "object_ids",
-        color_mode="BW",
+        color_mode="RGB",
     )
     _file_output(
         tree.nodes,
@@ -188,7 +188,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
         render_layers.outputs["IndexMA"],
         output_dir,
         "material_ids",
-        color_mode="BW",
+        color_mode="RGB",
     )
 
 
