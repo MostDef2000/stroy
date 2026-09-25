@@ -64,3 +64,32 @@ It is design input, not physical truth.
 ## Provenance
 
 Derived facts should record provenance such as user, imported, measured, estimated or model_inferred. Estimated dimensions must never be indistinguishable from trusted measurements.
+
+
+## Assets
+
+Asset records are immutable references to binary objects. v0.1 records:
+
+- project ID and opaque object key;
+- original display filename (never used as a trusted path);
+- media type, byte size and SHA-256;
+- role: `apartment`, `reference` or `derived`;
+- provenance;
+- extracted metadata such as image dimensions/format when available;
+- source asset IDs for derived outputs;
+- optional duplicate-of relation for same-project checksum matches.
+
+## Jobs
+
+A Job is the durable control-plane record for asynchronous work. It stores job type, project, payload, required capabilities, status, attempt counter, lease owner/ID/expiry, progress, result/error, idempotency key, correlation ID and runtime provenance.
+
+The durable state machine is:
+
+```text
+queued | waiting_for_worker
+  -> leased
+  -> running
+  -> succeeded | failed | cancelled
+```
+
+An expired lease returns the same Job to a claimable state. Worker retries do not create a second Job when the enqueue caller supplies the same idempotency key.
