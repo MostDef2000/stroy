@@ -105,13 +105,33 @@ Automated whole-apartment reconstruction is **not** required for v0.1.
 
 ## Development
 
+The complete control-plane/UI flow can run without Qwen, FLUX or Blender by using the deterministic fake worker.
+
 ```bash
+make install
 cp .env.example .env
+make password-hash
+# put the generated hash into STROY_AUTH_PASSWORD_HASH in .env
 make infra-up
+```
+
+Then run in separate terminals:
+
+```bash
+make api
+make web
+make worker-fake
+```
+
+Open `http://localhost:5173`, create a project, initialize the **Golden room**, and submit an AI edit such as `Сделай диван бежевым и убери стол`.
+
+Run all repository checks with:
+
+```bash
 make check
 ```
 
-GPU runtimes (Qwen, ComfyUI and Blender) are installed separately because their setup is hardware-specific. See `docs/local-development.md`.
+Real GPU runtimes (Qwen, ComfyUI and Blender) are installed separately because their setup is hardware-specific. See `docs/local-development.md`.
 
 ## Documentation
 

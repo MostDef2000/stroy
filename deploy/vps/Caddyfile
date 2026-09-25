@@ -1,0 +1,23 @@
+stroy.mostdef.ru {
+    encode zstd gzip
+
+    @backend {
+        path /api/* /health /ready /docs* /redoc /openapi.json
+    }
+
+    handle @backend {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        root * /srv/web
+        try_files {path} /index.html
+        file_server
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        X-Frame-Options DENY
+    }
+}
