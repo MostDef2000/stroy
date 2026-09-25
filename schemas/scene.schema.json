@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://stoy.local/schemas/scene.schema.json",
-  "title": "STOY Scene",
+  "$id": "https://stroy.local/schemas/scene.schema.json",
+  "title": "STROY Scene",
   "type": "object",
   "required": ["schema_version", "scene_id", "project_id", "units", "coordinate_system", "entities", "cameras"],
   "properties": {
