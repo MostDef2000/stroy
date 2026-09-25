@@ -14,25 +14,24 @@ STROY is not an image-to-image interior generator. The product separates the imm
 ## Architecture at a glance
 
 ```text
-User / Web UI
-    |
-    v
-API + Project Service
-    |
-    +--> Scene Core (canonical source of truth)
-    |       +--> scene.json / schemas
-    |       +--> revisions + design commands
-    |
-    +--> Qwen Agent Adapter (OpenAI-compatible local endpoint)
-    |       +--> scene tools
-    |       +--> style/reference analysis
-    |
-    +--> GPU Job Queue
-            +--> Blender headless renderer
-            |       +--> RGB / depth / normals / masks
-            |
-            +--> ComfyUI image runtime
-                    +--> FLUX / compatible image-edit workflows
+Browser
+   |
+   v
+stroy.mostdef.ru -> VPS
+   |
+   +--> Caddy / HTTPS
+   +--> Web + API + owner auth
+   +--> Scene Core / revisions
+   +--> PostgreSQL / Redis / MinIO
+   +--> Worker job/lease API
+              ^
+              | outbound HTTPS
+              |
+        Home GPU worker
+              |
+              +--> Qwen
+              +--> ComfyUI / FLUX
+              +--> Blender
 ```
 
 ## Repository layout
@@ -123,6 +122,8 @@ Start here:
 - [Canonical data model](docs/data-model.md)
 - [Pipelines](docs/pipelines.md)
 - [Local development](docs/local-development.md)
+- [Remote deployment](docs/deployment.md)
+- [GPU worker protocol](docs/worker-protocol.md)
 - [Model and license policy](docs/model-policy.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/)
