@@ -70,12 +70,12 @@ def geometry_edge_score(
     gen_count = sum(1 for value in generated.getdata() if value)
     matched_generated = sum(
         1
-        for edge, near_ref in zip(generated.getdata(), ref_dilated.getdata())
+        for edge, near_ref in zip(generated.getdata(), ref_dilated.getdata(), strict=True)
         if edge and near_ref
     )
     matched_reference = sum(
         1
-        for edge, near_gen in zip(reference.getdata(), gen_dilated.getdata())
+        for edge, near_gen in zip(reference.getdata(), gen_dilated.getdata(), strict=True)
         if edge and near_gen
     )
 
