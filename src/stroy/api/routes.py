@@ -20,7 +20,7 @@ from stroy.api.dependencies import (
     require_worker,
 )
 from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, WorkerRow
-from stroy.domain.commands import CommandRejected
+from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
@@ -45,6 +45,14 @@ from stroy.services.scenes import (
 
 
 router = APIRouter()
+
+
+def _domain_conflict(exc: ValueError) -> HTTPException:
+    code = "revision_conflict" if isinstance(exc, CommandConflict) else "command_rejected"
+    return HTTPException(
+        status_code=409,
+        detail={"code": code, "detail": str(exc)},
+    )
 
 
 def _media_type_allowed(media_type: str, configured: str) -> bool:
@@ -244,7 +252,7 @@ async def scene_initialize(project_id: str, scene: Scene, session: DbSession, ow
     try:
         revision = await initialize_scene(session, project_id, scene)
     except (ValueError, CommandRejected) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return {"revision_id": revision.id, "content_hash": revision.content_hash, "scene": revision.scene_json}
 
 
@@ -297,7 +305,7 @@ async def scene_revert(
             target_revision_id=payload.target_revision_id,
         )
     except (ValueError, CommandRejected) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return {
         "revision_id": revision.id,
         "parent_revision_id": revision.parent_revision_id,
@@ -311,7 +319,7 @@ async def scene_command(project_id: str, command: DesignCommand, session: DbSess
     try:
         revision = await apply_scene_command(session, project_id, command)
     except (ValueError, CommandRejected) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return {
         "revision_id": revision.id,
         "parent_revision_id": revision.parent_revision_id,
@@ -630,7 +638,7 @@ async def worker_job_renew(job_id: str, payload: LeaseRequest, request: Request,
             lease_seconds=request.app.state.settings.worker_lease_seconds,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
 
     worker = await session.get(WorkerRow, payload.worker_id)
     if worker is not None:
@@ -659,7 +667,7 @@ async def worker_job_progress(
             lease_seconds=request.app.state.settings.worker_lease_seconds,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return job_view(row)
 
 
@@ -692,7 +700,7 @@ async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSess
             runtime_provenance=payload.runtime_provenance,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return job_view(row)
 
 
@@ -789,5 +797,5 @@ async def worker_job_fail(job_id: str, payload: JobFail, session: DbSession):
             runtime_provenance=payload.runtime_provenance,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return job_view(row)
