@@ -21,7 +21,7 @@ def upgrade() -> None:
         "scene_revisions",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), nullable=False),
-        sa.Column("parent_revision_id", sa.String(36)),
+        sa.Column("parent_revision_id", sa.String(36), unique=True),
         sa.Column("command_id", sa.String(36)),
         sa.Column("schema_version", sa.String(20), nullable=False),
         sa.Column("content_hash", sa.String(64), nullable=False),
