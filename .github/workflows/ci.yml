@@ -25,3 +25,20 @@ jobs:
 
       - name: Test
         run: pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        working-directory: apps/web
+        run: npm install
+
+      - name: Build
+        working-directory: apps/web
+        run: npm run build
