@@ -33,14 +33,13 @@ def _reset() -> None:
 
 
 def _engine(scene) -> str:
-    for candidate in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):
-        try:
-            scene.render.engine = candidate
-            return candidate
-        except TypeError:
-            continue
-    scene.render.engine = "BLENDER_WORKBENCH"
-    return "BLENDER_WORKBENCH"
+    # Object/Material Index passes are required control outputs and are
+    # consistently available in Cycles. CPU fallback works headlessly.
+    scene.render.engine = "CYCLES"
+    if hasattr(scene, "cycles"):
+        scene.cycles.samples = 16
+        scene.cycles.use_denoising = False
+    return "CYCLES"
 
 
 def _material(entity: dict):
@@ -110,6 +109,8 @@ def _camera(scene, plan: dict):
     data.lens = float(plan["lens_mm"])
     data.shift_x = float(plan["shift_x"])
     data.shift_y = float(plan["shift_y"])
+    data.clip_start = float(plan.get("clip_start_m", 0.01))
+    data.clip_end = float(plan.get("clip_end_m", 1000.0))
 
     obj = bpy.data.objects.new(plan["semantic_id"], data)
     bpy.context.collection.objects.link(obj)
