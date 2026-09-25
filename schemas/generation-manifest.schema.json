@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stroy.local/schemas/generation-manifest.schema.json",
+  "title": "STROY Generation Manifest",
+  "type": "object",
+  "required": ["schema_version", "generation_id", "scene_revision_id", "design_revision_id", "camera_id", "workflow", "model_profile", "input_asset_ids", "output_asset_ids"],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "generation_id": {"type": "string", "minLength": 1},
+    "scene_revision_id": {"type": "string", "minLength": 1},
+    "design_revision_id": {"type": "string", "minLength": 1},
+    "camera_id": {"type": "string", "minLength": 1},
+    "workflow": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string"},
+        "version": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "model_profile": {"type": "string", "minLength": 1},
+    "seed": {"type": ["integer", "null"]},
+    "input_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "output_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "structured_conditioning": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
