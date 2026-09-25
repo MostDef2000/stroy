@@ -37,6 +37,7 @@ def _engine(scene) -> str:
     # consistently available in Cycles. CPU fallback works headlessly.
     scene.render.engine = "CYCLES"
     if hasattr(scene, "cycles"):
+        scene.cycles.device = "CPU"
         scene.cycles.samples = 16
         scene.cycles.use_denoising = False
     return "CYCLES"
