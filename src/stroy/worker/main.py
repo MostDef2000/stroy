@@ -66,7 +66,14 @@ async def _run() -> None:
             "hardware": {},
         }
     )
-    await WorkerRunner(\n        client,\n        executors,\n        poll_seconds=poll,\n        heartbeat_seconds=heartbeat,\n        lease_renew_seconds=heartbeat,\n    ).run_forever()\n
+    await WorkerRunner(
+        client,
+        executors,
+        poll_seconds=poll,
+        heartbeat_seconds=heartbeat,
+        lease_renew_seconds=heartbeat,
+    ).run_forever()
+
 
 def main() -> None:
     asyncio.run(_run())
