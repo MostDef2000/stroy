@@ -52,6 +52,18 @@ class WorkerRunner:
             await self.client.heartbeat()
             self._last_worker_heartbeat = now
 
+    async def _cancel_executor(
+        self,
+        executor: Executor,
+        job: dict[str, Any],
+    ) -> None:
+        cancel = getattr(executor, "cancel", None)
+        if cancel is None:
+            return
+        result = cancel(job)
+        if asyncio.iscoroutine(result):
+            await result
+
     async def _renew_lease(
         self,
         job_id: str,
@@ -65,7 +77,12 @@ class WorkerRunner:
             except TimeoutError:
                 await self.client.renew(job_id, lease_id)
 
-    async def run_once(self) -> bool:
+    async def run_once(
+        self,
+        shutdown_event: asyncio.Event | None = None,
+    ) -> bool:
+        if shutdown_event is not None and shutdown_event.is_set():
+            return False
         await self._heartbeat_if_due()
         job = await self.client.claim()
         if job is None:
@@ -98,7 +115,41 @@ class WorkerRunner:
                 {"worker_id": self.client.worker_id},
             )
             renew_task = asyncio.create_task(self._renew_lease(job_id, lease_id, stop))
-            result = await executor.execute(job)
+            execution_task = asyncio.create_task(executor.execute(job))
+            while not execution_task.done():
+                if shutdown_event is not None and shutdown_event.is_set():
+                    await self._cancel_executor(executor, job)
+                    execution_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await execution_task
+                    stop.set()
+                    if renew_task:
+                        renew_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await renew_task
+                    await self.client.release(job_id, lease_id)
+                    return True
+
+                await asyncio.sleep(min(2.0, self.lease_renew_seconds))
+                lease_state = await self.client.lease_status(job_id, lease_id)
+                if lease_state.get("status") == "cancelled":
+                    await self._cancel_executor(executor, job)
+                    execution_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await execution_task
+                    stop.set()
+                    if renew_task:
+                        renew_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await renew_task
+                    return True
+                if not lease_state.get("lease_valid", False):
+                    execution_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await execution_task
+                    raise ValueError("worker lease is no longer valid")
+
+            result = await execution_task
 
             raw_artifacts = result.pop("_artifacts", [])
             if not isinstance(raw_artifacts, list):
@@ -213,8 +264,31 @@ class WorkerRunner:
             )
         return True
 
-    async def run_forever(self) -> None:
-        while True:
-            worked = await self.run_once()
-            if not worked:
-                await asyncio.sleep(self.poll_seconds)
+    async def run_forever(
+        self,
+        shutdown_event: asyncio.Event | None = None,
+    ) -> None:
+        shutdown = shutdown_event or asyncio.Event()
+        backoff = max(1.0, self.poll_seconds)
+        while not shutdown.is_set():
+            try:
+                worked = await self.run_once(shutdown)
+                backoff = max(1.0, self.poll_seconds)
+                if not worked and not shutdown.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            shutdown.wait(),
+                            timeout=self.poll_seconds,
+                        )
+                    except TimeoutError:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if shutdown.is_set():
+                    break
+                try:
+                    await asyncio.wait_for(shutdown.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                backoff = min(backoff * 2.0, 60.0)
