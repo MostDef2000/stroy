@@ -7,7 +7,6 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
-from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -338,11 +337,12 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
     row = await session.get(AssetRow, asset_id)
     if row is None:
         raise HTTPException(status_code=404, detail="asset not found")
-    url = await request.app.state.object_store.presign_get(row.object_key)
-    if url:
-        return RedirectResponse(url)
     data = await request.app.state.object_store.get_bytes(row.object_key)
-    return Response(content=data, media_type=row.media_type)
+    return Response(
+        content=data,
+        media_type=row.media_type,
+        headers={"Cache-Control": "private, max-age=60"},
+    )
 
 
 @router.post(
@@ -495,10 +495,11 @@ async def worker_claim(payload: WorkerClaim, request: Request, session: DbSessio
     downloads: dict[str, str] = {}
     for asset_id in row.payload.get("input_asset_ids", []):
         asset = await session.get(AssetRow, asset_id)
-        if asset:
-            url = await request.app.state.object_store.presign_get(asset.object_key)
-            if url:
-                downloads[asset_id] = url
+        if asset and asset.project_id == row.project_id:
+            downloads[asset_id] = (
+                f"/api/v1/workers/jobs/{row.id}/inputs/{asset_id}"
+                f"?worker_id={worker.id}&lease_id={row.lease_id}"
+            )
     return {
         "schema_version": "0.1.0",
         "job_id": row.id,
