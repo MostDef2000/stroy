@@ -13,6 +13,38 @@ export type Worker = {
   last_heartbeat: string;
 };
 
+export type Asset = {
+  id: string;
+  original_name: string | null;
+  media_type: string;
+  size_bytes: number;
+  sha256: string;
+  provenance: string;
+  source_asset_id: string | null;
+  created_at: string;
+};
+
+export type Job = {
+  id: string;
+  project_id: string | null;
+  job_type: string;
+  status: string;
+  attempt: number;
+  result: Record<string, unknown> | null;
+  error: Record<string, unknown> | null;
+  leased_to: string | null;
+  lease_expires_at: string | null;
+  created_at: string;
+};
+
+export type RevisionSummary = {
+  revision_id: string;
+  parent_revision_id: string | null;
+  command_id: string | null;
+  content_hash: string;
+  created_at: string;
+};
+
 export type SceneEntity = {
   id: string;
   kind: string;
@@ -40,6 +72,7 @@ export type SceneDocument = {
 
 export type SceneRevision = {
   revision_id: string;
+  parent_revision_id?: string | null;
   content_hash: string;
   scene: SceneDocument;
 };
@@ -117,8 +150,46 @@ export const api = {
     });
   },
 
+  revisions(projectId: string) {
+    return request<RevisionSummary[]>(`/api/v1/projects/${projectId}/scene/revisions`);
+  },
+
+  revert(projectId: string, expectedBaseRevisionId: string, targetRevisionId: string) {
+    return request<SceneRevision>(`/api/v1/projects/${projectId}/scene/revert`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_base_revision_id: expectedBaseRevisionId,
+        target_revision_id: targetRevisionId
+      })
+    });
+  },
+
   workers() {
     return request<Worker[]>("/api/v1/workers");
+  },
+
+  assets(projectId: string) {
+    return request<Asset[]>(`/api/v1/projects/${projectId}/assets`);
+  },
+
+  jobs(projectId: string) {
+    return request<Job[]>(`/api/v1/projects/${projectId}/jobs`);
+  },
+
+  createJob(
+    projectId: string,
+    jobType: string,
+    requiredCapabilities: string[],
+    payload: Record<string, unknown> = {}
+  ) {
+    return request<Job>(`/api/v1/projects/${projectId}/jobs`, {
+      method: "POST",
+      body: JSON.stringify({
+        job_type: jobType,
+        required_capabilities: requiredCapabilities,
+        payload
+      })
+    });
   },
 
   upload(projectId: string, file: File) {
