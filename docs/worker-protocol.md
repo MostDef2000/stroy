@@ -75,6 +75,8 @@ POST /api/v1/workers/heartbeat
 POST /api/v1/workers/jobs/claim
 POST /api/v1/workers/jobs/{job_id}/start
 POST /api/v1/workers/jobs/{job_id}/heartbeat
+POST /api/v1/workers/jobs/{job_id}/lease-status
+POST /api/v1/workers/jobs/{job_id}/release
 POST /api/v1/workers/jobs/{job_id}/complete
 POST /api/v1/workers/jobs/{job_id}/fail
 ```
@@ -159,3 +161,25 @@ Record:
 - upload/download duration;
 - peak VRAM/RAM when available;
 - structured failure class.
+
+
+## Compatibility and cancellation
+
+Job payloads may declare `required_models` and `required_runtimes` in addition to
+capabilities. Claiming filters all three dimensions. A runtime requirement is
+eligible only when the worker reports it as `ready`.
+
+While an executor is running, the worker checks lease status. Owner cancellation
+is propagated into cancellable adapters such as ComfyUI. A stale/invalid lease
+causes the old local attempt to stop without reporting through that stale lease.
+
+On SIGINT/SIGTERM the worker cancels the active local executor where supported and
+explicitly releases the lease back to `waiting_for_worker` instead of waiting for
+lease expiry. Transient control-plane failures use bounded exponential reconnect
+backoff.
+
+## Credential rotation
+
+Production may configure multiple active SHA-256 worker-token hashes during a
+rotation window. The old hash can then be removed after the home worker has moved
+to the new token. Browser sessions never accept these credentials.
