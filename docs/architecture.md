@@ -2,7 +2,7 @@
 
 ## Core rule
 
-STOY combines deterministic geometry with probabilistic AI. Canonical state is therefore isolated from rendering and generation runtimes.
+STROY combines deterministic geometry with probabilistic AI. Canonical state is therefore isolated from rendering and generation runtimes.
 
 ```text
 Web UI
@@ -55,7 +55,7 @@ Interprets user intent and invokes typed domain tools. It may propose changes bu
 - S3-compatible storage for uploaded and generated binary assets.
 - Redis for queues, transient locks and job state.
 - Qwen 14B-class model behind an OpenAI-compatible adapter.
-- ComfyUI behind a STOY image-generation adapter.
+- ComfyUI behind a STROY image-generation adapter.
 - Blender headless for geometry-derived render passes.
 - React + Three.js/React Three Fiber for the intended web scene editor.
 
