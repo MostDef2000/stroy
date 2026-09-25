@@ -12,7 +12,7 @@ class RenderContext(BaseModel):
     scene_revision_id: str = Field(min_length=1)
     design_revision_id: str | None = None
     camera_id: str = Field(min_length=1)
-    renderer_profile: str = "blender-eevee-v0"
+    renderer_profile: str = "blender-cycles-v0"
 
 
 class RenderManifest(BaseModel):
