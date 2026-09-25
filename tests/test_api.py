@@ -385,6 +385,60 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 == "#D7C4AB"
             )
 
+            revision_before_bad_agent = final_scene.json()["revision_id"]
+            bad_design = await client.post(
+                f"/api/v1/projects/{project_id}/design/instructions",
+                headers=headers,
+                json={
+                    "text": "inspect missing entity through agent",
+                    "idempotency_key": "bad-agent-read-1",
+                },
+            )
+            assert bad_design.status_code == 201
+
+            bad_claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "worker-1"},
+            )
+            assert bad_claim.status_code == 200
+            bad_lease = bad_claim.json()
+            assert bad_lease["job_type"] == "llm.complete"
+
+            bad_complete = await client.post(
+                f"/api/v1/workers/jobs/{bad_lease['job_id']}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-1",
+                    "lease_id": bad_lease["lease_id"],
+                    "result": {
+                        "tool_calls": [
+                            {
+                                "name": "get_entity",
+                                "arguments": {
+                                    "target_id": "object.does.not.exist",
+                                },
+                            }
+                        ]
+                    },
+                },
+            )
+            assert bad_complete.status_code == 200
+            assert bad_complete.json()["status"] == "failed"
+            assert bad_complete.json()["error"]["code"] == "unknown_entity"
+            assert (
+                bad_complete.json()["error"]["context"]["entity_id"]
+                == "object.does.not.exist"
+            )
+
+            scene_after_bad_agent = await client.get(
+                f"/api/v1/projects/{project_id}/scene"
+            )
+            assert (
+                scene_after_bad_agent.json()["revision_id"]
+                == revision_before_bad_agent
+            )
+
             stale = await client.post(
                 f"/api/v1/projects/{project_id}/scene/commands",
                 headers=headers,
