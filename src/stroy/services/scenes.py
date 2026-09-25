@@ -84,3 +84,46 @@ async def apply_scene_command(
     await session.commit()
     await session.refresh(revision)
     return revision
+
+
+async def list_revisions(
+    session: AsyncSession, project_id: str
+) -> list[SceneRevisionRow]:
+    result = await session.execute(
+        select(SceneRevisionRow)
+        .where(SceneRevisionRow.project_id == project_id)
+        .order_by(SceneRevisionRow.created_at.desc(), SceneRevisionRow.id.desc())
+    )
+    return list(result.scalars())
+
+
+async def revert_scene(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    expected_base_revision_id: str,
+    target_revision_id: str,
+) -> SceneRevisionRow:
+    current = await latest_revision(session, project_id)
+    if current is None:
+        raise CommandConflict("scene is not initialized")
+    if current.id != expected_base_revision_id:
+        raise CommandConflict(
+            f"stale base revision: expected {current.id}, got {expected_base_revision_id}"
+        )
+    target = await session.get(SceneRevisionRow, target_revision_id)
+    if target is None or target.project_id != project_id:
+        raise CommandConflict("target revision not found in project")
+
+    scene = Scene.model_validate(target.scene_json)
+    revision = SceneRevisionRow(
+        project_id=project_id,
+        parent_revision_id=current.id,
+        command_id=None,
+        content_hash=canonical_hash(scene),
+        scene_json=scene.model_dump(mode="json"),
+    )
+    session.add(revision)
+    await session.commit()
+    await session.refresh(revision)
+    return revision
