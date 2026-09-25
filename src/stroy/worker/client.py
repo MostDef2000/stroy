@@ -41,6 +41,12 @@ class WorkerClient:
         response.raise_for_status()
         return response.json()
 
+    async def download_input(self, url: str) -> bytes:
+        target = f"{self.server_url}{url}" if url.startswith("/") else url
+        response = await self.client.get(target)
+        response.raise_for_status()
+        return response.content
+
     async def start(self, job_id: str, lease_id: str) -> None:
         response = await self.client.post(
             f"{self.server_url}/api/v1/workers/jobs/{job_id}/start",
