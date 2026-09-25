@@ -54,9 +54,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate VPS Compose
-        run: >
-          docker compose
-          --env-file deploy/vps/env.example
-          -f deploy/vps/docker-compose.yml
-          config
-          --quiet
+        run: |
+          cp deploy/vps/env.example deploy/vps/.env
+          docker compose \
+            --env-file deploy/vps/.env \
+            -f deploy/vps/docker-compose.yml \
+            config --quiet
