@@ -74,6 +74,20 @@ class AssetRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class StyleProfileRow(Base):
+    __tablename__ = "style_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    schema_version: Mapped[str] = mapped_column(String(20), default="0.1.0")
+    source_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
+    source_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile_json: Mapped[dict] = mapped_column(JSON)
+    model_profile: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class JobRow(Base):
     __tablename__ = "jobs"
     __table_args__ = (
