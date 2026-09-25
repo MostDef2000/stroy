@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stroy.db.models import (
+    AssetRow,
     GenerationManifestRow,
     GeometryDiagnosticRow,
     JobRow,
@@ -17,6 +18,7 @@ from stroy.db.models import (
     SceneRevisionRow,
     StyleProfileRow,
 )
+from stroy.domain.models import Scene
 from stroy.generation import GenerationManifest, WorkflowManifest
 from stroy.rendering import stable_id_map
 from stroy.services.dispatch import JobDispatcher
@@ -260,3 +262,104 @@ async def persist_geometry_diagnostic(
     await session.commit()
     await session.refresh(row)
     return row
+
+
+
+async def queue_render_then_generation(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    scene_revision_id: str,
+    camera_id: str,
+    style_profile_id: str,
+    user_text: str,
+    seed: int,
+    workflow_id: str = "flux-redesign-v0",
+    job_type: str = "image.generate",
+    reference_asset_ids: list[str] | None = None,
+    target_entity_ids: list[str] | None = None,
+    correlation_id: str | None = None,
+    dispatcher: JobDispatcher | None = None,
+    idempotency_key: str | None = None,
+) -> JobRow:
+    revision = await session.get(SceneRevisionRow, scene_revision_id)
+    if revision is None or revision.project_id != project_id:
+        raise ValueError("scene revision is not in project")
+
+    scene = Scene.model_validate(revision.scene_json)
+    if not any(camera.id == camera_id for camera in scene.cameras):
+        raise ValueError(f"unknown camera: {camera_id}")
+
+    style = await session.get(StyleProfileRow, style_profile_id)
+    if style is None or style.project_id != project_id:
+        raise ValueError("style profile is not in project")
+
+    refs = list(reference_asset_ids or [])
+    for asset_id in refs:
+        asset = await session.get(AssetRow, asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise ValueError(f"reference asset is not in project: {asset_id}")
+        if not asset.media_type.startswith("image/"):
+            raise ValueError(f"reference asset must be an image: {asset_id}")
+
+    # Validate workflow now, before a long render is queued.
+    workflow = load_workflow_manifest(workflow_id)
+
+    render_id = str(uuid4())
+    return await create_job(
+        session,
+        project_id=project_id,
+        job_type="render.blender",
+        required_capabilities=["blender_render"],
+        idempotency_key=idempotency_key or f"generation-render:{render_id}",
+        correlation_id=correlation_id,
+        payload={
+            "purpose": "generation_controls",
+            "render_id": render_id,
+            "scene_revision_id": revision.id,
+            "design_revision_id": revision.id,
+            "camera_id": camera_id,
+            "scene": revision.scene_json,
+            "renderer_profile": "blender-cycles-v0",
+            "followup_generation": {
+                "style_profile_id": style_profile_id,
+                "user_text": user_text,
+                "seed": seed,
+                "workflow_id": workflow.id,
+                "job_type": job_type,
+                "reference_asset_ids": refs,
+                "target_entity_ids": list(target_entity_ids or []),
+            },
+        },
+        dispatcher=dispatcher,
+    )
+
+
+async def list_generation_manifests(
+    session: AsyncSession,
+    project_id: str,
+) -> list[GenerationManifestRow]:
+    result = await session.execute(
+        select(GenerationManifestRow)
+        .where(GenerationManifestRow.project_id == project_id)
+        .order_by(
+            GenerationManifestRow.created_at.desc(),
+            GenerationManifestRow.id.desc(),
+        )
+    )
+    return list(result.scalars())
+
+
+async def list_geometry_diagnostics(
+    session: AsyncSession,
+    project_id: str,
+) -> list[GeometryDiagnosticRow]:
+    result = await session.execute(
+        select(GeometryDiagnosticRow)
+        .where(GeometryDiagnosticRow.project_id == project_id)
+        .order_by(
+            GeometryDiagnosticRow.created_at.desc(),
+            GeometryDiagnosticRow.id.desc(),
+        )
+    )
+    return list(result.scalars())
