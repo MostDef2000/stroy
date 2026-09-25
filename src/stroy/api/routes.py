@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from stroy.agent import TOOL_DEFINITIONS
+from stroy.agent import AgentToolError, TOOL_DEFINITIONS
 from stroy.api.dependencies import (
     DbSession,
     OwnerSession,
@@ -698,6 +698,19 @@ async def worker_job_complete(
             payload.result,
             dispatcher=request.app.state.job_dispatcher,
         )
+    except AgentToolError as exc:
+        try:
+            row = await fail_job(
+                session,
+                row,
+                worker_id=payload.worker_id,
+                lease_id=payload.lease_id,
+                error=exc.as_error(),
+                runtime_provenance=payload.runtime_provenance,
+            )
+        except ValueError as lease_exc:
+            raise HTTPException(status_code=409, detail=str(lease_exc)) from lease_exc
+        return job_view(row)
     except (ValueError, CommandRejected) as exc:
         try:
             row = await fail_job(
@@ -705,7 +718,11 @@ async def worker_job_complete(
                 row,
                 worker_id=payload.worker_id,
                 lease_id=payload.lease_id,
-                error={"code": "agent_result_rejected", "detail": str(exc)},
+                error={
+                    "code": "agent_result_rejected",
+                    "detail": str(exc),
+                    "context": {},
+                },
                 runtime_provenance=payload.runtime_provenance,
             )
         except ValueError as lease_exc:
