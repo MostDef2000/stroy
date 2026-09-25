@@ -86,7 +86,23 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                             },
                         }
                     ],
-                    "cameras": [],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 640,
+                            "height_px": 400,
+                            "intrinsics": {
+                                "fx": 500,
+                                "fy": 505,
+                                "cx": 320,
+                                "cy": 200
+                            },
+                            "transform": {
+                                "translation_mm": [0, -4000, 1600],
+                                "rotation_deg": [78, 0, 0]
+                            }
+                        }
+                    ],
                 },
             )
             assert scene_response.status_code == 201
@@ -680,3 +696,170 @@ async def test_style_profile_analysis_flow(settings):
             assert listed.status_code == 200
             assert len(listed.json()) == 1
             assert listed.json()[0]["profile"]["style_profile_id"] == result["style_profile_id"]
+
+
+
+@pytest.mark.asyncio
+async def test_render_job_persists_aligned_pass_manifest(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Render project"},
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.render",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.floor.main",
+                            "kind": "floor",
+                            "geometry": {"dimensions_mm": [4000, 3000, 100]},
+                            "locks": {"geometry": True, "transform": True},
+                        }
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {
+                                "fx": 620,
+                                "fy": 625,
+                                "cx": 400,
+                                "cy": 250,
+                            },
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            render = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={
+                    "scene_revision_id": revision_id,
+                    "camera_id": "camera.main",
+                    "renderer_profile": "blender-eevee-v0",
+                    "idempotency_key": "render-main-v1",
+                },
+            )
+            assert render.status_code == 201
+            render_job = render.json()
+            assert render_job["job_type"] == "render.blender"
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            register = await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "blender-worker",
+                    "capabilities": ["blender_render"],
+                    "models": [],
+                    "runtimes": {"blender": {"status": "ready"}},
+                },
+            )
+            assert register.status_code == 200
+
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "blender-worker"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+            assert lease["job_id"] == render_job["id"]
+            assert lease["payload"]["scene_revision_id"] == revision_id
+            assert lease["payload"]["camera_id"] == "camera.main"
+            assert lease["payload"]["scene"]["scene_id"] == "scene.render"
+
+            pass_assets = {}
+            for pass_name in (
+                "rgb",
+                "depth",
+                "normals",
+                "object_ids",
+                "material_ids",
+            ):
+                media_type = "image/png" if pass_name == "rgb" else "image/x-exr"
+                suffix = "png" if pass_name == "rgb" else "exr"
+                upload = await client.post(
+                    f"/api/v1/workers/jobs/{render_job['id']}/outputs",
+                    headers=worker_headers,
+                    data={
+                        "worker_id": "blender-worker",
+                        "lease_id": lease["lease_id"],
+                        "semantic_name": pass_name,
+                    },
+                    files={
+                        "file": (
+                            f"{pass_name}.{suffix}",
+                            f"{pass_name}-bytes".encode(),
+                            media_type,
+                        )
+                    },
+                )
+                assert upload.status_code == 201
+                pass_assets[pass_name] = upload.json()["id"]
+
+            complete = await client.post(
+                f"/api/v1/workers/jobs/{render_job['id']}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "blender-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        "render_manifest": {
+                            "schema_version": "0.1.0",
+                            "render_id": lease["payload"]["render_id"],
+                            "scene_revision_id": revision_id,
+                            "camera_id": "camera.main",
+                            "renderer_profile": "blender-eevee-v0",
+                            "passes": pass_assets,
+                        },
+                        "output_asset_ids": list(pass_assets.values()),
+                    },
+                },
+            )
+            assert complete.status_code == 200
+            assert complete.json()["status"] == "succeeded"
+            assert complete.json()["result"]["render_id"] == lease["payload"]["render_id"]
+
+            renders = await client.get(
+                f"/api/v1/projects/{project_id}/renders"
+            )
+            assert renders.status_code == 200
+            assert len(renders.json()) == 1
+            manifest = renders.json()[0]["manifest"]
+            assert manifest["passes"] == pass_assets
+
+            assets = await client.get(
+                f"/api/v1/projects/{project_id}/assets"
+            )
+            assert assets.status_code == 200
+            tagged = {
+                item["metadata"].get("semantic_name"): item
+                for item in assets.json()
+                if item["metadata"].get("semantic_name")
+            }
+            assert set(pass_assets).issubset(tagged)
+            assert all(tagged[name]["role"] == "derived" for name in pass_assets)
