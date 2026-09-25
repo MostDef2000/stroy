@@ -21,10 +21,11 @@ from stroy.api.dependencies import (
 )
 from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
-from stroy.domain.models import DesignCommand, Scene
+from stroy.domain.models import Camera, DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
+from stroy.services.cameras import remove_camera, upsert_camera
 from stroy.services.jobs import (
     cancel_job,
     claim_job,
@@ -98,6 +99,15 @@ class StyleAnalyzeRequest(BaseModel):
     reference_asset_ids: list[str] = Field(min_length=3, max_length=5)
     overrides: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class CameraUpsertRequest(BaseModel):
+    base_revision_id: str = Field(min_length=1)
+    camera: Camera
+
+
+class CameraDeleteRequest(BaseModel):
+    base_revision_id: str = Field(min_length=1)
 
 
 class RenderRequest(BaseModel):
@@ -351,6 +361,101 @@ async def scene_command(
     return {
         "revision_id": revision.id,
         "parent_revision_id": revision.parent_revision_id,
+        "content_hash": revision.content_hash,
+        "scene": revision.scene_json,
+    }
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/cameras",
+    dependencies=[Depends(require_owner)],
+)
+async def camera_list(project_id: str, session: DbSession):
+    revision = await latest_revision(session, project_id)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="scene not initialized")
+    scene = Scene.model_validate(revision.scene_json)
+    return {
+        "revision_id": revision.id,
+        "cameras": [
+            camera.model_dump(mode="json", exclude_none=True)
+            for camera in scene.cameras
+        ],
+    }
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/cameras/{camera_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def camera_get(project_id: str, camera_id: str, session: DbSession):
+    revision = await latest_revision(session, project_id)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="scene not initialized")
+    scene = Scene.model_validate(revision.scene_json)
+    camera = next((item for item in scene.cameras if item.id == camera_id), None)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="camera not found")
+    return {
+        "revision_id": revision.id,
+        "camera": camera.model_dump(mode="json", exclude_none=True),
+    }
+
+
+@router.put(
+    "/api/v1/projects/{project_id}/cameras/{camera_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def camera_upsert(
+    project_id: str,
+    camera_id: str,
+    payload: CameraUpsertRequest,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if payload.camera.id != camera_id:
+        raise HTTPException(status_code=422, detail="camera ID does not match route")
+    try:
+        revision = await upsert_camera(
+            session,
+            project_id,
+            expected_base_revision_id=payload.base_revision_id,
+            camera=payload.camera,
+        )
+    except (ValueError, CommandRejected, CommandConflict) as exc:
+        raise _domain_conflict(exc) from exc
+    scene = Scene.model_validate(revision.scene_json)
+    camera = next(item for item in scene.cameras if item.id == camera_id)
+    return {
+        "revision_id": revision.id,
+        "content_hash": revision.content_hash,
+        "camera": camera.model_dump(mode="json", exclude_none=True),
+        "scene": revision.scene_json,
+    }
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}/cameras/{camera_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def camera_delete(
+    project_id: str,
+    camera_id: str,
+    payload: CameraDeleteRequest,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        revision = await remove_camera(
+            session,
+            project_id,
+            expected_base_revision_id=payload.base_revision_id,
+            camera_id=camera_id,
+        )
+    except (ValueError, CommandRejected, CommandConflict) as exc:
+        raise _domain_conflict(exc) from exc
+    return {
+        "revision_id": revision.id,
         "content_hash": revision.content_hash,
         "scene": revision.scene_json,
     }

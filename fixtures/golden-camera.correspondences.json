@@ -1,0 +1,48 @@
+{
+  "camera": {
+    "id": "camera.golden",
+    "width_px": 1000,
+    "height_px": 800,
+    "intrinsics": {
+      "fx": 800,
+      "fy": 800,
+      "cx": 500,
+      "cy": 400
+    },
+    "transform": {
+      "translation_mm": [0, -5000, 1500],
+      "rotation_deg": [90, 0, 0]
+    },
+    "calibration": {
+      "method": "correspondences",
+      "observations": [
+        {
+          "label": "center",
+          "world_mm": [0, 0, 1500],
+          "image_px": [500, 400]
+        },
+        {
+          "label": "right",
+          "world_mm": [1000, 0, 1500],
+          "image_px": [660, 400]
+        },
+        {
+          "label": "left",
+          "world_mm": [-1000, 0, 1500],
+          "image_px": [340, 400]
+        },
+        {
+          "label": "top",
+          "world_mm": [0, 0, 2500],
+          "image_px": [500, 240]
+        },
+        {
+          "label": "bottom",
+          "world_mm": [0, 0, 500],
+          "image_px": [500, 560]
+        }
+      ]
+    }
+  },
+  "tolerance_px": 0.01
+}

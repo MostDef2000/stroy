@@ -87,9 +87,21 @@ export type SceneCamera = {
     translation_mm: [number, number, number];
     rotation_deg: [number, number, number];
   };
+  source_asset_id?: string | null;
+  provenance?: {
+    source: "user" | "imported" | "measured" | "estimated" | "model_inferred";
+    asset_ids?: string[];
+    note?: string | null;
+  } | null;
   calibration?: {
     quality?: number | null;
     residual?: number | null;
+    method?: "manual" | "correspondences" | "imported";
+    observations?: Array<{
+      world_mm: [number, number, number];
+      image_px: [number, number];
+      label?: string | null;
+    }>;
   } | null;
 };
 
@@ -196,6 +208,37 @@ export const api = {
         expected_base_revision_id: expectedBaseRevisionId,
         target_revision_id: targetRevisionId
       })
+    });
+  },
+
+  upsertCamera(
+    projectId: string,
+    cameraId: string,
+    baseRevisionId: string,
+    camera: SceneCamera
+  ) {
+    return request<{
+      revision_id: string;
+      content_hash: string;
+      camera: SceneCamera;
+      scene: SceneDocument;
+    }>(`/api/v1/projects/${projectId}/cameras/${cameraId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        base_revision_id: baseRevisionId,
+        camera
+      })
+    });
+  },
+
+  deleteCamera(projectId: string, cameraId: string, baseRevisionId: string) {
+    return request<{
+      revision_id: string;
+      content_hash: string;
+      scene: SceneDocument;
+    }>(`/api/v1/projects/${projectId}/cameras/${cameraId}`, {
+      method: "DELETE",
+      body: JSON.stringify({ base_revision_id: baseRevisionId })
     });
   },
 

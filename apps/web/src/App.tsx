@@ -10,6 +10,7 @@ import {
   SceneRevision,
   Worker
 } from "./api";
+import { CameraPanel } from "./CameraPanel";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
 
@@ -376,6 +377,15 @@ export default function App() {
         </form>
 
         <section className="dashboard-grid">
+          {selected && revision && (
+            <CameraPanel
+              projectId={selected}
+              revision={revision}
+              assets={assets}
+              onChanged={() => refreshProject(selected)}
+            />
+          )}
+
           <article className="panel">
             <h2>Compute</h2>
             {workers.length === 0 && <p className="muted">worker ещё не зарегистрирован</p>}
