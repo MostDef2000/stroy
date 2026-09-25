@@ -38,7 +38,12 @@ async def require_owner(request: Request, session: DbSession) -> AuthSessionRow:
     )
     auth_session = result.scalar_one_or_none()
     now = datetime.now(timezone.utc)
-    if auth_session is None or auth_session.expires_at <= now:
+    if auth_session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session expired")
+    expires_at = auth_session.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session expired")
     request.state.auth_session = auth_session
     return auth_session
