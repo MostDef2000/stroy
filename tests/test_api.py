@@ -982,3 +982,137 @@ async def test_camera_crud_creates_immutable_scene_revisions(settings):
             )
             assert removed.status_code == 200
             assert removed.json()["scene"]["cameras"] == []
+
+
+
+@pytest.mark.asyncio
+async def test_geometry_diagnostic_job_is_traceable_and_non_mutating(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Quality project"},
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.quality",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.wall.main",
+                            "kind": "wall",
+                            "locks": {"geometry": True, "transform": True},
+                        }
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 100,
+                            "height_px": 100,
+                            "intrinsics": {"fx": 80, "fy": 80, "cx": 50, "cy": 50},
+                            "transform": {
+                                "translation_mm": [0, -1000, 1000],
+                                "rotation_deg": [90, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            revision_id = scene.json()["revision_id"]
+
+            asset_ids = []
+            for name in ("reference.png", "generated.png"):
+                upload = await client.post(
+                    f"/api/v1/projects/{project_id}/assets",
+                    headers=headers,
+                    data={"role": "derived"},
+                    files={"file": (name, png_bytes(), "image/png")},
+                )
+                assert upload.status_code == 201
+                asset_ids.append(upload.json()["id"])
+
+            queued = await client.post(
+                f"/api/v1/projects/{project_id}/geometry-diagnostics",
+                headers=headers,
+                json={
+                    "scene_revision_id": revision_id,
+                    "camera_id": "camera.main",
+                    "reference_asset_id": asset_ids[0],
+                    "generated_asset_id": asset_ids[1],
+                    "advisory_threshold": 0.8,
+                },
+            )
+            assert queued.status_code == 201
+            job_id = queued.json()["id"]
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "quality-worker",
+                    "capabilities": ["geometry_quality"],
+                },
+            )
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "quality-worker"},
+            )
+            lease = claim.json()
+            diagnostic_id = lease["payload"]["diagnostic_id"]
+            assert set(lease["download_urls"]) == set(asset_ids)
+
+            completed = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "quality-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        "geometry_diagnostic": {
+                            "schema_version": "0.1.0",
+                            "diagnostic_id": diagnostic_id,
+                            "scene_revision_id": revision_id,
+                            "camera_id": "camera.main",
+                            "reference_asset_id": asset_ids[0],
+                            "generated_asset_id": asset_ids[1],
+                            "score": 0.55,
+                            "edge_precision": 0.60,
+                            "edge_recall": 0.51,
+                            "edge_f1": 0.55,
+                            "reference_edge_pixels": 100,
+                            "generated_edge_pixels": 110,
+                            "tolerance_px": 2,
+                            "advisory_threshold": 0.8,
+                            "advisory_pass": False,
+                            "limitations": ["advisory only"],
+                        }
+                    },
+                },
+            )
+            assert completed.status_code == 200
+            assert completed.json()["result"]["diagnostic_id"] == diagnostic_id
+
+            diagnostics = await client.get(
+                f"/api/v1/projects/{project_id}/geometry-diagnostics"
+            )
+            assert diagnostics.status_code == 200
+            assert diagnostics.json()[0]["diagnostic"]["score"] == 0.55
+            assert diagnostics.json()[0]["diagnostic"]["scene_revision_id"] == revision_id
+
+            latest = await client.get(f"/api/v1/projects/{project_id}/scene")
+            assert latest.status_code == 200
+            assert latest.json()["revision_id"] == revision_id
+            assert latest.json()["scene"]["entities"][0]["locks"]["geometry"] is True

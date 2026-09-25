@@ -101,6 +101,20 @@ class RenderManifestRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class GeometryDiagnosticRow(Base):
+    __tablename__ = "geometry_diagnostics"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    job_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    scene_revision_id: Mapped[str] = mapped_column(String(36), index=True)
+    camera_id: Mapped[str] = mapped_column(String(255))
+    reference_asset_id: Mapped[str] = mapped_column(String(36))
+    generated_asset_id: Mapped[str] = mapped_column(String(36))
+    diagnostic_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class JobRow(Base):
     __tablename__ = "jobs"
     __table_args__ = (

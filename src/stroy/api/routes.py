@@ -19,7 +19,7 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
+from stroy.db.models import AssetRow, AuthSessionRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
@@ -35,6 +35,7 @@ from stroy.services.jobs import (
     renew_lease,
     update_progress,
 )
+from stroy.services.quality import list_geometry_diagnostics, persist_geometry_diagnostic
 from stroy.services.renders import list_render_manifests, persist_render_manifest
 from stroy.services.styles import create_style_profile_from_job, list_style_profiles
 from stroy.services.scenes import (
@@ -108,6 +109,18 @@ class CameraUpsertRequest(BaseModel):
 
 class CameraDeleteRequest(BaseModel):
     base_revision_id: str = Field(min_length=1)
+
+
+class GeometryDiagnosticRequest(BaseModel):
+    scene_revision_id: str
+    camera_id: str = Field(min_length=1)
+    reference_asset_id: str
+    generated_asset_id: str
+    protected_mask_asset_id: str | None = None
+    tolerance_px: int = Field(default=2, ge=0, le=16)
+    edge_threshold: int = Field(default=24, ge=1, le=255)
+    advisory_threshold: float = Field(default=0.72, ge=0, le=1)
+    idempotency_key: str | None = Field(default=None, max_length=160)
 
 
 class RenderRequest(BaseModel):
@@ -551,6 +564,99 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
         media_type=row.media_type,
         headers={"Cache-Control": "private, max-age=60"},
     )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/geometry-diagnostics",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def geometry_diagnostic_create(
+    project_id: str,
+    payload: GeometryDiagnosticRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    revision = await session.get(SceneRevisionRow, payload.scene_revision_id)
+    if revision is None or revision.project_id != project_id:
+        raise HTTPException(status_code=404, detail="scene revision not found")
+    scene = Scene.model_validate(revision.scene_json)
+    if not any(camera.id == payload.camera_id for camera in scene.cameras):
+        raise HTTPException(status_code=422, detail={"code": "unknown_camera"})
+
+    input_ids = [payload.reference_asset_id, payload.generated_asset_id]
+    if payload.protected_mask_asset_id:
+        input_ids.append(payload.protected_mask_asset_id)
+    for asset_id in input_ids:
+        asset = await session.get(AssetRow, asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_diagnostic_asset", "asset_id": asset_id},
+            )
+        if not asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "diagnostic_asset_must_be_image", "asset_id": asset_id},
+            )
+
+    row = await create_job(
+        session,
+        project_id=project_id,
+        job_type="quality.geometry_check",
+        required_capabilities=["geometry_quality"],
+        payload={
+            "diagnostic_id": str(uuid4()),
+            "scene_revision_id": revision.id,
+            "camera_id": payload.camera_id,
+            "reference_asset_id": payload.reference_asset_id,
+            "generated_asset_id": payload.generated_asset_id,
+            "protected_mask_asset_id": payload.protected_mask_asset_id,
+            "input_asset_ids": input_ids,
+            "tolerance_px": payload.tolerance_px,
+            "edge_threshold": payload.edge_threshold,
+            "advisory_threshold": payload.advisory_threshold,
+        },
+        idempotency_key=payload.idempotency_key,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+    )
+    return job_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/geometry-diagnostics",
+    dependencies=[Depends(require_owner)],
+)
+async def geometry_diagnostic_list(project_id: str, session: DbSession):
+    rows = await list_geometry_diagnostics(session, project_id)
+    return [
+        {
+            "id": row.id,
+            "job_id": row.job_id,
+            "created_at": row.created_at,
+            "diagnostic": row.diagnostic_json,
+        }
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/v1/geometry-diagnostics/{diagnostic_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def geometry_diagnostic_get(diagnostic_id: str, session: DbSession):
+    row = await session.get(GeometryDiagnosticRow, diagnostic_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="geometry diagnostic not found")
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "project_id": row.project_id,
+        "created_at": row.created_at,
+        "diagnostic": row.diagnostic_json,
+    }
 
 
 @router.post(
@@ -1026,6 +1132,16 @@ async def worker_job_complete(
             processed_result = {
                 **processed_result,
                 "render_id": render_row.id,
+            }
+        if row.job_type == "quality.geometry_check":
+            diagnostic_row = await persist_geometry_diagnostic(
+                session,
+                row,
+                processed_result,
+            )
+            processed_result = {
+                **processed_result,
+                "diagnostic_id": diagnostic_row.id,
             }
     except AgentToolError as exc:
         try:
