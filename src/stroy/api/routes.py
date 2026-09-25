@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
@@ -275,6 +275,31 @@ async def asset_upload(
     return {"id": row.id, "media_type": row.media_type, "size_bytes": row.size_bytes, "sha256": row.sha256}
 
 
+@router.get(
+    "/api/v1/projects/{project_id}/assets",
+    dependencies=[Depends(require_owner)],
+)
+async def asset_list(project_id: str, session: DbSession):
+    result = await session.execute(
+        select(AssetRow)
+        .where(AssetRow.project_id == project_id)
+        .order_by(AssetRow.created_at.desc())
+    )
+    return [
+        {
+            "id": row.id,
+            "original_name": row.original_name,
+            "media_type": row.media_type,
+            "size_bytes": row.size_bytes,
+            "sha256": row.sha256,
+            "provenance": row.provenance,
+            "source_asset_id": row.source_asset_id,
+            "created_at": row.created_at,
+        }
+        for row in result.scalars()
+    ]
+
+
 @router.get("/api/v1/assets/{asset_id}", dependencies=[Depends(require_owner)])
 async def asset_download(asset_id: str, request: Request, session: DbSession):
     row = await session.get(AssetRow, asset_id)
@@ -297,6 +322,20 @@ async def job_create(project_id: str, payload: JobCreate, session: DbSession, ow
         required_capabilities=payload.required_capabilities,
     )
     return job_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/jobs",
+    dependencies=[Depends(require_owner)],
+)
+async def job_list(project_id: str, session: DbSession):
+    result = await session.execute(
+        select(JobRow)
+        .where(JobRow.project_id == project_id)
+        .order_by(JobRow.created_at.desc())
+        .limit(100)
+    )
+    return [job_view(row) for row in result.scalars()]
 
 
 @router.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_owner)])
@@ -450,6 +489,52 @@ async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSess
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return job_view(row)
+
+
+@router.post(
+    "/api/v1/workers/jobs/{job_id}/outputs",
+    status_code=201,
+    dependencies=[Depends(require_worker)],
+)
+async def worker_output_upload(
+    job_id: str,
+    request: Request,
+    session: DbSession,
+    worker_id: str = Form(...),
+    lease_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    job = await _leased_job(session, job_id)
+    if job.leased_to != worker_id or job.lease_id != lease_id:
+        raise HTTPException(status_code=409, detail="stale or invalid job lease")
+    if not job.project_id:
+        raise HTTPException(status_code=409, detail="job has no project")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty output")
+    digest = hashlib.sha256(data).hexdigest()
+    suffix = Path(file.filename or "").suffix[:16]
+    object_key = f"projects/{job.project_id}/worker/{job.id}/{uuid4()}{suffix}"
+    media_type = file.content_type or "application/octet-stream"
+    await request.app.state.object_store.put_bytes(object_key, data, media_type)
+    asset = AssetRow(
+        project_id=job.project_id,
+        object_key=object_key,
+        original_name=(file.filename or "")[:255] or None,
+        media_type=media_type,
+        size_bytes=len(data),
+        sha256=digest,
+        provenance="model_inferred",
+    )
+    session.add(asset)
+    await session.commit()
+    await session.refresh(asset)
+    return {
+        "id": asset.id,
+        "media_type": asset.media_type,
+        "size_bytes": asset.size_bytes,
+        "sha256": asset.sha256,
+    }
 
 
 @router.post("/api/v1/workers/jobs/{job_id}/fail", dependencies=[Depends(require_worker)])
