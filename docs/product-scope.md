@@ -57,5 +57,5 @@ v0.1 proves a single vertical slice for **one room**.
 4. **Reproducibility.** Generation records model profile, workflow version, inputs and seed when supported.
 5. **Non-destructive editing.** User-visible edits are represented as commands and revisions.
 6. **Replaceable AI runtimes.** Domain objects do not depend on a specific LLM or diffusion checkpoint.
-7. **Local-first.** Qwen, FLUX/ComfyUI, Blender and project assets are designed to run on the owner's computer.
-8. **Private data, public reachability.** `stroy.mostdef.ru` is Internet-reachable, but every project/asset/generation route is owner-only and the local model/storage services are never directly public.
+7. **Local compute, persistent VPS control plane.** Qwen, FLUX/ComfyUI and Blender run on the owner's computer; project metadata/assets persist on the VPS so the application remains usable remotely even when the GPU workstation is offline.
+8. **Private data, public reachability.** `stroy.mostdef.ru` is Internet-reachable, but every project/asset/generation route is owner-only; VPS storage/databases are private to the server and home model runtimes are never directly public.
