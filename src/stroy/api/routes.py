@@ -18,7 +18,14 @@ from stroy.domain.commands import CommandRejected
 from stroy.domain.models import DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.jobs import claim_job, complete_job, create_job, fail_job, renew_lease
-from stroy.services.scenes import apply_scene_command, create_project, initialize_scene, latest_revision
+from stroy.services.scenes import (
+    apply_scene_command,
+    create_project,
+    initialize_scene,
+    latest_revision,
+    list_revisions,
+    revert_scene,
+)
 
 
 router = APIRouter()
@@ -31,6 +38,11 @@ class LoginRequest(BaseModel):
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class SceneRevert(BaseModel):
+    expected_base_revision_id: str
+    target_revision_id: str
 
 
 class JobCreate(BaseModel):
@@ -166,6 +178,51 @@ async def scene_get(project_id: str, session: DbSession):
     revision = await latest_revision(session, project_id)
     if revision is None:
         raise HTTPException(status_code=404, detail="scene not initialized")
+    return {
+        "revision_id": revision.id,
+        "parent_revision_id": revision.parent_revision_id,
+        "content_hash": revision.content_hash,
+        "scene": revision.scene_json,
+    }
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/scene/revisions",
+    dependencies=[Depends(require_owner)],
+)
+async def scene_revisions(project_id: str, session: DbSession):
+    rows = await list_revisions(session, project_id)
+    return [
+        {
+            "revision_id": row.id,
+            "parent_revision_id": row.parent_revision_id,
+            "command_id": row.command_id,
+            "content_hash": row.content_hash,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/scene/revert",
+    dependencies=[Depends(require_csrf)],
+)
+async def scene_revert(
+    project_id: str,
+    payload: SceneRevert,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        revision = await revert_scene(
+            session,
+            project_id,
+            expected_base_revision_id=payload.expected_base_revision_id,
+            target_revision_id=payload.target_revision_id,
+        )
+    except (ValueError, CommandRejected) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "revision_id": revision.id,
         "parent_revision_id": revision.parent_revision_id,
