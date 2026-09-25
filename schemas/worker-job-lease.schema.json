@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stroy.local/schemas/worker-job-lease.schema.json",
+  "title": "STROY Worker Job Lease",
+  "type": "object",
+  "required": ["schema_version", "job_id", "attempt", "lease_id", "job_type", "expires_at", "input_asset_ids", "payload"],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "job_id": {"type": "string", "minLength": 1},
+    "attempt": {"type": "integer", "minimum": 1},
+    "lease_id": {"type": "string", "minLength": 1},
+    "job_type": {
+      "enum": ["llm.complete", "style.analyze", "render.blender", "image.generate", "image.edit", "quality.geometry_check"]
+    },
+    "expires_at": {"type": "string", "format": "date-time"},
+    "required_capabilities": {"type": "array", "items": {"type": "string"}},
+    "input_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "download_urls": {"type": "object", "additionalProperties": {"type": "string"}},
+    "upload_targets": {"type": "object", "additionalProperties": {"type": "string"}},
+    "payload": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
