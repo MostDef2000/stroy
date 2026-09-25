@@ -18,6 +18,8 @@ class FakeClient:
         self.last_result = None
         self.last_runtime_provenance = None
         self.uploaded_semantics = {}
+        self.released = 0
+        self.lease_state = {"status": "running", "lease_valid": True}
 
     async def heartbeat(self) -> None:
         self.heartbeats += 1
@@ -35,6 +37,12 @@ class FakeClient:
 
     async def renew(self, job_id: str, lease_id: str) -> None:
         self.renews += 1
+
+    async def lease_status(self, job_id: str, lease_id: str) -> dict:
+        return dict(self.lease_state)
+
+    async def release(self, job_id: str, lease_id: str) -> None:
+        self.released += 1
 
     async def progress(
         self,
@@ -238,3 +246,94 @@ async def _claim_render_job():
         "job_type": "render.blender",
         "payload": {},
     }
+
+
+
+class CancellableExecutor:
+    def __init__(self) -> None:
+        self.cancelled = 0
+        self.started = asyncio.Event()
+
+    async def execute(self, job: dict) -> dict:
+        self.started.set()
+        await asyncio.sleep(30)
+        return {"ok": True}
+
+    async def cancel(self, job: dict) -> None:
+        self.cancelled += 1
+
+
+@pytest.mark.asyncio
+async def test_worker_propagates_server_cancellation_to_executor() -> None:
+    client = FakeClient()
+    client.lease_state = {"status": "cancelled", "lease_valid": False}
+    executor = CancellableExecutor()
+    runner = WorkerRunner(
+        client,
+        {"slow": executor},
+        heartbeat_seconds=60,
+        lease_renew_seconds=0.01,
+    )
+
+    assert await runner.run_once() is True
+    assert executor.cancelled == 1
+    assert client.completed == 0
+    assert client.failed == 0
+    assert client.released == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_releases_active_lease_on_graceful_shutdown() -> None:
+    client = FakeClient()
+    executor = CancellableExecutor()
+    shutdown = asyncio.Event()
+    runner = WorkerRunner(
+        client,
+        {"slow": executor},
+        heartbeat_seconds=60,
+        lease_renew_seconds=0.01,
+    )
+
+    task = asyncio.create_task(runner.run_once(shutdown))
+    await executor.started.wait()
+    shutdown.set()
+    assert await asyncio.wait_for(task, timeout=1) is True
+    assert executor.cancelled == 1
+    assert client.released == 1
+    assert client.completed == 0
+    assert client.failed == 0
+
+
+class FlakyIdleClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.claim_attempts = 0
+
+    async def claim(self):
+        self.claim_attempts += 1
+        if self.claim_attempts == 1:
+            raise RuntimeError("temporary network failure")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_run_forever_recovers_after_transient_control_plane_failure() -> None:
+    client = FlakyIdleClient()
+    runner = WorkerRunner(
+        client,
+        {},
+        poll_seconds=0.01,
+        heartbeat_seconds=60,
+        lease_renew_seconds=60,
+    )
+    shutdown = asyncio.Event()
+
+    async def stop_later():
+        while client.claim_attempts < 2:
+            await asyncio.sleep(0.005)
+        shutdown.set()
+
+    stopper = asyncio.create_task(stop_later())
+    await asyncio.wait_for(runner.run_forever(shutdown), timeout=1)
+    await stopper
+    assert client.claim_attempts >= 2
