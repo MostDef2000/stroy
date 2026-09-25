@@ -1,6 +1,6 @@
 # STROY
 
-Local-first AI interior design built around a **geometry-preserving digital twin** of a real apartment.
+Personal, local-first AI interior design for renovating a **geometry-preserving digital twin** of a real apartment.
 
 STROY is not an image-to-image interior generator. The product separates the immutable physical apartment from the editable design layer:
 
@@ -63,15 +63,18 @@ Directories are introduced incrementally by implementation issues. The contracts
 
 Model implementations are deliberately swappable. Product contracts must never depend directly on a specific ComfyUI graph or model checkpoint.
 
-## Model licensing
+## Deployment and access
 
-Do not assume that all FLUX checkpoints have the same production license.
+STROY is currently a **single-user, non-commercial personal project** running on the owner's computer for planning renovation of the owner's apartment.
 
-- Qwen3-14B is published under Apache-2.0.
-- FLUX.1-schnell is published under Apache-2.0.
-- FLUX.2-dev and other `[dev]` profiles use the FLUX non-commercial license unless a separate commercial license applies.
+- Qwen, FLUX/ComfyUI and Blender run locally.
+- The web application and API require authentication.
+- There is no public registration or multi-user/RBAC scope in v0.1.
+- Database, Redis, object storage and model runtimes are not intended to be directly exposed to the public network.
 
-See `docs/model-policy.md` before adding or changing model profiles.
+## Model policy
+
+The current personal non-commercial scope allows STROY to evaluate/use FLUX `[dev]` profiles under their applicable non-commercial terms. Exact model/profile provenance is still recorded for reproducibility. See `docs/model-policy.md`.
 
 ## MVP definition
 
@@ -116,5 +119,5 @@ Start here:
 
 Start with the umbrella epic: [#25 — One-room geometry-preserving AI interior design](https://github.com/MostDef2000/stroy/issues/25).
 
-Critical path: Scene/API foundation (#1–#5) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
+Critical path: Scene/API foundation (#1–#5) + single-user auth (#26) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
 
