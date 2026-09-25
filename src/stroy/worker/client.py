@@ -61,6 +61,24 @@ class WorkerClient:
         )
         response.raise_for_status()
 
+    async def progress(
+        self,
+        job_id: str,
+        lease_id: str,
+        progress: dict[str, Any],
+        runtime_provenance: dict[str, Any] | None = None,
+    ) -> None:
+        response = await self.client.post(
+            f"{self.server_url}/api/v1/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": self.worker_id,
+                "lease_id": lease_id,
+                "progress": progress,
+                "runtime_provenance": runtime_provenance or {},
+            },
+        )
+        response.raise_for_status()
+
     async def upload_output(
         self,
         job_id: str,
@@ -78,16 +96,38 @@ class WorkerClient:
         response.raise_for_status()
         return response.json()
 
-    async def complete(self, job_id: str, lease_id: str, result: dict[str, Any]) -> None:
+    async def complete(
+        self,
+        job_id: str,
+        lease_id: str,
+        result: dict[str, Any],
+        runtime_provenance: dict[str, Any] | None = None,
+    ) -> None:
         response = await self.client.post(
             f"{self.server_url}/api/v1/workers/jobs/{job_id}/complete",
-            json={"worker_id": self.worker_id, "lease_id": lease_id, "result": result},
+            json={
+                "worker_id": self.worker_id,
+                "lease_id": lease_id,
+                "result": result,
+                "runtime_provenance": runtime_provenance or {},
+            },
         )
         response.raise_for_status()
 
-    async def fail(self, job_id: str, lease_id: str, error: dict[str, Any]) -> None:
+    async def fail(
+        self,
+        job_id: str,
+        lease_id: str,
+        error: dict[str, Any],
+        runtime_provenance: dict[str, Any] | None = None,
+    ) -> None:
         response = await self.client.post(
             f"{self.server_url}/api/v1/workers/jobs/{job_id}/fail",
-            json={"worker_id": self.worker_id, "lease_id": lease_id, "error": error},
+            json={
+                "worker_id": self.worker_id,
+                "lease_id": lease_id,
+                "error": error,
+                "runtime_provenance": runtime_provenance or {},
+            },
         )
         response.raise_for_status()
