@@ -101,6 +101,33 @@ class RenderManifestRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class GenerationManifestRow(Base):
+    __tablename__ = "generation_manifests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    job_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    scene_revision_id: Mapped[str] = mapped_column(String(36), index=True)
+    design_revision_id: Mapped[str] = mapped_column(String(36), index=True)
+    camera_id: Mapped[str] = mapped_column(String(255))
+    manifest_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GeometryDiagnosticRow(Base):
+    __tablename__ = "geometry_diagnostics"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    generation_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    scene_revision_id: Mapped[str] = mapped_column(String(36), index=True)
+    camera_id: Mapped[str] = mapped_column(String(255))
+    score: Mapped[int] = mapped_column(Integer)
+    metrics_json: Mapped[dict] = mapped_column(JSON)
+    input_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class JobRow(Base):
     __tablename__ = "jobs"
     __table_args__ = (
