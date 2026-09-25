@@ -561,3 +561,122 @@ async def test_job_cancel_invalidates_worker_lease(settings):
                 },
             )
             assert late_complete.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_style_profile_analysis_flow(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Style project"},
+            )
+            project_id = project.json()["id"]
+
+            asset_ids = []
+            for index in range(3):
+                upload = await client.post(
+                    f"/api/v1/projects/{project_id}/assets",
+                    headers=headers,
+                    data={"role": "reference"},
+                    files={
+                        "file": (
+                            f"reference-{index}.png",
+                            png_bytes() + bytes([index]),
+                            "image/png",
+                        )
+                    },
+                )
+                assert upload.status_code == 201
+                asset_ids.append(upload.json()["id"])
+
+            analyze = await client.post(
+                f"/api/v1/projects/{project_id}/style-profiles/analyze",
+                headers=headers,
+                json={
+                    "source_text": "warm minimal interior with wood",
+                    "reference_asset_ids": asset_ids,
+                    "overrides": {
+                        "labels": ["japandi"],
+                        "palette": [{"hex": "#efe7dc", "role": "base"}],
+                        "lighting": {
+                            "temperature_k": 2900,
+                            "intent": ["soft", "ambient"],
+                        },
+                    },
+                },
+            )
+            assert analyze.status_code == 201
+            job_id = analyze.json()["id"]
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "style-worker",
+                    "capabilities": ["style_analysis"],
+                    "models": ["fake"],
+                },
+            )
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "style-worker"},
+            )
+            lease = claim.json()
+            assert lease["job_id"] == job_id
+            assert set(lease["input_asset_ids"]) == set(asset_ids)
+
+            complete = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "style-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        "style_profile": {
+                            "labels": ["industrial"],
+                            "palette": [{"hex": "#111111", "role": "base"}],
+                            "materials": [
+                                {
+                                    "name": "natural wood",
+                                    "finish": "matte",
+                                    "application": "cabinetry",
+                                }
+                            ],
+                            "lighting": {
+                                "temperature_k": 4000,
+                                "intent": ["neutral"],
+                            },
+                            "forms": {"keywords": ["clean lines"]},
+                            "negative_constraints": [],
+                            "evidence": {"fixture": True},
+                        }
+                    },
+                },
+            )
+            assert complete.status_code == 200
+            result = complete.json()["result"]
+            profile = result["style_profile"]
+            assert profile["style_profile_id"] == result["style_profile_id"]
+            assert profile["source_asset_ids"] == asset_ids
+            assert profile["source_text"] == "warm minimal interior with wood"
+            assert profile["labels"] == ["japandi"]
+            assert profile["palette"][0]["hex"] == "#EFE7DC"
+            assert profile["lighting"]["temperature_k"] == 2900
+            assert profile["materials"][0]["name"] == "natural wood"
+
+            listed = await client.get(
+                f"/api/v1/projects/{project_id}/style-profiles"
+            )
+            assert listed.status_code == 200
+            assert len(listed.json()) == 1
+            assert listed.json()[0]["profile"]["style_profile_id"] == result["style_profile_id"]
