@@ -280,11 +280,11 @@ class WorkerRunner:
         shutdown_event: asyncio.Event | None = None,
     ) -> None:
         shutdown = shutdown_event or asyncio.Event()
-        backoff = max(1.0, self.poll_seconds)
+        backoff = max(0.05, self.poll_seconds)
         while not shutdown.is_set():
             try:
                 worked = await self.run_once(shutdown)
-                backoff = max(1.0, self.poll_seconds)
+                backoff = max(0.05, self.poll_seconds)
                 if not worked and not shutdown.is_set():
                     try:
                         await asyncio.wait_for(
