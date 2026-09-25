@@ -26,7 +26,8 @@ from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
 from stroy.services.cameras import remove_camera, upsert_camera
-from stroy.services.generations import list_generation_manifests, persist_generation_manifest, queue_design_generation
+from stroy.editing import projected_entity_region
+from stroy.services.generations import list_generation_manifests, persist_generation_manifest, queue_design_generation, queue_reference_edit
 from stroy.services.jobs import (
     cancel_job,
     claim_job,
@@ -122,6 +123,18 @@ class GeometryDiagnosticRequest(BaseModel):
     edge_threshold: int = Field(default=24, ge=1, le=255)
     advisory_threshold: float = Field(default=0.72, ge=0, le=1)
     idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class ReplacementRequest(BaseModel):
+    base_revision_id: str = Field(min_length=1)
+    target_entity_id: str = Field(min_length=1)
+    reference_asset_id: str = Field(min_length=1)
+    camera_id: str = Field(min_length=1)
+    prompt: str = Field(
+        default="replace selected furniture with the reference object",
+        min_length=1,
+        max_length=4000,
+    )
 
 
 class GenerationRequest(BaseModel):
@@ -758,6 +771,145 @@ async def render_get(render_id: str, session: DbSession):
         "camera_id": row.camera_id,
         "created_at": row.created_at,
         "manifest": row.manifest_json,
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/replacements",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def replacement_create(
+    project_id: str,
+    payload: ReplacementRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    current = await latest_revision(session, project_id)
+    if current is None:
+        raise HTTPException(status_code=409, detail="scene is not initialized")
+    if current.id != payload.base_revision_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "revision_conflict",
+                "detail": (
+                    f"stale base revision: expected {current.id}, "
+                    f"got {payload.base_revision_id}"
+                ),
+            },
+        )
+
+    reference = await session.get(AssetRow, payload.reference_asset_id)
+    if reference is None or reference.project_id != project_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_reference_asset",
+                "asset_id": payload.reference_asset_id,
+            },
+        )
+    if reference.role != "reference" or not reference.media_type.startswith("image/"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_reference_asset",
+                "detail": "replacement reference must be an image asset with role=reference",
+            },
+        )
+
+    scene = Scene.model_validate(current.scene_json)
+    target = next(
+        (entity for entity in scene.entities if entity.id == payload.target_entity_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "unknown_entity", "entity_id": payload.target_entity_id},
+        )
+    if target.kind.value != "furniture":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_replacement_target",
+                "detail": "replacement target must be furniture",
+            },
+        )
+
+    camera = next(
+        (item for item in scene.cameras if item.id == payload.camera_id),
+        None,
+    )
+    if camera is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "unknown_camera", "camera_id": payload.camera_id},
+        )
+
+    command = DesignCommand(
+        command_id=str(uuid4()),
+        base_revision_id=current.id,
+        operation="replace_object_from_reference",
+        target_id=target.id,
+        parameters={},
+        reference_asset_ids=[reference.id],
+        origin="user",
+        request_text=payload.prompt,
+    )
+    try:
+        revision = await apply_scene_command(
+            session,
+            project_id,
+            command,
+            correlation_id=request.state.request_id,
+        )
+    except (ValueError, CommandRejected) as exc:
+        raise _domain_conflict(exc) from exc
+
+    next_scene = Scene.model_validate(revision.scene_json)
+    next_target = next(entity for entity in next_scene.entities if entity.id == target.id)
+    next_camera = next(camera for camera in next_scene.cameras if camera.id == payload.camera_id)
+    try:
+        region = projected_entity_region(next_target, next_camera)
+    except ValueError as exc:
+        # The design revision remains valid even if this camera cannot localize the object.
+        # Surface the failure and do not queue an unsafe full-frame replacement.
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "replacement_region_unavailable", "detail": str(exc)},
+        ) from exc
+
+    protected_entity_ids = [
+        entity.id
+        for entity in next_scene.entities
+        if (
+            entity.locks.geometry
+            or entity.locks.transform
+            or entity.kind.value in {"wall", "floor", "ceiling", "door", "window"}
+        )
+    ]
+    edit_job = await queue_reference_edit(
+        session,
+        project_id=project_id,
+        design_revision_id=revision.id,
+        camera_id=next_camera.id,
+        request_text=payload.prompt,
+        target_entity_id=next_target.id,
+        reference_asset_id=reference.id,
+        affected_region=region.model_dump(mode="json"),
+        protected_entity_ids=protected_entity_ids,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+    )
+    return {
+        "revision_id": revision.id,
+        "content_hash": revision.content_hash,
+        "scene": revision.scene_json,
+        "command": command.model_dump(mode="json", exclude_none=True),
+        "affected_region": region.model_dump(mode="json"),
+        "job": job_view(edit_job),
     }
 
 
