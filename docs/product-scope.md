@@ -2,7 +2,9 @@
 
 ## Product thesis
 
-STROY creates a persistent, editable digital twin of a real apartment and uses local AI to explore interior-design variants without silently changing the physical apartment.
+STROY is a personal, non-commercial renovation tool for the owner's apartment. It creates a persistent, editable digital twin of the real apartment and uses AI running on the owner's computer to explore interior-design variants without silently changing the physical apartment.
+
+The v0.1 deployment is single-user and authenticated. Public registration, organizations, teams, subscriptions and RBAC are out of scope.
 
 The product is intentionally split into two concerns:
 
@@ -55,4 +57,5 @@ v0.1 proves a single vertical slice for **one room**.
 4. **Reproducibility.** Generation records model profile, workflow version, inputs and seed when supported.
 5. **Non-destructive editing.** User-visible edits are represented as commands and revisions.
 6. **Replaceable AI runtimes.** Domain objects do not depend on a specific LLM or diffusion checkpoint.
-7. **Local-first.** The default architecture assumes models and assets can run locally.
+7. **Local-first.** Qwen, FLUX/ComfyUI, Blender and project assets are designed to run on the owner's computer.
+8. **Private by default.** The web/API surface is authenticated and project assets are not anonymously accessible.
