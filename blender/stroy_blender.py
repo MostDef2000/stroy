@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def _engine(scene) -> str:
     scene.render.engine = "CYCLES"
     if hasattr(scene, "cycles"):
         scene.cycles.device = "CPU"
-        scene.cycles.samples = 16
+        scene.cycles.samples = int(os.getenv("STROY_BLENDER_SAMPLES", "16"))
         scene.cycles.use_denoising = False
     return "CYCLES"
 
