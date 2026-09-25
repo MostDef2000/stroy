@@ -112,5 +112,9 @@ Start here:
 
 ## Project status
 
-**Bootstrap / v0.1 architecture.** GitHub Issues define the implementation sequence.
+**Bootstrap complete; v0.1 implementation ready to start.**
+
+Start with the umbrella epic: [#25 — One-room geometry-preserving AI interior design](https://github.com/MostDef2000/stroy/issues/25).
+
+Critical path: Scene/API foundation (#1–#5) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
 
