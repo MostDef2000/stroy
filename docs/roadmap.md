@@ -6,7 +6,7 @@ The implementation umbrella is [GitHub issue #25](https://github.com/MostDef2000
 
 Architecture, ADRs, schemas, local infrastructure, CI and issue backlog.
 
-## Phase 1 - Scene Core — #1–#5
+## Phase 1 - Scene Core and private access — #1–#5, #26
 
 Python API skeleton, Pydantic/schema parity, project/assets, scene repository, command validation and immutable revisions.
 
@@ -43,7 +43,7 @@ Execute the full one-room scenario and record reproducibility, geometry-preserva
 ## Follow-up tracks
 
 - #21 hardware/runtime benchmarking;
-- #22 model/license enforcement;
+- #22 model-profile validation and license provenance maintenance;
 - #23 floor-plan reconstruction;
 - #24 multi-view/video/LiDAR/DWG/DXF reconstruction evaluation.
 
