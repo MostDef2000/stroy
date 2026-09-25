@@ -63,11 +63,31 @@ export type SceneEntity = {
   };
 };
 
+export type SceneCamera = {
+  id: string;
+  width_px: number;
+  height_px: number;
+  intrinsics: {
+    fx: number;
+    fy: number;
+    cx: number;
+    cy: number;
+  };
+  transform: {
+    translation_mm: [number, number, number];
+    rotation_deg: [number, number, number];
+  };
+  calibration?: {
+    quality?: number | null;
+    residual?: number | null;
+  } | null;
+};
+
 export type SceneDocument = {
   scene_id: string;
   project_id: string;
   entities: SceneEntity[];
-  cameras: unknown[];
+  cameras: SceneCamera[];
 };
 
 export type SceneRevision = {
