@@ -10,6 +10,7 @@ from stroy.config import Settings
 
 
 class ObjectStore(Protocol):
+    async def initialize(self) -> None: ...
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None: ...
     async def get_bytes(self, key: str) -> bytes: ...
     async def presign_get(self, key: str, expires_seconds: int = 900) -> str | None: ...
@@ -21,6 +22,9 @@ class ObjectStore(Protocol):
 @dataclass
 class MemoryObjectStore:
     objects: dict[str, bytes] = field(default_factory=dict)
+
+    async def initialize(self) -> None:
+        return None
 
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None:
         self.objects[key] = data
@@ -47,6 +51,12 @@ class S3ObjectStore:
             aws_secret_access_key=settings.s3_secret_key,
             region_name=settings.s3_region,
         )
+
+    async def initialize(self) -> None:
+        try:
+            await asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket)
+        except self.client.exceptions.ClientError:
+            await asyncio.to_thread(self.client.create_bucket, Bucket=self.bucket)
 
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None:
         await asyncio.to_thread(
