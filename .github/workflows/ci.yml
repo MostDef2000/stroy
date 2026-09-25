@@ -60,3 +60,38 @@ jobs:
             --env-file deploy/vps/.env \
             -f deploy/vps/docker-compose.yml \
             config --quiet
+
+
+  blender-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install STROY
+        run: python -m pip install -e .
+
+      - name: Install Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender
+
+      - name: Render golden room headlessly
+        env:
+          STROY_BLENDER_SAMPLES: "1"
+        run: >
+          python scripts/render_golden_room.py
+          --resolution-scale 0.05
+          --output-dir renders/ci-golden
+
+      - name: Verify render artifacts
+        run: |
+          test -s renders/ci-golden/scene_metadata.json
+          test -s renders/ci-golden/rgb.png
+          test -s renders/ci-golden/depth.exr
+          test -s renders/ci-golden/normals.exr
+          test -s renders/ci-golden/object_ids.exr
+          test -s renders/ci-golden/material_ids.exr
