@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stroy.local/schemas/style-profile.schema.json",
+  "title": "STROY Style Profile",
+  "type": "object",
+  "required": ["schema_version", "style_profile_id", "source_asset_ids", "labels", "palette", "materials", "lighting", "forms"],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "style_profile_id": {"type": "string", "minLength": 1},
+    "source_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "source_text": {"type": "string"},
+    "labels": {"type": "array", "items": {"type": "string"}},
+    "palette": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["hex"],
+        "properties": {
+          "hex": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+          "role": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "materials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "finish": {"type": "string"},
+          "application": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "lighting": {
+      "type": "object",
+      "properties": {
+        "temperature_k": {"type": "integer", "minimum": 1000, "maximum": 12000},
+        "intent": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "forms": {
+      "type": "object",
+      "properties": {
+        "keywords": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "negative_constraints": {"type": "array", "items": {"type": "string"}},
+    "metadata": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
