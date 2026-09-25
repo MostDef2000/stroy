@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from stroy.domain.models import Scene
 from stroy.generation import GenerationContext, WorkflowManifest
+from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
 
@@ -253,4 +254,64 @@ class BlenderExecutor:
                 camera_id=camera_id,
                 renderer_profile=plan.renderer_profile,
             ).model_dump(mode="json", exclude_none=True),
+        }
+
+
+
+class GeometryQualityExecutor:
+    def __init__(self, client) -> None:
+        self.client = client
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        downloads = job.get("download_urls") or {}
+
+        reference_asset_id = payload.get("reference_asset_id")
+        generated_asset_id = payload.get("generated_asset_id")
+        protected_mask_asset_id = payload.get("protected_mask_asset_id")
+        if not isinstance(reference_asset_id, str) or not isinstance(generated_asset_id, str):
+            raise ValueError("quality job requires reference_asset_id and generated_asset_id")
+
+        try:
+            reference_url = downloads[reference_asset_id]
+            generated_url = downloads[generated_asset_id]
+        except KeyError as exc:
+            raise ValueError("quality job input download URL is missing") from exc
+
+        reference_bytes = await self.client.download_input(reference_url)
+        generated_bytes = await self.client.download_input(generated_url)
+        protected_mask_bytes = None
+        if isinstance(protected_mask_asset_id, str):
+            mask_url = downloads.get(protected_mask_asset_id)
+            if not mask_url:
+                raise ValueError("quality job protected mask download URL is missing")
+            protected_mask_bytes = await self.client.download_input(mask_url)
+
+        metrics = geometry_edge_score(
+            reference_bytes,
+            generated_bytes,
+            protected_mask_bytes=protected_mask_bytes,
+            edge_threshold=int(payload.get("edge_threshold", 24)),
+            tolerance_px=int(payload.get("tolerance_px", 2)),
+        )
+        threshold = float(payload.get("advisory_threshold", 0.72))
+        diagnostic = GeometryDiagnostic(
+            diagnostic_id=str(payload["diagnostic_id"]),
+            scene_revision_id=str(payload["scene_revision_id"]),
+            camera_id=str(payload["camera_id"]),
+            reference_asset_id=reference_asset_id,
+            generated_asset_id=generated_asset_id,
+            protected_mask_asset_id=protected_mask_asset_id,
+            advisory_threshold=threshold,
+            advisory_pass=float(metrics["score"]) >= threshold,
+            limitations=[
+                "edge alignment is appearance-sensitive",
+                "the baseline metric does not estimate metric depth",
+                "threshold is advisory and never mutates canonical geometry",
+            ],
+            **metrics,
+        )
+        return {
+            "geometry_diagnostic": diagnostic.model_dump(mode="json"),
+            "adapter_provenance": {"adapter": "geometry-edge-v0"},
         }
