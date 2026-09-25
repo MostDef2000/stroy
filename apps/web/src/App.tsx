@@ -16,7 +16,19 @@ function goldenRoom(projectId: string): SceneDocument {
   return {
     scene_id: "scene.golden-room",
     project_id: projectId,
-    cameras: [],
+    cameras: [
+      {
+        id: "camera.living.entry",
+        width_px: 1600,
+        height_px: 1000,
+        intrinsics: { fx: 1200, fy: 1200, cx: 800, cy: 500 },
+        transform: {
+          translation_mm: [0, -6500, 1700],
+          rotation_deg: [-15, 0, 0]
+        },
+        calibration: { quality: 1, residual: 0 }
+      }
+    ],
     entities: [
       {
         id: "surface.floor.living",
