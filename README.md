@@ -65,12 +65,24 @@ Model implementations are deliberately swappable. Product contracts must never d
 
 ## Deployment and access
 
-STROY is currently a **single-user, non-commercial personal project** running on the owner's computer for planning renovation of the owner's apartment.
+STROY is a **single-user, non-commercial personal project** whose AI/storage workloads run on the owner's computer, while the application is reachable from anywhere at **https://stroy.mostdef.ru**.
 
-- Qwen, FLUX/ComfyUI and Blender run locally.
-- The web application and API require authentication.
-- There is no public registration or multi-user/RBAC scope in v0.1.
-- Database, Redis, object storage and model runtimes are not intended to be directly exposed to the public network.
+Preferred v0.1 ingress:
+
+```text
+Internet
+  -> stroy.mostdef.ru
+  -> identity-aware access layer (owner only)
+  -> outbound tunnel from the home machine
+  -> STROY Web/API
+  -> local PostgreSQL / Redis / MinIO / Qwen / ComfyUI / Blender
+```
+
+- No public registration or multi-user/RBAC scope.
+- Production auth should happen at the Internet edge and be validated by the origin without a second login screen.
+- A local-password mode may exist only for local development/fallback.
+- PostgreSQL, Redis, MinIO, Qwen, ComfyUI and Blender remain private infrastructure and are never published directly.
+- Direct public-IP/reverse-proxy deployment is a fallback, not the default.
 
 ## Model policy
 
@@ -119,5 +131,5 @@ Start here:
 
 Start with the umbrella epic: [#25 — One-room geometry-preserving AI interior design](https://github.com/MostDef2000/stroy/issues/25).
 
-Critical path: Scene/API foundation (#1–#5) + single-user auth (#26) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
+Critical path: Scene/API foundation (#1–#5) + owner-only auth (#26) + public ingress (#27) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
 
