@@ -72,6 +72,7 @@ class ComfyUIExecutor:
         self.adapter = adapter
         self.worker_id = worker_id
         self.model_profile_id = model_profile_id
+        self.active_prompts: dict[str, str] = {}
 
     async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = job.get("payload", {})
@@ -91,12 +92,19 @@ class ComfyUIExecutor:
         graph = manifest.materialize(semantic_inputs)
 
         prompt_id = await self.adapter.submit(graph, self.worker_id)
+        job_id = job.get("job_id")
+        if isinstance(job_id, str):
+            self.active_prompts[job_id] = prompt_id
         generation = GenerationContext.model_validate(payload.get("generation") or {})
-        history = await self.adapter.wait(
-            prompt_id,
-            timeout_seconds=int(payload.get("timeout_seconds", 900)),
-        )
-        artifacts = await self.adapter.collect_output_images(history)
+        try:
+            history = await self.adapter.wait(
+                prompt_id,
+                timeout_seconds=int(payload.get("timeout_seconds", 900)),
+            )
+            artifacts = await self.adapter.collect_output_images(history)
+        finally:
+            if isinstance(job_id, str):
+                self.active_prompts.pop(job_id, None)
         return {
             "prompt_id": prompt_id,
             "history": history,
@@ -110,3 +118,12 @@ class ComfyUIExecutor:
             "_artifacts": artifacts,
             "_generation_context": generation.model_dump(mode="json"),
         }
+
+
+    async def cancel(self, job: dict[str, Any]) -> None:
+        job_id = job.get("job_id")
+        if not isinstance(job_id, str):
+            return
+        prompt_id = self.active_prompts.get(job_id)
+        if prompt_id:
+            await self.adapter.cancel(prompt_id)
