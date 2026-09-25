@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from stroy.services.adapters import AdapterError
 from stroy.worker.client import WorkerClient
 
 
@@ -103,6 +104,18 @@ class WorkerRunner:
                 job_id,
                 lease_id,
                 result,
+                {"worker_id": self.client.worker_id},
+            )
+        except AdapterError as exc:
+            stop.set()
+            if renew_task:
+                renew_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await renew_task
+            await self.client.fail(
+                job_id,
+                lease_id,
+                exc.as_error(),
                 {"worker_id": self.client.worker_id},
             )
         except Exception as exc:
