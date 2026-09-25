@@ -89,6 +89,23 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 == "#D7C4AB"
             )
 
+            history = await client.get(
+                f"/api/v1/projects/{project_id}/scene/revisions"
+            )
+            assert history.status_code == 200
+            assert len(history.json()) == 2
+
+            revert = await client.post(
+                f"/api/v1/projects/{project_id}/scene/revert",
+                headers=headers,
+                json={
+                    "expected_base_revision_id": command_response.json()["revision_id"],
+                    "target_revision_id": revision_id,
+                },
+            )
+            assert revert.status_code == 200
+            assert "color" not in revert.json()["scene"]["entities"][0]["metadata"]
+
             job_response = await client.post(
                 f"/api/v1/projects/{project_id}/jobs",
                 headers=headers,
@@ -122,6 +139,30 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert claim.status_code == 200
             lease = claim.json()
             assert lease["job_id"] == job_id
+
+            output = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/outputs",
+                headers=worker_headers,
+                data={
+                    "worker_id": "worker-1",
+                    "lease_id": lease["lease_id"],
+                },
+                files={"file": ("render.png", b"fake-image", "image/png")},
+            )
+            assert output.status_code == 201
+            output_asset_id = output.json()["id"]
+
+            assets = await client.get(f"/api/v1/projects/{project_id}/assets")
+            assert assets.status_code == 200
+            assert any(
+                item["id"] == output_asset_id
+                and item["provenance"] == "model_inferred"
+                for item in assets.json()
+            )
+
+            workers = await client.get("/api/v1/workers")
+            assert workers.status_code == 200
+            assert workers.json()[0]["online"] is True
 
             complete = await client.post(
                 f"/api/v1/workers/jobs/{job_id}/complete",
