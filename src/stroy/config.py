@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     auto_create_schema: bool = True
 
     storage_backend: str = "memory"
+    max_upload_bytes: int = 100 * 1024 * 1024
+    upload_allowed_media_types: str = (
+        "image/*,video/*,model/*,application/pdf,application/json,"
+        "application/octet-stream,text/plain"
+    )
     s3_endpoint: str = "http://localhost:9000"
     s3_access_key: str = "stroy"
     s3_secret_key: str = "stroy-development-only"
