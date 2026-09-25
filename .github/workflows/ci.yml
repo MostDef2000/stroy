@@ -95,3 +95,10 @@ jobs:
           test -s renders/ci-golden/normals.exr
           test -s renders/ci-golden/object_ids.exr
           test -s renders/ci-golden/material_ids.exr
+
+      - name: Verify pixel-aligned pass dimensions
+        run: >
+          blender --background --factory-startup
+          --python blender/verify_render_outputs.py
+          --
+          --output-dir renders/ci-golden
