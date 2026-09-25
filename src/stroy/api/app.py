@@ -16,12 +16,14 @@ from stroy.services.assets import ObjectStore, create_object_store
 def create_app(*, settings: Settings | None = None, object_store: ObjectStore | None = None) -> FastAPI:
     settings = settings or get_settings()
     engine, session_factory = create_engine_and_session_factory(settings.database_url)
+    store = object_store or create_object_store(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.auto_create_schema:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
+        await store.initialize()
         yield
         await engine.dispose()
 
@@ -29,7 +31,7 @@ def create_app(*, settings: Settings | None = None, object_store: ObjectStore | 
     app.add_middleware(RequestContextMiddleware)
     app.state.settings = settings
     app.state.session_factory = session_factory
-    app.state.object_store = object_store or create_object_store(settings)
+    app.state.object_store = store
     app.state.login_throttle = LoginThrottle()
 
     hosts = [host.strip() for host in settings.trusted_hosts.split(",") if host.strip()]
