@@ -11,6 +11,7 @@ from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
+from stroy.worker.client import WorkerClient
 
 
 class LLMAdapter(Protocol):
@@ -51,6 +52,64 @@ def normalize_llm_result(raw: dict[str, Any]) -> dict[str, Any]:
         "content": message.get("content"),
         "tool_calls": normalized_calls,
     }
+
+
+class VisionStyleAdapter(Protocol):
+    def provenance(self) -> dict[str, Any]: ...
+
+    async def analyze(
+        self,
+        source_text: str,
+        images: list[dict[str, Any]],
+    ) -> dict[str, Any]: ...
+
+
+class VisionStyleExecutor:
+    def __init__(self, client: WorkerClient, adapter: VisionStyleAdapter) -> None:
+        self.client = client
+        self.adapter = adapter
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        asset_ids = list(payload.get("input_asset_ids") or [])
+        if not 3 <= len(asset_ids) <= 5:
+            raise ValueError("style analysis requires 3 to 5 reference assets")
+
+        input_assets = job.get("input_assets") or {}
+        images: list[dict[str, Any]] = []
+        for asset_id in asset_ids:
+            descriptor = input_assets.get(asset_id)
+            if not isinstance(descriptor, dict):
+                raise ValueError(f"missing leased input descriptor: {asset_id}")
+            url = descriptor.get("url")
+            media_type = descriptor.get("media_type")
+            if not isinstance(url, str) or not isinstance(media_type, str):
+                raise ValueError(f"invalid leased input descriptor: {asset_id}")
+            if not media_type.startswith("image/"):
+                raise ValueError(f"style input is not an image: {asset_id}")
+            data = await self.client.download_input(url)
+            images.append(
+                {
+                    "asset_id": asset_id,
+                    "media_type": media_type,
+                    "data": data,
+                    "sha256": descriptor.get("sha256"),
+                }
+            )
+
+        result = await self.adapter.analyze(
+            str(payload.get("source_text") or ""),
+            images,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("vision style adapter result must be an object")
+        result["adapter_provenance"] = self.adapter.provenance()
+        profile = result.get("style_profile")
+        if isinstance(profile, dict):
+            evidence = profile.setdefault("evidence", {})
+            if isinstance(evidence, dict):
+                evidence["reference_asset_ids"] = asset_ids
+        return result
 
 
 class QwenExecutor:
