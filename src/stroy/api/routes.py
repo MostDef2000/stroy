@@ -12,11 +12,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from stroy.api.dependencies import DbSession, OwnerSession, require_csrf, require_owner, require_worker
+from stroy.agent import TOOL_DEFINITIONS
+from stroy.api.dependencies import (
+    DbSession,
+    OwnerSession,
+    require_csrf,
+    require_owner,
+    require_worker,
+)
 from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, WorkerRow
 from stroy.domain.commands import CommandRejected
 from stroy.domain.models import DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
+from stroy.services.agent import apply_design_agent_result
 from stroy.services.jobs import claim_job, complete_job, create_job, fail_job, renew_lease
 from stroy.services.scenes import (
     apply_scene_command,
@@ -38,6 +46,10 @@ class LoginRequest(BaseModel):
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class DesignInstruction(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class SceneRevert(BaseModel):
@@ -312,6 +324,36 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
     return Response(content=data, media_type=row.media_type)
 
 
+@router.post(
+    "/api/v1/projects/{project_id}/design/instructions",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def design_instruction(
+    project_id: str,
+    payload: DesignInstruction,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    current = await latest_revision(session, project_id)
+    if current is None:
+        raise HTTPException(status_code=409, detail="scene is not initialized")
+    row = await create_job(
+        session,
+        project_id=project_id,
+        job_type="llm.complete",
+        required_capabilities=["llm"],
+        payload={
+            "purpose": "design_instruction",
+            "base_revision_id": current.id,
+            "request_text": payload.text,
+            "messages": [{"role": "user", "content": payload.text}],
+            "tools": TOOL_DEFINITIONS,
+        },
+    )
+    return job_view(row)
+
+
 @router.post("/api/v1/projects/{project_id}/jobs", status_code=201, dependencies=[Depends(require_csrf)])
 async def job_create(project_id: str, payload: JobCreate, session: DbSession, owner: OwnerSession):
     row = await create_job(
@@ -479,15 +521,22 @@ async def worker_job_renew(job_id: str, payload: LeaseRequest, request: Request,
 async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSession):
     row = await _leased_job(session, job_id)
     try:
+        processed_result = await apply_design_agent_result(session, row, payload.result)
         row = await complete_job(
             session,
             row,
             worker_id=payload.worker_id,
             lease_id=payload.lease_id,
-            result=payload.result,
+            result=processed_result,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ValueError, CommandRejected) as exc:
+        row = await fail_job(
+            session,
+            row,
+            worker_id=payload.worker_id,
+            lease_id=payload.lease_id,
+            error={"code": "agent_result_rejected", "detail": str(exc)},
+        )
     return job_view(row)
 
 
