@@ -6,9 +6,22 @@ import signal
 
 from stroy.models import ModelProfileRegistry
 from stroy.rendering import BlenderAdapter
-from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
+from stroy.services.adapters import (
+    ComfyUIAdapter,
+    FakeLLMAdapter,
+    FakeVisionStyleAdapter,
+    OpenAICompatibleLLM,
+    OpenAICompatibleVisionStyle,
+)
 from stroy.worker.client import WorkerClient
-from stroy.worker.executors import BlenderExecutor, ComfyUIExecutor, FakeImageExecutor, FakeStyleExecutor, GeometryQualityExecutor, QwenExecutor
+from stroy.worker.executors import (
+    BlenderExecutor,
+    ComfyUIExecutor,
+    FakeImageExecutor,
+    GeometryQualityExecutor,
+    QwenExecutor,
+    VisionStyleExecutor,
+)
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
 
 
@@ -50,17 +63,26 @@ async def _run() -> None:
         )
         executors = {
             "llm.complete": QwenExecutor(llm),
-            "style.analyze": QwenExecutor(llm),
             "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id),
             "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id),
             "render.blender": BlenderExecutor(blender),
             "quality.geometry_check": GeometryQualityExecutor(client),
         }
         models = [llm_profile.id, image_profile.id]
+        style_vision_base_url = os.getenv("STROY_STYLE_VISION_BASE_URL", "").strip()
+        style_vision_model = os.getenv("STROY_STYLE_VISION_MODEL", "").strip()
+        if style_vision_base_url and style_vision_model:
+            style_vision = OpenAICompatibleVisionStyle(
+                style_vision_base_url,
+                os.getenv("STROY_STYLE_VISION_API_KEY", "local"),
+                style_vision_model,
+            )
+            executors["style.analyze"] = VisionStyleExecutor(client, style_vision)
+            models.append(style_vision_model)
     else:
         executors = {
             "llm.complete": QwenExecutor(FakeLLMAdapter()),
-            "style.analyze": FakeStyleExecutor(),
+            "style.analyze": VisionStyleExecutor(client, FakeVisionStyleAdapter()),
             "render.blender": FakeExecutor("fake-blender"),
             "image.generate": FakeImageExecutor(),
             "image.edit": FakeImageExecutor(),
@@ -74,12 +96,16 @@ async def _run() -> None:
             "worker_id": worker_id,
             "display_name": os.getenv("STROY_WORKER_NAME", "Home GPU worker"),
             "capabilities": [
-                "llm",
-                "style_analysis",
-                "image_generation",
-                "image_edit",
-                "blender_render",
-                "geometry_quality",
+                capability
+                for job_type, capability in {
+                    "llm.complete": "llm",
+                    "style.analyze": "style_analysis",
+                    "image.generate": "image_generation",
+                    "image.edit": "image_edit",
+                    "render.blender": "blender_render",
+                    "quality.geometry_check": "geometry_quality",
+                }.items()
+                if job_type in executors
             ],
             "models": models,
             "runtimes": {mode: {"status": "ready", "version": "0.1.0"}},
