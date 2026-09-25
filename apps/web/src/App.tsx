@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   api,
   Asset,
+  AssetRole,
   Job,
   Project,
   RevisionSummary,
@@ -140,6 +141,8 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [newProject, setNewProject] = useState("");
   const [instruction, setInstruction] = useState("");
+  const [uploadRole, setUploadRole] = useState<AssetRole>("apartment");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [message, setMessage] = useState("");
 
   const refreshProjectsAndWorkers = useCallback(async () => {
@@ -223,10 +226,22 @@ export default function App() {
 
   async function upload(file: File | null) {
     if (!file || !selected) return;
-    setMessage("Загрузка...");
-    const asset = await api.upload(selected, file);
-    setMessage(`Asset ${asset.id} uploaded`);
-    await refreshProject(selected);
+    try {
+      setUploadProgress(0);
+      setMessage("Загрузка...");
+      const asset = await api.upload(
+        selected,
+        file,
+        uploadRole,
+        setUploadProgress
+      );
+      setMessage(`Asset ${asset.id} uploaded as ${asset.role}`);
+      await refreshProject(selected);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      window.setTimeout(() => setUploadProgress(null), 800);
+    }
   }
 
   async function submitInstruction(event: FormEvent) {
@@ -248,6 +263,13 @@ export default function App() {
       revision ? { scene_revision_id: revision.revision_id } : {}
     );
     setMessage("Generation job queued");
+    await refreshProject(selected);
+  }
+
+  async function cancel(jobId: string) {
+    if (!selected) return;
+    await api.cancelJob(jobId);
+    setMessage(`Job ${shortId(jobId)} cancelled`);
     await refreshProject(selected);
   }
 
@@ -310,14 +332,34 @@ export default function App() {
             {selected && (
               <>
                 <button onClick={() => void queueFakeGeneration()}>Test generation</button>
-                <label className="upload">
-                  Загрузить файл
-                  <input type="file" onChange={(event) => void upload(event.target.files?.[0] ?? null)} />
-                </label>
+                <div className="upload-controls">
+                  <select
+                    value={uploadRole}
+                    onChange={(event) => setUploadRole(event.target.value as AssetRole)}
+                    aria-label="Asset role"
+                  >
+                    <option value="apartment">Квартира</option>
+                    <option value="reference">Референс</option>
+                  </select>
+                  <label className="upload">
+                    Загрузить файл
+                    <input
+                      type="file"
+                      onChange={(event) => void upload(event.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                </div>
               </>
             )}
           </div>
         </header>
+
+        {uploadProgress !== null && (
+          <div className="upload-progress" aria-label="Upload progress">
+            <div style={{ width: `${uploadProgress}%` }} />
+            <span>{uploadProgress}%</span>
+          </div>
+        )}
 
         <section className="canvas-panel">
           <SceneViewer scene={revision?.scene ?? null} />
@@ -351,25 +393,59 @@ export default function App() {
           <article className="panel">
             <h2>Jobs</h2>
             {jobs.length === 0 && <p className="muted">очередь пуста</p>}
-            {jobs.slice(0, 8).map((job) => (
-              <div className="row" key={job.id}>
-                <span>{job.job_type}</span>
-                <span className="tag">{job.status}</span>
-                <small>#{shortId(job.id)} · attempt {job.attempt}</small>
-              </div>
-            ))}
+            {jobs.slice(0, 8).map((job) => {
+              const fraction =
+                typeof job.progress["fraction"] === "number"
+                  ? Math.round((job.progress["fraction"] as number) * 100)
+                  : null;
+              const phase =
+                typeof job.progress["phase"] === "string"
+                  ? (job.progress["phase"] as string)
+                  : null;
+              const cancellable = !["succeeded", "failed", "cancelled"].includes(job.status);
+              return (
+                <div className="row" key={job.id}>
+                  <span>{job.job_type}</span>
+                  <span className="tag">{job.status}</span>
+                  <small>
+                    #{shortId(job.id)} · attempt {job.attempt}
+                    {phase ? ` · ${phase}` : ""}
+                    {fraction !== null ? ` · ${fraction}%` : ""}
+                  </small>
+                  {cancellable && (
+                    <button className="secondary" onClick={() => void cancel(job.id)}>
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </article>
 
           <article className="panel">
             <h2>Assets</h2>
             {assets.length === 0 && <p className="muted">файлов пока нет</p>}
-            {assets.slice(0, 8).map((asset) => (
-              <div className="row" key={asset.id}>
-                <span>{asset.original_name ?? shortId(asset.id)}</span>
-                <span className="tag">{asset.provenance}</span>
-                <small>{asset.media_type} · {Math.ceil(asset.size_bytes / 1024)} KB</small>
-              </div>
-            ))}
+            {(["apartment", "reference", "derived"] as AssetRole[]).map((role) => {
+              const group = assets.filter((asset) => asset.role === role);
+              if (group.length === 0) return null;
+              return (
+                <div className="asset-group" key={role}>
+                  <h3>{role}</h3>
+                  {group.slice(0, 8).map((asset) => (
+                    <div className="row" key={asset.id}>
+                      <span>{asset.original_name ?? shortId(asset.id)}</span>
+                      <span className="tag">{asset.provenance}</span>
+                      <small>
+                        {asset.media_type} · {Math.ceil(asset.size_bytes / 1024)} KB
+                        {asset.duplicate_of_asset_id
+                          ? ` · duplicate of ${shortId(asset.duplicate_of_asset_id)}`
+                          : ""}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </article>
 
           <article className="panel">
