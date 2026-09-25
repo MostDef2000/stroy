@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 
+from stroy.models import ModelProfileRegistry
 from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
 from stroy.worker.client import WorkerClient
 from stroy.worker.executors import ComfyUIExecutor, QwenExecutor
@@ -19,24 +20,36 @@ async def _run() -> None:
 
     client = WorkerClient(server, token, worker_id)
     if mode == "local":
+        registry = ModelProfileRegistry.load(
+            os.getenv("STROY_MODEL_PROFILES_PATH", "config/model-profiles.json")
+        )
+        approved_use = os.getenv("STROY_MODEL_USE", "personal-non-commercial")
+        llm_profile = registry.get(
+            os.getenv("STROY_LLM_MODEL_PROFILE", "qwen3-14b"),
+            kind="llm",
+            approved_use=approved_use,
+        )
+        image_profile = registry.get(
+            os.getenv("STROY_IMAGE_MODEL_PROFILE", "flux1-schnell"),
+            kind="image",
+            approved_use=approved_use,
+        )
         llm = OpenAICompatibleLLM(
             os.getenv("STROY_LLM_BASE_URL", "http://127.0.0.1:8001/v1"),
             os.getenv("STROY_LLM_API_KEY", "local"),
-            os.getenv("STROY_LLM_MODEL", "Qwen/Qwen3-14B"),
+            llm_profile.upstream,
+            profile_id=llm_profile.id,
         )
         comfy = ComfyUIAdapter(os.getenv("STROY_COMFYUI_URL", "http://127.0.0.1:8188"))
         executors = {
             "llm.complete": QwenExecutor(llm),
             "style.analyze": QwenExecutor(llm),
-            "image.generate": ComfyUIExecutor(comfy, worker_id),
-            "image.edit": ComfyUIExecutor(comfy, worker_id),
+            "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id),
+            "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id),
             "render.blender": FakeExecutor("pending-blender-adapter"),
             "quality.geometry_check": FakeExecutor("pending-quality-adapter"),
         }
-        models = [
-            os.getenv("STROY_LLM_MODEL", "Qwen/Qwen3-14B"),
-            os.getenv("STROY_IMAGE_MODEL_PROFILE", "flux-dev-family"),
-        ]
+        models = [llm_profile.id, image_profile.id]
     else:
         executors = {
             "llm.complete": QwenExecutor(FakeLLMAdapter()),

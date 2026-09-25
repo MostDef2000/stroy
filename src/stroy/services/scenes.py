@@ -48,7 +48,12 @@ async def latest_revision(session: AsyncSession, project_id: str) -> SceneRevisi
 
 
 async def apply_scene_command(
-    session: AsyncSession, project_id: str, command: DesignCommand
+    session: AsyncSession,
+    project_id: str,
+    command: DesignCommand,
+    *,
+    model_profile: str | None = None,
+    correlation_id: str | None = None,
 ) -> SceneRevisionRow:
     current = await latest_revision(session, project_id)
     if current is None:
@@ -72,6 +77,8 @@ async def apply_scene_command(
             reference_asset_ids=command.reference_asset_ids,
             origin=command.origin.value,
             request_text=command.request_text,
+            model_profile=model_profile,
+            correlation_id=correlation_id,
         )
     )
     revision = SceneRevisionRow(
@@ -82,7 +89,11 @@ async def apply_scene_command(
         scene_json=next_scene.model_dump(mode="json", exclude_none=True),
     )
     session.add(revision)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise CommandConflict("base revision was updated concurrently") from exc
     await session.refresh(revision)
     return revision
 

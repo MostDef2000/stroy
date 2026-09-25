@@ -14,6 +14,9 @@ class FakeClient:
         self.failed = 0
         self.progress_updates = 0
         self.worker_id = "worker-test"
+        self.uploaded = 0
+        self.last_result = None
+        self.last_runtime_provenance = None
 
     async def heartbeat(self) -> None:
         self.heartbeats += 1
@@ -41,6 +44,20 @@ class FakeClient:
     ) -> None:
         self.progress_updates += 1
 
+    async def upload_output(
+        self,
+        job_id: str,
+        lease_id: str,
+        *,
+        filename: str,
+        data: bytes,
+        media_type: str = "application/octet-stream",
+    ) -> dict:
+        self.uploaded += 1
+        assert filename
+        assert data
+        return {"id": f"asset-output-{self.uploaded}"}
+
     async def complete(
         self,
         job_id: str,
@@ -49,6 +66,8 @@ class FakeClient:
         runtime_provenance: dict | None = None,
     ) -> None:
         self.completed += 1
+        self.last_result = result
+        self.last_runtime_provenance = runtime_provenance
 
     async def fail(
         self,
@@ -83,3 +102,65 @@ async def test_worker_renews_lease_while_executor_runs() -> None:
     assert client.renews >= 1
     assert client.completed == 1
     assert client.failed == 0
+
+
+
+class GenerationExecutor:
+    async def execute(self, job: dict) -> dict:
+        return {
+            "workflow": {"id": "workflow-1", "version": "0.1.0"},
+            "model_profile": "flux1-schnell",
+            "adapter_provenance": {"adapter": "comfyui"},
+            "_artifacts": [
+                {
+                    "filename": "render.png",
+                    "media_type": "image/png",
+                    "data": b"generated-image",
+                }
+            ],
+            "_generation_context": {
+                "generation_id": "generation-1",
+                "scene_revision_id": "scene-rev-1",
+                "design_revision_id": "design-rev-1",
+                "camera_id": "camera.living.entry",
+                "seed": 123,
+                "input_asset_ids": ["asset-input-1"],
+                "structured_conditioning": {"prompt": "warm minimal"},
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_worker_uploads_generated_artifacts_before_completion() -> None:
+    client = FakeClient()
+    client.claim = lambda: _claim_generation_job()
+    runner = WorkerRunner(
+        client,
+        {"image.generate": GenerationExecutor()},
+        heartbeat_seconds=60,
+        lease_renew_seconds=60,
+    )
+
+    assert await runner.run_once() is True
+    assert client.uploaded == 1
+    assert client.completed == 1
+    manifest = client.last_result["generation_manifest"]
+    assert manifest["generation_id"] == "generation-1"
+    assert manifest["workflow"] == {"id": "workflow-1", "version": "0.1.0"}
+    assert manifest["model_profile"] == "flux1-schnell"
+    assert manifest["input_asset_ids"] == ["asset-input-1"]
+    assert manifest["output_asset_ids"] == ["asset-output-1"]
+    assert client.last_result["output_asset_ids"] == ["asset-output-1"]
+    assert client.last_runtime_provenance == {
+        "worker_id": "worker-test",
+        "adapter": "comfyui",
+    }
+
+
+async def _claim_generation_job():
+    return {
+        "job_id": "job-generation",
+        "lease_id": "lease-generation",
+        "job_type": "image.generate",
+        "payload": {},
+    }

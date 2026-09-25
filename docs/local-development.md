@@ -28,16 +28,20 @@ Local services:
 STROY talks to Qwen via an OpenAI-compatible endpoint configured by:
 
 ```text
+STROY_MODEL_PROFILES_PATH
+STROY_MODEL_USE
+STROY_LLM_MODEL_PROFILE
 STROY_LLM_BASE_URL
 STROY_LLM_API_KEY
-STROY_LLM_MODEL
 ```
 
-The serving engine is deliberately not hard-coded. Tool-calling behavior must be contract-tested against the chosen local runtime.
+The serving engine is deliberately not hard-coded. The selected profile resolves the upstream model name inside the home worker; domain/API code sees only the STROY profile ID. Tool-calling behavior must be contract-tested against the chosen local runtime.
 
 ## ComfyUI
 
-ComfyUI is the initial image runtime. Workflows live under workflows/ and must have STROY-owned manifests defining stable inputs/outputs. Business logic must not depend on ComfyUI node IDs.
+ComfyUI is the initial image runtime. STROY-owned workflow manifests define semantic inputs/outputs and map them to concrete graph nodes only inside the generation layer. Business logic must not depend on ComfyUI node IDs.
+
+The repository intentionally contains only a test fixture until a real graph has been exported and smoke-tested against the intended ComfyUI/model installation. Generated Comfy images are collected through the adapter, uploaded as project Assets by the leased worker, and then referenced by the finalized GenerationManifest.
 
 ## Blender
 

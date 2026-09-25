@@ -1,0 +1,33 @@
+{
+  "schema_version": "0.1.0",
+  "id": "test-semantic-workflow",
+  "version": "0.1.0",
+  "model_profile": "flux1-schnell",
+  "required_inputs": ["positive_prompt", "seed"],
+  "outputs": ["image"],
+  "bindings": {
+    "positive_prompt": {
+      "node_id": "6",
+      "input_name": "text"
+    },
+    "seed": {
+      "node_id": "25",
+      "input_name": "noise_seed"
+    }
+  },
+  "graph": {
+    "6": {
+      "class_type": "TestTextNode",
+      "inputs": {
+        "text": ""
+      }
+    },
+    "25": {
+      "class_type": "TestNoiseNode",
+      "inputs": {
+        "noise_seed": 0
+      }
+    }
+  },
+  "notes": "Contract-test fixture only; not a production ComfyUI graph."
+}

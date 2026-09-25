@@ -1,0 +1,38 @@
+{
+  "schema_version": "0.1.0",
+  "id": "flux-redesign-v0",
+  "version": "0.1.0",
+  "model_profile": "flux1-schnell",
+  "required_inputs": [
+    "prompt",
+    "seed"
+  ],
+  "outputs": [
+    "image"
+  ],
+  "bindings": {
+    "prompt": {
+      "node_id": "6",
+      "input_name": "text"
+    },
+    "seed": {
+      "node_id": "3",
+      "input_name": "seed"
+    }
+  },
+  "graph": {
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0
+      }
+    },
+    "6": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": ""
+      }
+    }
+  },
+  "notes": "Minimal contract fixture. Real geometry conditioning is implemented in #13."
+}
