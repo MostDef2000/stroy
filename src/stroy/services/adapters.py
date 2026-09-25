@@ -303,6 +303,18 @@ class FakeLLMAdapter:
                     },
                 }
             )
+        if ("дерев" in text or "wood" in text) and (
+            "светл" in text or "lighten" in text or "lighter" in text
+        ):
+            calls.append(
+                {
+                    "name": "set_material",
+                    "arguments": {
+                        "target_id": "object.sofa.main",
+                        "material_ref": "material.wood.light-oak",
+                    },
+                }
+            )
         if ("убери" in text or "remove" in text) and (
             "стол" in text or "table" in text
         ):
