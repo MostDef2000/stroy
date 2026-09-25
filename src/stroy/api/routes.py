@@ -798,6 +798,10 @@ async def style_profile_analyze(
             "purpose": "style_profile",
             "source_text": payload.source_text,
             "input_asset_ids": [asset.id for asset in source_assets],
+            "input_assets": [
+                {"id": asset.id, "media_type": asset.media_type}
+                for asset in source_assets
+            ],
             "overrides": payload.overrides,
             "model_profile": request.app.state.settings.llm_model_profile,
         },
