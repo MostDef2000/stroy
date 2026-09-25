@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stroy.local/schemas/render-manifest.schema.json",
+  "title": "STROY Render Manifest",
+  "type": "object",
+  "required": ["schema_version", "render_id", "scene_revision_id", "camera_id", "passes"],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "render_id": {"type": "string", "minLength": 1},
+    "scene_revision_id": {"type": "string", "minLength": 1},
+    "design_revision_id": {"type": ["string", "null"]},
+    "camera_id": {"type": "string", "minLength": 1},
+    "renderer_profile": {"type": "string"},
+    "passes": {
+      "type": "object",
+      "properties": {
+        "rgb": {"type": "string"},
+        "depth": {"type": "string"},
+        "normals": {"type": "string"},
+        "object_ids": {"type": "string"},
+        "material_ids": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
