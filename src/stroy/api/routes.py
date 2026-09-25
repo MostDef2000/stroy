@@ -848,6 +848,14 @@ async def replacement_create(
             detail={"code": "unknown_camera", "camera_id": payload.camera_id},
         )
 
+    try:
+        region = projected_entity_region(target, camera)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "replacement_region_unavailable", "detail": str(exc)},
+        ) from exc
+
     command = DesignCommand(
         command_id=str(uuid4()),
         base_revision_id=current.id,
@@ -871,15 +879,6 @@ async def replacement_create(
     next_scene = Scene.model_validate(revision.scene_json)
     next_target = next(entity for entity in next_scene.entities if entity.id == target.id)
     next_camera = next(camera for camera in next_scene.cameras if camera.id == payload.camera_id)
-    try:
-        region = projected_entity_region(next_target, next_camera)
-    except ValueError as exc:
-        # The design revision remains valid even if this camera cannot localize the object.
-        # Surface the failure and do not queue an unsafe full-frame replacement.
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "replacement_region_unavailable", "detail": str(exc)},
-        ) from exc
 
     protected_entity_ids = [
         entity.id
