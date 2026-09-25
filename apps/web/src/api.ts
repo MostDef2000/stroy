@@ -47,6 +47,28 @@ export type Job = {
   created_at: string;
 };
 
+export type Generation = {
+  id: string;
+  job_id: string;
+  scene_revision_id: string;
+  design_revision_id: string;
+  camera_id: string;
+  created_at: string;
+  manifest: {
+    schema_version: "0.1.0";
+    generation_id: string;
+    scene_revision_id: string;
+    design_revision_id: string;
+    camera_id: string;
+    workflow: { id: string; version: string };
+    model_profile: string;
+    seed?: number | null;
+    input_asset_ids: string[];
+    output_asset_ids: string[];
+    structured_conditioning?: Record<string, unknown>;
+  };
+};
+
 export type RevisionSummary = {
   revision_id: string;
   parent_revision_id: string | null;
@@ -252,6 +274,33 @@ export const api = {
 
   jobs(projectId: string) {
     return request<Job[]>(`/api/v1/projects/${projectId}/jobs`);
+  },
+
+  generations(projectId: string) {
+    return request<Generation[]>(`/api/v1/projects/${projectId}/generations`);
+  },
+
+  createGeneration(
+    projectId: string,
+    designRevisionId: string,
+    cameraId: string,
+    prompt: string,
+    referenceAssetIds: string[] = []
+  ) {
+    return request<Job>(`/api/v1/projects/${projectId}/generations`, {
+      method: "POST",
+      body: JSON.stringify({
+        design_revision_id: designRevisionId,
+        camera_id: cameraId,
+        prompt,
+        reference_asset_ids: referenceAssetIds,
+        idempotency_key: `manual:${designRevisionId}:${cameraId}:${prompt}`
+      })
+    });
+  },
+
+  assetUrl(assetId: string) {
+    return apiPath(`/api/v1/assets/${assetId}`);
   },
 
   cancelJob(jobId: string) {
