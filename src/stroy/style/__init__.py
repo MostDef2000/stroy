@@ -1,3 +1,4 @@
+from stroy.style.adapters import LocalPixelStyleAdapter, OpenAIVisionStyleAdapter, StyleImage
 from stroy.style.models import (
     LightingStyle,
     MaterialStyle,
@@ -8,6 +9,9 @@ from stroy.style.models import (
 )
 
 __all__ = [
+    "LocalPixelStyleAdapter",
+    "OpenAIVisionStyleAdapter",
+    "StyleImage",
     "LightingStyle",
     "MaterialStyle",
     "PaletteEntry",
