@@ -225,6 +225,20 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 == "#D7C4AB"
             )
 
+            stale = await client.post(
+                f"/api/v1/projects/{project_id}/scene/commands",
+                headers=headers,
+                json={
+                    "command_id": "stale-command",
+                    "base_revision_id": revision_id,
+                    "operation": "set_color",
+                    "target_id": "object.sofa.main",
+                    "parameters": {"color": "#000000"},
+                    "origin": "user",
+                },
+            )
+            assert stale.status_code == 409
+
 
 @pytest.mark.asyncio
 async def test_csrf_is_required(settings):
@@ -237,3 +251,36 @@ async def test_csrf_is_required(settings):
             await login(client)
             response = await client.post("/api/v1/projects", json={"name": "Denied"})
             assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_upload_policy_rejects_unsupported_type_and_oversize(settings):
+    restricted = settings.model_copy(update={"max_upload_bytes": 4})
+    app = create_app(settings=restricted, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Upload policy"},
+            )
+            project_id = project.json()["id"]
+
+            unsupported = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                files={"file": ("payload.xyz", b"abc", "application/x-unknown")},
+            )
+            assert unsupported.status_code == 415
+
+            too_large = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                files={"file": ("photo.png", b"12345", "image/png")},
+            )
+            assert too_large.status_code == 413
