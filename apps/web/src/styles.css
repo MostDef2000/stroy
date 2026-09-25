@@ -245,3 +245,33 @@ header span { color: #777; font-size: 13px; }
     flex-direction: column;
   }
 }
+
+
+.viewer-shell {
+  height: 100%;
+  min-height: 560px;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  background: #cbc8c0;
+}
+
+.viewer-toolbar .secondary {
+  flex: 0 0 auto;
+}
+
+.viewer-toolbar .secondary.active {
+  background: #242424;
+  color: white;
+}
+
+.viewer-shell .viewer {
+  flex: 1;
+  width: 100%;
+}
