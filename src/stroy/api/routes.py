@@ -19,13 +19,14 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
+from stroy.db.models import AssetRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
 from stroy.services.cameras import remove_camera, upsert_camera
+from stroy.services.generations import list_generation_manifests, persist_generation_manifest, queue_design_generation
 from stroy.services.jobs import (
     cancel_job,
     claim_job,
@@ -120,6 +121,14 @@ class GeometryDiagnosticRequest(BaseModel):
     tolerance_px: int = Field(default=2, ge=0, le=16)
     edge_threshold: int = Field(default=24, ge=1, le=255)
     advisory_threshold: float = Field(default=0.72, ge=0, le=1)
+    idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class GenerationRequest(BaseModel):
+    design_revision_id: str | None = None
+    camera_id: str = Field(min_length=1)
+    prompt: str = Field(default="redesign room", min_length=1, max_length=4000)
+    reference_asset_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
@@ -753,6 +762,102 @@ async def render_get(render_id: str, session: DbSession):
 
 
 @router.post(
+    "/api/v1/projects/{project_id}/generations",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def generation_create(
+    project_id: str,
+    payload: GenerationRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if payload.design_revision_id:
+        revision = await session.get(SceneRevisionRow, payload.design_revision_id)
+        if revision is None or revision.project_id != project_id:
+            raise HTTPException(status_code=404, detail="design revision not found")
+    else:
+        revision = await latest_revision(session, project_id)
+        if revision is None:
+            raise HTTPException(status_code=409, detail="scene is not initialized")
+
+    scene = Scene.model_validate(revision.scene_json)
+    if not any(camera.id == payload.camera_id for camera in scene.cameras):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "unknown_camera", "camera_id": payload.camera_id},
+        )
+
+    for asset_id in payload.reference_asset_ids:
+        asset = await session.get(AssetRow, asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_generation_asset", "asset_id": asset_id},
+            )
+
+    protected_entity_ids = [
+        entity.id
+        for entity in scene.entities
+        if entity.locks.geometry or entity.locks.transform
+    ]
+    row = await queue_design_generation(
+        session,
+        project_id=project_id,
+        design_revision_id=revision.id,
+        camera_id=payload.camera_id,
+        request_text=payload.prompt,
+        affected_entity_ids=[],
+        protected_entity_ids=protected_entity_ids,
+        reference_asset_ids=payload.reference_asset_ids,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+    )
+    return job_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/generations",
+    dependencies=[Depends(require_owner)],
+)
+async def generation_list(project_id: str, session: DbSession):
+    rows = await list_generation_manifests(session, project_id)
+    return [
+        {
+            "id": row.id,
+            "job_id": row.job_id,
+            "scene_revision_id": row.scene_revision_id,
+            "design_revision_id": row.design_revision_id,
+            "camera_id": row.camera_id,
+            "created_at": row.created_at,
+            "manifest": row.manifest_json,
+        }
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/v1/generations/{generation_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def generation_get(generation_id: str, session: DbSession):
+    row = await session.get(GenerationManifestRow, generation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="generation not found")
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "project_id": row.project_id,
+        "scene_revision_id": row.scene_revision_id,
+        "design_revision_id": row.design_revision_id,
+        "camera_id": row.camera_id,
+        "created_at": row.created_at,
+        "manifest": row.manifest_json,
+    }
+
+
+@router.post(
     "/api/v1/projects/{project_id}/style-profiles/analyze",
     status_code=201,
     dependencies=[Depends(require_csrf)],
@@ -1132,6 +1237,19 @@ async def worker_job_complete(
             processed_result = {
                 **processed_result,
                 "render_id": render_row.id,
+            }
+        if (
+            row.job_type in {"image.generate", "image.edit"}
+            and isinstance(processed_result.get("generation_manifest"), dict)
+        ):
+            generation_row = await persist_generation_manifest(
+                session,
+                row,
+                processed_result,
+            )
+            processed_result = {
+                **processed_result,
+                "generation_id": generation_row.id,
             }
         if row.job_type == "quality.geometry_check":
             diagnostic_row = await persist_geometry_diagnostic(

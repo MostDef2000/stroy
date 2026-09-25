@@ -17,6 +17,7 @@ from stroy.db.models import JobRow
 from stroy.domain.commands import CommandConflict, apply_command
 from stroy.domain.models import Scene
 from stroy.services.dispatch import JobDispatcher
+from stroy.services.generations import queue_design_generation
 from stroy.services.jobs import create_job
 from stroy.services.scenes import apply_scene_command, latest_revision
 
@@ -53,6 +54,9 @@ async def apply_design_agent_result(
 
     validation_scene = Scene.model_validate(current.scene_json)
     commands = []
+    affected_entity_ids: list[str] = []
+    referenced_asset_ids: list[str] = []
+    command_summary: list[dict[str, Any]] = []
     tool_results: list[dict[str, Any]] = []
     preview_requests: list[dict[str, Any]] = []
     revision_marker_calls: list[int] = []
@@ -80,6 +84,16 @@ async def apply_design_agent_result(
             )
             validation_scene = apply_command(validation_scene, command)
             commands.append(command)
+            affected_entity_ids.append(command.target_id)
+            referenced_asset_ids.extend(command.reference_asset_ids)
+            command_summary.append(
+                {
+                    "operation": command.operation.value,
+                    "target_id": command.target_id,
+                    "parameters": command.parameters,
+                    "reference_asset_ids": command.reference_asset_ids,
+                }
+            )
             continue
 
         if name in CONTROL_TOOL_NAMES:
@@ -120,6 +134,27 @@ async def apply_design_agent_result(
                 "result": {"revision_id": actual_base},
             }
         )
+
+    generation_job_ids: list[str] = []
+    if commands and validation_scene.cameras:
+        protected_entity_ids = [
+            entity.id
+            for entity in validation_scene.entities
+            if entity.locks.geometry or entity.locks.transform
+        ]
+        generation_job = await queue_design_generation(
+            session,
+            project_id=job.project_id,
+            design_revision_id=actual_base,
+            camera_id=validation_scene.cameras[0].id,
+            request_text=request_text or "",
+            affected_entity_ids=affected_entity_ids,
+            protected_entity_ids=protected_entity_ids,
+            reference_asset_ids=referenced_asset_ids,
+            correlation_id=job.correlation_id,
+            dispatcher=dispatcher,
+        )
+        generation_job_ids.append(generation_job.id)
 
     preview_job_ids: list[str] = []
     for preview in preview_requests:
@@ -172,7 +207,10 @@ async def apply_design_agent_result(
 
     enriched = dict(result)
     enriched["tool_results"] = sorted(tool_results, key=lambda item: item["index"])
+    enriched["commands"] = command_summary
+    enriched["affected_entity_ids"] = sorted(set(affected_entity_ids))
     enriched["applied_revision_ids"] = applied_revision_ids
     enriched["final_revision_id"] = actual_base
+    enriched["generation_job_ids"] = generation_job_ids
     enriched["preview_job_ids"] = preview_job_ids
     return enriched

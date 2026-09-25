@@ -7,7 +7,7 @@ from stroy.models import ModelProfileRegistry
 from stroy.rendering import BlenderAdapter
 from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
 from stroy.worker.client import WorkerClient
-from stroy.worker.executors import BlenderExecutor, ComfyUIExecutor, FakeStyleExecutor, GeometryQualityExecutor, QwenExecutor
+from stroy.worker.executors import BlenderExecutor, ComfyUIExecutor, FakeImageExecutor, FakeStyleExecutor, GeometryQualityExecutor, QwenExecutor
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
 
 
@@ -61,8 +61,8 @@ async def _run() -> None:
             "llm.complete": QwenExecutor(FakeLLMAdapter()),
             "style.analyze": FakeStyleExecutor(),
             "render.blender": FakeExecutor("fake-blender"),
-            "image.generate": FakeExecutor("fake-image"),
-            "image.edit": FakeExecutor("fake-image-edit"),
+            "image.generate": FakeImageExecutor(),
+            "image.edit": FakeImageExecutor(),
             "quality.geometry_check": FakeExecutor("fake-quality"),
         }
         models = ["fake"]
