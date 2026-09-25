@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stroy.local/schemas/model-profile.schema.json",
+  "title": "STROY Model Profile",
+  "type": "object",
+  "required": ["id", "kind", "upstream", "runtime", "license", "approved_uses"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["llm", "image"]},
+    "upstream": {"type": "string", "minLength": 1},
+    "runtime": {"type": "string", "minLength": 1},
+    "license": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": {"type": "string"},
+        "status": {"enum": ["permissive", "restricted", "review-required"]},
+        "source": {"type": "string"},
+        "reviewed_on": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "approved_uses": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false
+}
