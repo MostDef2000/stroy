@@ -127,6 +127,7 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [newProject, setNewProject] = useState("");
+  const [instruction, setInstruction] = useState("");
   const [message, setMessage] = useState("");
 
   const refreshProjectsAndWorkers = useCallback(async () => {
@@ -216,6 +217,16 @@ export default function App() {
     await refreshProject(selected);
   }
 
+  async function submitInstruction(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !revision || !instruction.trim()) return;
+    const text = instruction.trim();
+    setInstruction("");
+    await api.designInstruction(selected, text);
+    setMessage("AI edit queued");
+    await refreshProject(selected);
+  }
+
   async function queueFakeGeneration() {
     if (!selected) return;
     await api.createJob(
@@ -299,6 +310,16 @@ export default function App() {
         <section className="canvas-panel">
           <SceneViewer scene={revision?.scene ?? null} />
         </section>
+
+        <form className="instruction-bar" onSubmit={submitInstruction}>
+          <input
+            value={instruction}
+            onChange={(event) => setInstruction(event.target.value)}
+            placeholder="Например: сделай диван бежевым и убери стол"
+            disabled={!revision}
+          />
+          <button disabled={!revision || !instruction.trim()}>Применить через AI</button>
+        </form>
 
         <section className="dashboard-grid">
           <article className="panel">
