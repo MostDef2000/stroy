@@ -1,0 +1,48 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+out/
+coverage/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local data and models
+data/
+models/
+checkpoints/
+outputs/
+renders/
+cache/
+*.blend1
+
+# Secrets / tokens
+*.pem
+*.key
+credentials.json
+
+# Large generated assets
+*.safetensors
+*.ckpt
+*.gguf
+*.onnx
