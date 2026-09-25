@@ -31,6 +31,10 @@ def _log(event: str, row: JobRow, **extra) -> None:
                 "job_id": row.id,
                 "project_id": row.project_id,
                 "job_type": row.job_type,
+                "revision_id": (
+                    (row.payload or {}).get("scene_revision_id")
+                    or (row.payload or {}).get("base_revision_id")
+                ),
                 "status": row.status,
                 "attempt": row.attempt,
                 "correlation_id": row.correlation_id,
@@ -89,7 +93,7 @@ async def create_job(
         correlation_id=correlation_id,
         runtime_provenance=runtime_provenance or {},
         progress={},
-        status="queued",
+        status="waiting_for_worker" if required_capabilities else "queued",
     )
     session.add(row)
     try:
@@ -133,7 +137,7 @@ async def _requeue_expired(session: AsyncSession) -> None:
     )
     changed = False
     for row in result.scalars():
-        row.status = "queued"
+        row.status = "waiting_for_worker" if row.required_capabilities else "queued"
         row.leased_to = None
         row.lease_id = None
         row.lease_expires_at = None
