@@ -1238,7 +1238,10 @@ async def worker_job_complete(
                 **processed_result,
                 "render_id": render_row.id,
             }
-        if row.job_type in {"image.generate", "image.edit"}:
+        if (
+            row.job_type in {"image.generate", "image.edit"}
+            and isinstance(processed_result.get("generation_manifest"), dict)
+        ):
             generation_row = await persist_generation_manifest(
                 session,
                 row,
