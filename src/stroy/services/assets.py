@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 import boto3
+from botocore.exceptions import ClientError
 
 from stroy.config import Settings
 
@@ -55,7 +56,7 @@ class S3ObjectStore:
     async def initialize(self) -> None:
         try:
             await asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket)
-        except self.client.exceptions.ClientError:
+        except ClientError:
             await asyncio.to_thread(self.client.create_bucket, Bucket=self.bucket)
 
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None:
