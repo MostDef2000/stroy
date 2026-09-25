@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stroy.local/schemas/workflow-manifest.schema.json",
+  "title": "STROY Workflow Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "version",
+    "model_profile",
+    "required_inputs",
+    "outputs",
+    "bindings",
+    "graph"
+  ],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "model_profile": {"type": "string", "minLength": 1},
+    "required_inputs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "outputs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["node_id", "input_name"],
+        "properties": {
+          "node_id": {"type": "string", "minLength": 1},
+          "input_name": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false
+}
