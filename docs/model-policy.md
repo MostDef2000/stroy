@@ -57,3 +57,22 @@ Generation manifests should still record:
 - inputs and outputs.
 
 The purpose is reproducibility and future-proofing, not commercial licensing enforcement for v0.1.
+
+
+## CI enforcement
+
+`scripts/validate_model_profiles.py` validates every entry in
+`config/model-profiles.json` against `schemas/model-profile.schema.json` and
+also requires:
+
+- a unique profile ID;
+- an explicit license source;
+- a review date;
+- `personal-non-commercial` in the approved-use list;
+- `flux-dev-family` to remain marked `restricted`;
+- an explicit license re-review note for the FLUX dev family.
+
+The configuration reviewed on 2026-09-25 records Qwen3-14B and FLUX.1-schnell
+as Apache-2.0 upstream profiles and the FLUX dev family under the applicable
+BFL non-commercial terms. These are provenance records, not a substitute for
+reviewing terms again if the project purpose changes.
