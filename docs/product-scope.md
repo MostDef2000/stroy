@@ -1,8 +1,8 @@
-# STOY Product Scope
+# STROY Product Scope
 
 ## Product thesis
 
-STOY creates a persistent, editable digital twin of a real apartment and uses local AI to explore interior-design variants without silently changing the physical apartment.
+STROY creates a persistent, editable digital twin of a real apartment and uses local AI to explore interior-design variants without silently changing the physical apartment.
 
 The product is intentionally split into two concerns:
 
