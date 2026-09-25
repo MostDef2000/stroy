@@ -124,7 +124,7 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 headers=worker_headers,
                 json={
                     "worker_id": "worker-1",
-                    "capabilities": ["image_generation"],
+                    "capabilities": ["image_generation", "llm"],
                     "models": ["fake"],
                     "runtimes": {"fake": {"status": "ready"}},
                 },
@@ -175,6 +175,53 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             )
             assert complete.status_code == 200
             assert complete.json()["status"] == "succeeded"
+
+            design = await client.post(
+                f"/api/v1/projects/{project_id}/design/instructions",
+                headers=headers,
+                json={"text": "Сделай диван бежевым"},
+            )
+            assert design.status_code == 201
+            assert design.json()["job_type"] == "llm.complete"
+
+            llm_claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "worker-1"},
+            )
+            assert llm_claim.status_code == 200
+            llm_lease = llm_claim.json()
+            assert llm_lease["job_type"] == "llm.complete"
+
+            llm_complete = await client.post(
+                f"/api/v1/workers/jobs/{llm_lease['job_id']}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-1",
+                    "lease_id": llm_lease["lease_id"],
+                    "result": {
+                        "tool_calls": [
+                            {
+                                "name": "set_color",
+                                "arguments": {
+                                    "target_id": "object.sofa.main",
+                                    "color": "#D7C4AB",
+                                },
+                            }
+                        ]
+                    },
+                },
+            )
+            assert llm_complete.status_code == 200
+            assert llm_complete.json()["status"] == "succeeded"
+            assert len(llm_complete.json()["result"]["applied_revision_ids"]) == 1
+
+            final_scene = await client.get(f"/api/v1/projects/{project_id}/scene")
+            assert final_scene.status_code == 200
+            assert (
+                final_scene.json()["scene"]["entities"][0]["metadata"]["color"]
+                == "#D7C4AB"
+            )
 
 
 @pytest.mark.asyncio
