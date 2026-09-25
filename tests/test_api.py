@@ -40,7 +40,9 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            assert (await client.get("/health")).status_code == 200
+            health = await client.get("/health", headers={"X-Request-ID": "test-request"})
+            assert health.status_code == 200
+            assert health.headers["X-Request-ID"] == "test-request"
             assert (await client.get("/api/v1/projects")).status_code == 401
 
             csrf = await login(client)
