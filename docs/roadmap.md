@@ -6,13 +6,13 @@ The implementation umbrella is [GitHub issue #25](https://github.com/MostDef2000
 
 Architecture, ADRs, schemas, local infrastructure, CI and issue backlog.
 
-## Phase 1 - Scene Core and secure remote access — #1–#5, #26–#27
+## Phase 1 - Scene Core, VPS deployment and GPU worker — #1–#5, #26–#28
 
 Python API skeleton, Pydantic/schema parity, project/assets, scene repository, command validation and immutable revisions.
 
 **Exit:** one-room scene can be created, read and edited through typed commands.
 
-**Remote-access exit:** `https://stroy.mostdef.ru` reaches only the authenticated owner-facing STROY origin; internal model/storage services remain private.
+**Remote-access exit:** `https://stroy.mostdef.ru` serves the authenticated VPS application, and the home GPU worker can securely claim/complete local Qwen/FLUX/Blender jobs without any inbound home port.
 
 ## Phase 2 - Deterministic renderer — #6–#8
 
