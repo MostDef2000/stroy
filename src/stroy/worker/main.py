@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 
 from stroy.models import ModelProfileRegistry
 from stroy.rendering import BlenderAdapter
@@ -85,13 +86,25 @@ async def _run() -> None:
             "hardware": {},
         }
     )
-    await WorkerRunner(
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, shutdown.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    runner = WorkerRunner(
         client,
         executors,
         poll_seconds=poll,
         heartbeat_seconds=heartbeat,
         lease_renew_seconds=heartbeat,
-    ).run_forever()
+    )
+    try:
+        await runner.run_forever(shutdown)
+    finally:
+        await client.close()
 
 
 def main() -> None:

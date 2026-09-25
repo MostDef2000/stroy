@@ -154,6 +154,8 @@ async def claim_job(
     worker_id: str,
     capabilities: set[str],
     lease_seconds: int,
+    models: set[str] | None = None,
+    runtimes: dict | None = None,
 ) -> JobRow | None:
     await _requeue_expired(session)
     result = await session.execute(
@@ -162,9 +164,22 @@ async def claim_job(
         .order_by(JobRow.created_at.asc(), JobRow.id.asc())
         .limit(100)
     )
+    worker_models = models or set()
+    worker_runtimes = runtimes or {}
     for row in result.scalars():
         required = set(row.required_capabilities or [])
-        if not required.issubset(capabilities):
+        required_models = set((row.payload or {}).get("required_models") or [])
+        required_runtimes = (row.payload or {}).get("required_runtimes") or {}
+        compatible_runtimes = all(
+            runtime_name in worker_runtimes
+            and (worker_runtimes[runtime_name] or {}).get("status") == "ready"
+            for runtime_name in required_runtimes
+        )
+        if (
+            not required.issubset(capabilities)
+            or not required_models.issubset(worker_models)
+            or not compatible_runtimes
+        ):
             if row.status == "queued":
                 row.status = "waiting_for_worker"
             continue
@@ -305,4 +320,24 @@ async def fail_job(
     await session.commit()
     await session.refresh(row)
     _log("job_failed", row, worker_id=worker_id, error_code=error.get("code"))
+    return row
+
+
+
+async def release_job(
+    session: AsyncSession,
+    row: JobRow,
+    *,
+    worker_id: str,
+    lease_id: str,
+) -> JobRow:
+    _require_lease(row, worker_id, lease_id)
+    row.status = "waiting_for_worker" if row.required_capabilities else "queued"
+    row.progress = {"phase": "released_by_worker"}
+    row.leased_to = None
+    row.lease_id = None
+    row.lease_expires_at = None
+    await session.commit()
+    await session.refresh(row)
+    _log("job_released", row, worker_id=worker_id)
     return row

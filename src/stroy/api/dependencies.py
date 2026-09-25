@@ -68,5 +68,15 @@ async def require_worker(request: Request) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="worker auth required"
         )
     token = value.removeprefix("Bearer ").strip()
-    if not verify_worker_token(token, settings.worker_token, settings.worker_token_hash):
+    configured_hashes = [
+        item.strip()
+        for item in settings.worker_token_hashes.split(",")
+        if item.strip()
+    ]
+    valid = verify_worker_token(token, settings.worker_token, settings.worker_token_hash)
+    valid = valid or any(
+        verify_worker_token(token, "", token_hash)
+        for token_hash in configured_hashes
+    )
+    if not valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid worker token")

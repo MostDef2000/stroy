@@ -11,6 +11,7 @@ from sqlalchemy import select
 from stroy.api.app import create_app
 from stroy.config import Settings
 from stroy.db.models import DesignCommandRow
+from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
 
 
@@ -1627,3 +1628,247 @@ async def test_reference_object_replacement_flow(settings):
             assert reference_row["sha256"] == reference_sha
             assert reference_row["role"] == "reference"
             assert reference_row["provenance"] == "user"
+
+
+
+@pytest.mark.asyncio
+async def test_worker_token_rotation_and_runtime_compatibility(tmp_path):
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'rotation.db'}",
+        auto_create_schema=True,
+        auth_username="owner",
+        auth_password_hash=PasswordHasher().hash("secret"),
+        session_cookie_secure=False,
+        trusted_hosts="test",
+        worker_token="",
+        worker_token_hashes=",".join(
+            [sha256_text("worker-old"), sha256_text("worker-new")]
+        ),
+        storage_backend="memory",
+    )
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            owner_headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=owner_headers,
+                json={"name": "Worker compatibility"},
+            )
+            project_id = project.json()["id"]
+
+            job = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=owner_headers,
+                json={
+                    "job_type": "image.generate",
+                    "payload": {
+                        "required_models": ["flux1-schnell"],
+                        "required_runtimes": {"comfyui": {}},
+                    },
+                    "required_capabilities": ["image_generation"],
+                },
+            )
+            assert job.status_code == 201
+
+            old_headers = {"Authorization": "Bearer worker-old"}
+            new_headers = {"Authorization": "Bearer worker-new"}
+            assert (
+                await client.post(
+                    "/api/v1/workers/register",
+                    headers=old_headers,
+                    json={
+                        "worker_id": "worker-old-profile",
+                        "capabilities": ["image_generation"],
+                        "models": ["flux-dev-family"],
+                        "runtimes": {"comfyui": {"status": "ready"}},
+                    },
+                )
+            ).status_code == 200
+            incompatible = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=old_headers,
+                json={"worker_id": "worker-old-profile"},
+            )
+            assert incompatible.status_code == 204
+
+            assert (
+                await client.post(
+                    "/api/v1/workers/register",
+                    headers=new_headers,
+                    json={
+                        "worker_id": "worker-compatible",
+                        "capabilities": ["image_generation"],
+                        "models": ["flux1-schnell"],
+                        "runtimes": {"comfyui": {"status": "ready"}},
+                    },
+                )
+            ).status_code == 200
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=new_headers,
+                json={"worker_id": "worker-compatible"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+
+            released = await client.post(
+                f"/api/v1/workers/jobs/{lease['job_id']}/release",
+                headers=new_headers,
+                json={
+                    "worker_id": "worker-compatible",
+                    "lease_id": lease["lease_id"],
+                },
+            )
+            assert released.status_code == 200
+            assert released.json()["status"] == "waiting_for_worker"
+            assert released.json()["leased_to"] is None
+
+
+@pytest.mark.asyncio
+async def test_worker_lease_status_reports_owner_cancellation(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            owner_headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=owner_headers,
+                json={"name": "Cancellation status"},
+            )
+            project_id = project.json()["id"]
+            job = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=owner_headers,
+                json={
+                    "job_type": "render.blender",
+                    "payload": {},
+                    "required_capabilities": ["blender_render"],
+                },
+            )
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-cancel-status",
+                    "capabilities": ["blender_render"],
+                },
+            )
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "worker-cancel-status"},
+            )
+            lease = claim.json()
+            await client.post(
+                f"/api/v1/jobs/{job.json()['id']}/cancel",
+                headers=owner_headers,
+            )
+            status_response = await client.post(
+                f"/api/v1/workers/jobs/{job.json()['id']}/lease-status",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-cancel-status",
+                    "lease_id": lease["lease_id"],
+                },
+            )
+            assert status_response.status_code == 200
+            assert status_response.json() == {
+                "status": "cancelled",
+                "lease_valid": False,
+            }
+
+
+
+@pytest.mark.asyncio
+async def test_worker_release_and_reclaim_simulates_restart(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            owner_headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=owner_headers,
+                json={"name": "Worker restart"},
+            )
+            project_id = project.json()["id"]
+
+            job = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=owner_headers,
+                json={
+                    "job_type": "render.blender",
+                    "payload": {},
+                    "required_capabilities": ["blender_render"],
+                },
+            )
+            assert job.status_code == 201
+            job_id = job.json()["id"]
+            assert job.json()["status"] == "waiting_for_worker"
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            registered = await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-restart",
+                    "capabilities": ["blender_render"],
+                    "models": [],
+                    "runtimes": {"blender": {"status": "ready"}},
+                },
+            )
+            assert registered.status_code == 200
+
+            first = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "worker-restart"},
+            )
+            assert first.status_code == 200
+            first_lease = first.json()
+            assert first_lease["attempt"] == 1
+
+            released = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/release",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-restart",
+                    "lease_id": first_lease["lease_id"],
+                },
+            )
+            assert released.status_code == 200
+            assert released.json()["status"] == "waiting_for_worker"
+
+            second = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "worker-restart"},
+            )
+            assert second.status_code == 200
+            second_lease = second.json()
+            assert second_lease["attempt"] == 2
+            assert second_lease["lease_id"] != first_lease["lease_id"]
+
+            stale = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-restart",
+                    "lease_id": first_lease["lease_id"],
+                    "result": {},
+                },
+            )
+            assert stale.status_code == 409

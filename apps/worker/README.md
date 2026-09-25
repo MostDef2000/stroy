@@ -40,3 +40,14 @@ It never needs:
 - renew active leases while work is progressing.
 
 See `docs/worker-protocol.md`.
+
+
+## Process lifecycle
+
+The worker handles SIGINT/SIGTERM as a graceful shutdown request. If a leased job
+is running, its adapter is cancelled when supported and the lease is explicitly
+released so another compatible attempt can resume. The worker also polls the
+lease for owner cancellation and stops stale attempts.
+
+Transient VPS/network failures do not terminate the process immediately; polling
+retries with bounded exponential backoff.
