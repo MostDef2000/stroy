@@ -38,6 +38,19 @@ def _mat_vec(matrix: list[list[float]], vector: tuple[float, float, float]) -> t
     )  # type: ignore[return-value]
 
 
+def transform_local_point(
+    translation_mm: tuple[float, float, float],
+    rotation_deg: tuple[float, float, float],
+    local_mm: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    rotation = _rotation_matrix_xyz(rotation_deg)
+    rotated = _mat_vec(rotation, local_mm)
+    return tuple(
+        translation_mm[index] + rotated[index]
+        for index in range(3)
+    )  # type: ignore[return-value]
+
+
 def project_world_point(
     camera: Camera,
     world_mm: tuple[float, float, float],

@@ -1405,3 +1405,225 @@ async def test_multi_command_edit_generation_undo_and_rerender(settings):
             assert rerender_claim.status_code == 200
             assert rerender_claim.json()["payload"]["design_revision_id"] == restored_revision_id
             assert rerender_claim.json()["payload"]["regeneration_scope"] == "full"
+
+
+
+@pytest.mark.asyncio
+async def test_reference_object_replacement_flow(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Replacement"},
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.replacement",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.wall.main",
+                            "kind": "wall",
+                            "transform": {
+                                "translation_mm": [0, 2000, 1400],
+                                "rotation_deg": [0, 0, 0],
+                                "scale": [1, 1, 1],
+                            },
+                            "geometry": {"dimensions_mm": [5000, 120, 2800]},
+                            "locks": {"geometry": True, "transform": True},
+                        },
+                        {
+                            "id": "object.sofa.main",
+                            "kind": "furniture",
+                            "transform": {
+                                "translation_mm": [0, 0, 900],
+                                "rotation_deg": [0, 0, 0],
+                                "scale": [1, 1, 1],
+                            },
+                            "geometry": {"dimensions_mm": [2200, 900, 900]},
+                            "locks": {},
+                        },
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 1000,
+                            "height_px": 800,
+                            "intrinsics": {
+                                "fx": 800,
+                                "fy": 800,
+                                "cx": 500,
+                                "cy": 400,
+                            },
+                            "transform": {
+                                "translation_mm": [0, -5000, 1500],
+                                "rotation_deg": [90, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            base_revision_id = scene.json()["revision_id"]
+            original_camera = scene.json()["scene"]["cameras"][0]
+
+            reference_bytes = png_bytes()
+            reference = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("chair-reference.png", reference_bytes, "image/png")},
+            )
+            assert reference.status_code == 201
+            reference_id = reference.json()["id"]
+            reference_sha = reference.json()["sha256"]
+
+            replacement = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                },
+            )
+            assert replacement.status_code == 201
+            body = replacement.json()
+            replacement_revision_id = body["revision_id"]
+            assert replacement_revision_id != base_revision_id
+            assert body["command"]["operation"] == "replace_object_from_reference"
+            assert body["command"]["target_id"] == "object.sofa.main"
+            assert body["command"]["reference_asset_ids"] == [reference_id]
+            assert body["affected_region"]["type"] == "projected_bbox"
+            assert body["affected_region"]["target_entity_id"] == "object.sofa.main"
+
+            next_scene = body["scene"]
+            entities = {item["id"]: item for item in next_scene["entities"]}
+            assert (
+                entities["object.sofa.main"]["metadata"][
+                    "replacement_reference_asset_id"
+                ]
+                == reference_id
+            )
+            assert entities["surface.wall.main"]["locks"]["geometry"] is True
+            assert next_scene["cameras"][0] == original_camera
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            registered = await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "edit-worker",
+                    "capabilities": ["image_edit"],
+                    "models": ["fake"],
+                },
+            )
+            assert registered.status_code == 200
+
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "edit-worker"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+            assert lease["job_type"] == "image.edit"
+            payload = lease["payload"]
+            assert payload["design_revision_id"] == replacement_revision_id
+            assert payload["input_asset_ids"] == [reference_id]
+            assert payload["replacement"]["target_entity_id"] == "object.sofa.main"
+            assert payload["replacement"]["reference_asset_id"] == reference_id
+            assert payload["replacement"]["affected_region"] == body["affected_region"]
+            assert "surface.wall.main" in payload["generation"][
+                "structured_conditioning"
+            ]["protected_entity_ids"]
+
+            output = await client.post(
+                f"/api/v1/workers/jobs/{lease['job_id']}/outputs",
+                headers=worker_headers,
+                data={
+                    "worker_id": "edit-worker",
+                    "lease_id": lease["lease_id"],
+                    "semantic_name": "image",
+                },
+                files={"file": ("replacement.png", png_bytes(), "image/png")},
+            )
+            assert output.status_code == 201
+            output_asset_id = output.json()["id"]
+            generation = payload["generation"]
+            workflow = payload["workflow_manifest"]
+
+            completed = await client.post(
+                f"/api/v1/workers/jobs/{lease['job_id']}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "edit-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        "generation_manifest": {
+                            "schema_version": "0.1.0",
+                            "generation_id": generation["generation_id"],
+                            "scene_revision_id": replacement_revision_id,
+                            "design_revision_id": replacement_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {
+                                "id": workflow["id"],
+                                "version": workflow["version"],
+                            },
+                            "model_profile": workflow["model_profile"],
+                            "seed": 0,
+                            "input_asset_ids": [reference_id],
+                            "output_asset_ids": [output_asset_id],
+                            "structured_conditioning": generation[
+                                "structured_conditioning"
+                            ],
+                        },
+                        "output_asset_ids": [output_asset_id],
+                    },
+                },
+            )
+            assert completed.status_code == 200
+            assert completed.json()["status"] == "succeeded"
+            generation_id = completed.json()["result"]["generation_id"]
+
+            manifests = await client.get(
+                f"/api/v1/projects/{project_id}/generations"
+            )
+            assert manifests.status_code == 200
+            stored = next(item for item in manifests.json() if item["id"] == generation_id)
+            assert stored["design_revision_id"] == replacement_revision_id
+            assert stored["manifest"]["input_asset_ids"] == [reference_id]
+            assert stored["manifest"]["output_asset_ids"] == [output_asset_id]
+            assert stored["manifest"]["structured_conditioning"][
+                "affected_region"
+            ] == body["affected_region"]
+
+            reference_after = await client.get(
+                f"/api/v1/assets/{reference_id}"
+            )
+            assert reference_after.status_code == 200
+            assert reference_after.content == reference_bytes
+
+            assets = await client.get(
+                f"/api/v1/projects/{project_id}/assets"
+            )
+            reference_row = next(
+                item for item in assets.json() if item["id"] == reference_id
+            )
+            assert reference_row["sha256"] == reference_sha
+            assert reference_row["role"] == "reference"
+            assert reference_row["provenance"] == "user"

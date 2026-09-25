@@ -280,6 +280,40 @@ export const api = {
     return request<Generation[]>(`/api/v1/projects/${projectId}/generations`);
   },
 
+  createReplacement(
+    projectId: string,
+    baseRevisionId: string,
+    targetEntityId: string,
+    referenceAssetId: string,
+    cameraId: string,
+    prompt: string
+  ) {
+    return request<{
+      revision_id: string;
+      content_hash: string;
+      scene: SceneDocument;
+      command: Record<string, unknown>;
+      affected_region: {
+        type: string;
+        target_entity_id: string;
+        camera_id: string;
+        bbox_px: [number, number, number, number];
+        feather_px: number;
+        source: string;
+      };
+      job: Job;
+    }>(`/api/v1/projects/${projectId}/replacements`, {
+      method: "POST",
+      body: JSON.stringify({
+        base_revision_id: baseRevisionId,
+        target_entity_id: targetEntityId,
+        reference_asset_id: referenceAssetId,
+        camera_id: cameraId,
+        prompt
+      })
+    });
+  },
+
   createGeneration(
     projectId: string,
     designRevisionId: string,

@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { CameraPanel } from "./CameraPanel";
 import { DesignPanel } from "./DesignPanel";
+import { ReplacementPanel } from "./ReplacementPanel";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
 
@@ -402,6 +403,15 @@ export default function App() {
         <section className="dashboard-grid">
           {selected && revision && (
             <CameraPanel
+              projectId={selected}
+              revision={revision}
+              assets={assets}
+              onChanged={() => refreshProject(selected)}
+            />
+          )}
+
+          {selected && revision && (
+            <ReplacementPanel
               projectId={selected}
               revision={revision}
               assets={assets}
