@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import json
 import mimetypes
 from typing import Any
 
@@ -325,3 +328,163 @@ class FakeLLMAdapter:
                 }
             )
         return {"fake": True, "tool_calls": calls}
+
+
+
+class OpenAICompatibleVisionStyle:
+    """Pluggable multimodal style analyzer for an OpenAI-compatible local runtime."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout_seconds: float = 180,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
+
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "adapter": "openai-compatible-vision",
+            "model": self.model,
+        }
+
+    async def analyze(
+        self,
+        source_text: str,
+        images: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not 3 <= len(images) <= 5:
+            raise AdapterProtocolError("style analysis requires 3 to 5 reference images")
+
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    "Analyze these interior references and the user instruction. "
+                    "Return one JSON object with key style_profile. "
+                    "style_profile must contain labels, palette, materials, lighting, "
+                    "forms, negative_constraints and evidence. Palette colors must be "
+                    "#RRGGBB. Do not return markdown.\n\nUser instruction:\n"
+                    + source_text
+                ),
+            }
+        ]
+        for image in images:
+            data = image.get("data")
+            media_type = image.get("media_type")
+            if not isinstance(data, bytes) or not isinstance(media_type, str):
+                raise AdapterProtocolError("vision image requires bytes and media_type")
+            encoded = base64.b64encode(data).decode("ascii")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{media_type};base64,{encoded}",
+                    },
+                }
+            )
+
+        raw = await _request_json(
+            self.client,
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You extract structured interior-design style facts.",
+                    },
+                    {"role": "user", "content": content},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0,
+            },
+        )
+        choices = raw.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            raise AdapterProtocolError("vision response is missing choices")
+        message = choices[0].get("message") or {}
+        raw_content = message.get("content")
+        if isinstance(raw_content, dict):
+            parsed = raw_content
+        elif isinstance(raw_content, str):
+            try:
+                parsed = json.loads(raw_content)
+            except json.JSONDecodeError as exc:
+                raise AdapterProtocolError("vision response content is not valid JSON") from exc
+        else:
+            raise AdapterProtocolError("vision response content is missing")
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("style_profile"), dict):
+            raise AdapterProtocolError("vision response requires style_profile object")
+        return {
+            "style_profile": parsed["style_profile"],
+            "adapter_provenance": self.provenance(),
+        }
+
+
+class FakeVisionStyleAdapter:
+    """Deterministic multimodal fixture adapter that proves reference bytes were consumed."""
+
+    def provenance(self) -> dict[str, Any]:
+        return {"adapter": "fake-vision-style", "model": "fake-vision"}
+
+    async def analyze(
+        self,
+        source_text: str,
+        images: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not 3 <= len(images) <= 5:
+            raise AdapterProtocolError("style analysis requires 3 to 5 reference images")
+        lowered = source_text.lower()
+        digests = []
+        for image in images:
+            data = image.get("data")
+            if not isinstance(data, bytes):
+                raise AdapterProtocolError("fake vision image requires bytes")
+            digests.append(hashlib.sha256(data).hexdigest())
+
+        warm = any(token in lowered for token in ("warm", "тепл", "уют"))
+        minimal = any(token in lowered for token in ("minimal", "миним"))
+        wood = any(token in lowered for token in ("wood", "дерев"))
+        return {
+            "style_profile": {
+                "labels": ["minimal"] if minimal else ["contemporary"],
+                "palette": [
+                    {"hex": "#D8D0C4", "role": "base"},
+                    {"hex": "#8A8178", "role": "accent"},
+                ],
+                "materials": [
+                    {
+                        "name": "natural wood" if wood else "matte plaster",
+                        "finish": "matte",
+                        "application": "primary surfaces",
+                    }
+                ],
+                "lighting": {
+                    "temperature_k": 3000 if warm else 3500,
+                    "intent": ["soft", "ambient"],
+                },
+                "forms": {
+                    "keywords": (
+                        ["clean lines", "rounded accents"]
+                        if minimal
+                        else ["balanced proportions"]
+                    )
+                },
+                "negative_constraints": [],
+                "evidence": {
+                    "mode": "fake-vision",
+                    "image_sha256": digests,
+                    "image_count": len(images),
+                },
+            },
+            "adapter_provenance": self.provenance(),
+        }
