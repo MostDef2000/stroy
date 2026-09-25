@@ -1116,3 +1116,274 @@ async def test_geometry_diagnostic_job_is_traceable_and_non_mutating(settings):
             assert latest.status_code == 200
             assert latest.json()["revision_id"] == revision_id
             assert latest.json()["scene"]["entities"][0]["locks"]["geometry"] is True
+
+
+
+@pytest.mark.asyncio
+async def test_multi_command_edit_generation_undo_and_rerender(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Edit loop"},
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.edit-loop",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.wall.living.north",
+                            "kind": "wall",
+                            "locks": {"geometry": True, "transform": True},
+                        },
+                        {
+                            "id": "object.sofa.main",
+                            "kind": "furniture",
+                            "material_ref": "material.fabric.gray",
+                            "locks": {},
+                        },
+                        {
+                            "id": "object.coffee_table.main",
+                            "kind": "furniture",
+                            "locks": {},
+                        },
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 640,
+                            "height_px": 400,
+                            "intrinsics": {
+                                "fx": 500,
+                                "fy": 500,
+                                "cx": 320,
+                                "cy": 200,
+                            },
+                            "transform": {
+                                "translation_mm": [0, -4000, 1600],
+                                "rotation_deg": [90, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            base_revision_id = scene.json()["revision_id"]
+
+            instruction = await client.post(
+                f"/api/v1/projects/{project_id}/design/instructions",
+                headers=headers,
+                json={
+                    "text": "make sofa beige, lighten wood, remove table",
+                    "idempotency_key": "edit-1",
+                },
+            )
+            assert instruction.status_code == 201
+            llm_job_id = instruction.json()["id"]
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            register = await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "edit-worker",
+                    "capabilities": ["llm", "image_generation"],
+                    "models": ["fake"],
+                },
+            )
+            assert register.status_code == 200
+
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "edit-worker"},
+            )
+            assert claim.status_code == 200
+            llm_lease = claim.json()
+            assert llm_lease["job_id"] == llm_job_id
+
+            completed = await client.post(
+                f"/api/v1/workers/jobs/{llm_job_id}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "edit-worker",
+                    "lease_id": llm_lease["lease_id"],
+                    "result": {
+                        "tool_calls": [
+                            {
+                                "name": "set_color",
+                                "arguments": {
+                                    "target_id": "object.sofa.main",
+                                    "color": "#D7C4AB",
+                                },
+                            },
+                            {
+                                "name": "set_material",
+                                "arguments": {
+                                    "target_id": "object.sofa.main",
+                                    "material_ref": "material.wood.light-oak",
+                                },
+                            },
+                            {
+                                "name": "remove_object",
+                                "arguments": {
+                                    "target_id": "object.coffee_table.main",
+                                },
+                            },
+                        ]
+                    },
+                },
+            )
+            assert completed.status_code == 200
+            llm_result = completed.json()["result"]
+            assert len(llm_result["commands"]) == 3
+            assert len(llm_result["applied_revision_ids"]) == 3
+            assert set(llm_result["affected_entity_ids"]) == {
+                "object.sofa.main",
+                "object.coffee_table.main",
+            }
+            assert len(llm_result["generation_job_ids"]) == 1
+            final_revision_id = llm_result["final_revision_id"]
+
+            current = await client.get(f"/api/v1/projects/{project_id}/scene")
+            assert current.status_code == 200
+            assert current.json()["revision_id"] == final_revision_id
+            entities = {
+                item["id"]: item
+                for item in current.json()["scene"]["entities"]
+            }
+            assert entities["object.sofa.main"]["metadata"]["color"] == "#D7C4AB"
+            assert (
+                entities["object.sofa.main"]["material_ref"]
+                == "material.wood.light-oak"
+            )
+            assert "object.coffee_table.main" not in entities
+            assert entities["surface.wall.living.north"]["locks"]["geometry"] is True
+
+            generation_claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "edit-worker"},
+            )
+            assert generation_claim.status_code == 200
+            generation_lease = generation_claim.json()
+            assert generation_lease["job_type"] == "image.generate"
+            generation_payload = generation_lease["payload"]
+            assert generation_payload["design_revision_id"] == final_revision_id
+            assert generation_payload["regeneration_scope"] == "targeted"
+            assert set(generation_payload["affected_entity_ids"]) == {
+                "object.sofa.main",
+                "object.coffee_table.main",
+            }
+            assert "surface.wall.living.north" in generation_payload[
+                "generation"
+            ]["structured_conditioning"]["protected_entity_ids"]
+
+            output = await client.post(
+                f"/api/v1/workers/jobs/{generation_lease['job_id']}/outputs",
+                headers=worker_headers,
+                data={
+                    "worker_id": "edit-worker",
+                    "lease_id": generation_lease["lease_id"],
+                    "semantic_name": "image",
+                },
+                files={"file": ("generated.png", png_bytes(), "image/png")},
+            )
+            assert output.status_code == 201
+            output_asset_id = output.json()["id"]
+            generation_context = generation_payload["generation"]
+            workflow = generation_payload["workflow_manifest"]
+
+            generation_complete = await client.post(
+                f"/api/v1/workers/jobs/{generation_lease['job_id']}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "edit-worker",
+                    "lease_id": generation_lease["lease_id"],
+                    "result": {
+                        "generation_manifest": {
+                            "schema_version": "0.1.0",
+                            "generation_id": generation_context["generation_id"],
+                            "scene_revision_id": final_revision_id,
+                            "design_revision_id": final_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {
+                                "id": workflow["id"],
+                                "version": workflow["version"],
+                            },
+                            "model_profile": workflow["model_profile"],
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [output_asset_id],
+                            "structured_conditioning": generation_context[
+                                "structured_conditioning"
+                            ],
+                        },
+                        "output_asset_ids": [output_asset_id],
+                    },
+                },
+            )
+            assert generation_complete.status_code == 200
+            generation_id = generation_complete.json()["result"]["generation_id"]
+
+            manifests = await client.get(
+                f"/api/v1/projects/{project_id}/generations"
+            )
+            assert manifests.status_code == 200
+            assert manifests.json()[0]["id"] == generation_id
+            assert (
+                manifests.json()[0]["design_revision_id"]
+                == final_revision_id
+            )
+            assert manifests.json()[0]["manifest"]["output_asset_ids"] == [
+                output_asset_id
+            ]
+
+            undo = await client.post(
+                f"/api/v1/projects/{project_id}/scene/revert",
+                headers=headers,
+                json={
+                    "expected_base_revision_id": final_revision_id,
+                    "target_revision_id": base_revision_id,
+                },
+            )
+            assert undo.status_code == 200
+            restored_revision_id = undo.json()["revision_id"]
+            restored_entities = {
+                item["id"]: item for item in undo.json()["scene"]["entities"]
+            }
+            assert "object.coffee_table.main" in restored_entities
+            assert restored_entities["object.sofa.main"]["material_ref"] == "material.fabric.gray"
+
+            rerender = await client.post(
+                f"/api/v1/projects/{project_id}/generations",
+                headers=headers,
+                json={
+                    "design_revision_id": restored_revision_id,
+                    "camera_id": "camera.main",
+                    "prompt": "re-render restored design",
+                },
+            )
+            assert rerender.status_code == 201
+
+            rerender_claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "edit-worker"},
+            )
+            assert rerender_claim.status_code == 200
+            assert rerender_claim.json()["payload"]["design_revision_id"] == restored_revision_id
+            assert rerender_claim.json()["payload"]["regeneration_scope"] == "full"
