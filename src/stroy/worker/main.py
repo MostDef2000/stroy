@@ -14,6 +14,7 @@ async def _run() -> None:
     worker_id = os.getenv("STROY_WORKER_ID", "local-fake-worker")
     token = os.getenv("STROY_WORKER_TOKEN", "development-worker-token")
     poll = float(os.getenv("STROY_WORKER_POLL_SECONDS", "5"))
+    heartbeat = float(os.getenv("STROY_WORKER_HEARTBEAT_SECONDS", "20"))
     mode = os.getenv("STROY_WORKER_EXECUTOR_MODE", "fake")
 
     client = WorkerClient(server, token, worker_id)
@@ -65,8 +66,7 @@ async def _run() -> None:
             "hardware": {},
         }
     )
-    await WorkerRunner(client, executors, poll_seconds=poll).run_forever()
-
+    await WorkerRunner(\n        client,\n        executors,\n        poll_seconds=poll,\n        heartbeat_seconds=heartbeat,\n        lease_renew_seconds=heartbeat,\n    ).run_forever()\n
 
 def main() -> None:
     asyncio.run(_run())
