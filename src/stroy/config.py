@@ -49,9 +49,11 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 120
     worker_heartbeat_grace_seconds: int = 60
 
+    model_profiles_path: str = "config/model-profiles.json"
+    model_use: str = "personal-non-commercial"
     llm_base_url: str = "http://127.0.0.1:8001/v1"
     llm_api_key: str = "local"
-    llm_model: str = "Qwen/Qwen3-14B"
+    llm_model_profile: str = "qwen3-14b"
     comfyui_url: str = "http://127.0.0.1:8188"
     image_model_profile: str = "flux-dev-family"
     blender_bin: str = "blender"
