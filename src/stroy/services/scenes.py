@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stroy.db.models import DesignCommandRow, ProjectRow, SceneRevisionRow
@@ -124,6 +125,10 @@ async def revert_scene(
         scene_json=scene.model_dump(mode="json", exclude_none=True),
     )
     session.add(revision)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise CommandConflict("base revision was updated concurrently") from exc
     await session.refresh(revision)
     return revision
