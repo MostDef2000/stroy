@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 import pytest
+from sqlalchemy import select
 
 from stroy.api.app import create_app
 from stroy.config import Settings
+from stroy.db.models import DesignCommandRow
 from stroy.services.assets import MemoryObjectStore
 
 
@@ -21,6 +26,12 @@ def settings(tmp_path):
         worker_token="worker-secret",
         storage_backend="memory",
     )
+
+
+def png_bytes() -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (3, 2), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 async def login(client: AsyncClient) -> str:
@@ -90,6 +101,15 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 command_response.json()["scene"]["entities"][0]["metadata"]["color"]
                 == "#D7C4AB"
             )
+            async with app.state.session_factory() as db:
+                command_row = (
+                    await db.execute(
+                        select(DesignCommandRow).where(
+                            DesignCommandRow.id == "command-1"
+                        )
+                    )
+                ).scalar_one()
+                assert command_row.origin == "user"
 
             history = await client.get(
                 f"/api/v1/projects/{project_id}/scene/revisions"
@@ -108,10 +128,24 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert revert.status_code == 200
             assert "color" not in revert.json()["scene"]["entities"][0]["metadata"]
 
+            redo = await client.post(
+                f"/api/v1/projects/{project_id}/scene/revert",
+                headers=headers,
+                json={
+                    "expected_base_revision_id": revert.json()["revision_id"],
+                    "target_revision_id": command_response.json()["revision_id"],
+                },
+            )
+            assert redo.status_code == 200
+            assert (
+                redo.json()["scene"]["entities"][0]["metadata"]["color"]
+                == "#D7C4AB"
+            )
+
             input_upload = await client.post(
                 f"/api/v1/projects/{project_id}/assets",
                 headers=headers,
-                files={"file": ("input.png", b"input-image", "image/png")},
+                files={"file": ("input.png", png_bytes(), "image/png")},
             )
             assert input_upload.status_code == 201
             input_asset_id = input_upload.json()["id"]
@@ -123,10 +157,24 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                     "job_type": "image.generate",
                     "payload": {"input_asset_ids": [input_asset_id]},
                     "required_capabilities": ["image_generation"],
+                    "idempotency_key": "generate-scene-1",
                 },
             )
             assert job_response.status_code == 201
             job_id = job_response.json()["id"]
+
+            duplicate_job = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=headers,
+                json={
+                    "job_type": "image.generate",
+                    "payload": {"input_asset_ids": [input_asset_id]},
+                    "required_capabilities": ["image_generation"],
+                    "idempotency_key": "generate-scene-1",
+                },
+            )
+            assert duplicate_job.status_code == 201
+            assert duplicate_job.json()["id"] == job_id
 
             worker_headers = {"Authorization": "Bearer worker-secret"}
             register = await client.post(
@@ -153,7 +201,20 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             input_url = lease["download_urls"][input_asset_id]
             downloaded_input = await client.get(input_url, headers=worker_headers)
             assert downloaded_input.status_code == 200
-            assert downloaded_input.content == b"input-image"
+            assert downloaded_input.content == png_bytes()
+
+            progress = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/progress",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-1",
+                    "lease_id": lease["lease_id"],
+                    "progress": {"phase": "sampling", "fraction": 0.5},
+                    "runtime_provenance": {"runtime": "fake", "version": "0.1"},
+                },
+            )
+            assert progress.status_code == 200
+            assert progress.json()["progress"]["fraction"] == 0.5
 
             output = await client.post(
                 f"/api/v1/workers/jobs/{job_id}/outputs",
@@ -169,11 +230,18 @@ async def test_auth_scene_revision_and_worker_flow(settings):
 
             assets = await client.get(f"/api/v1/projects/{project_id}/assets")
             assert assets.status_code == 200
-            assert any(
-                item["id"] == output_asset_id
-                and item["provenance"] == "model_inferred"
-                for item in assets.json()
+            output_asset = next(
+                item for item in assets.json() if item["id"] == output_asset_id
             )
+            assert output_asset["provenance"] == "model_inferred"
+            assert output_asset["role"] == "derived"
+            assert output_asset["source_asset_ids"] == [input_asset_id]
+
+            input_asset = next(
+                item for item in assets.json() if item["id"] == input_asset_id
+            )
+            assert input_asset["metadata"]["width_px"] == 3
+            assert input_asset["metadata"]["height_px"] == 2
 
             workers = await client.get("/api/v1/workers")
             assert workers.status_code == 200
@@ -185,7 +253,13 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 json={
                     "worker_id": "worker-1",
                     "lease_id": lease["lease_id"],
-                    "result": {"image": "fake"},
+                    "result": {
+                        "output_asset_ids": [output_asset_id],
+                    },
+                    "runtime_provenance": {
+                        "runtime": "fake",
+                        "version": "0.1",
+                    },
                 },
             )
             assert complete.status_code == 200
@@ -297,3 +371,66 @@ async def test_upload_policy_rejects_unsupported_type_and_oversize(settings):
                 files={"file": ("photo.png", b"12345", "image/png")},
             )
             assert too_large.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_job_cancel_invalidates_worker_lease(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            owner_headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=owner_headers,
+                json={"name": "Cancel"},
+            )
+            project_id = project.json()["id"]
+
+            job = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=owner_headers,
+                json={
+                    "job_type": "render.blender",
+                    "payload": {},
+                    "required_capabilities": ["blender_render"],
+                },
+            )
+            job_id = job.json()["id"]
+
+            worker_headers = {"Authorization": "Bearer worker-secret"}
+            await client.post(
+                "/api/v1/workers/register",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-cancel",
+                    "capabilities": ["blender_render"],
+                },
+            )
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers=worker_headers,
+                json={"worker_id": "worker-cancel"},
+            )
+            lease = claim.json()
+
+            cancelled = await client.post(
+                f"/api/v1/jobs/{job_id}/cancel",
+                headers=owner_headers,
+            )
+            assert cancelled.status_code == 200
+            assert cancelled.json()["status"] == "cancelled"
+
+            late_complete = await client.post(
+                f"/api/v1/workers/jobs/{job_id}/complete",
+                headers=worker_headers,
+                json={
+                    "worker_id": "worker-cancel",
+                    "lease_id": lease["lease_id"],
+                    "result": {},
+                },
+            )
+            assert late_complete.status_code == 409
