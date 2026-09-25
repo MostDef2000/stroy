@@ -137,7 +137,7 @@ class DesignCommand(BaseModel):
 
 def canonical_hash(scene: Scene) -> str:
     payload = json.dumps(
-        scene.model_dump(mode="json"),
+        scene.model_dump(mode="json", exclude_none=True),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
