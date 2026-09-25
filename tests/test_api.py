@@ -108,12 +108,20 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert revert.status_code == 200
             assert "color" not in revert.json()["scene"]["entities"][0]["metadata"]
 
+            input_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                files={"file": ("input.png", b"input-image", "image/png")},
+            )
+            assert input_upload.status_code == 201
+            input_asset_id = input_upload.json()["id"]
+
             job_response = await client.post(
                 f"/api/v1/projects/{project_id}/jobs",
                 headers=headers,
                 json={
                     "job_type": "image.generate",
-                    "payload": {},
+                    "payload": {"input_asset_ids": [input_asset_id]},
                     "required_capabilities": ["image_generation"],
                 },
             )
@@ -141,6 +149,11 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert claim.status_code == 200
             lease = claim.json()
             assert lease["job_id"] == job_id
+
+            input_url = lease["download_urls"][input_asset_id]
+            downloaded_input = await client.get(input_url, headers=worker_headers)
+            assert downloaded_input.status_code == 200
+            assert downloaded_input.content == b"input-image"
 
             output = await client.post(
                 f"/api/v1/workers/jobs/{job_id}/outputs",
