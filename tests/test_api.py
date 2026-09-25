@@ -383,6 +383,24 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 "render_preview",
             ]
 
+            assert len(agent_result["generation_job_ids"]) == 1
+            auto_generation_job_id = agent_result["generation_job_ids"][0]
+            auto_generation = await client.get(
+                f"/api/v1/jobs/{auto_generation_job_id}"
+            )
+            assert auto_generation.status_code == 200
+            assert auto_generation.json()["job_type"] == "image.generate"
+            assert (
+                auto_generation.json()["progress"] == {}
+                or auto_generation.json()["status"] == "waiting_for_worker"
+            )
+            cancelled_generation = await client.post(
+                f"/api/v1/jobs/{auto_generation_job_id}/cancel",
+                headers=headers,
+            )
+            assert cancelled_generation.status_code == 200
+            assert cancelled_generation.json()["status"] == "cancelled"
+
             async with app.state.session_factory() as db:
                 agent_command = (
                     await db.execute(
