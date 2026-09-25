@@ -198,7 +198,7 @@ class RenderExecutor:
                 "render_id": "render-1",
                 "scene_revision_id": "scene-rev-1",
                 "camera_id": "camera.main",
-                "renderer_profile": "blender-eevee-v0",
+                "renderer_profile": "blender-cycles-v0",
             },
         }
 
