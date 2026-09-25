@@ -65,24 +65,26 @@ Model implementations are deliberately swappable. Product contracts must never d
 
 ## Deployment and access
 
-STROY is a **single-user, non-commercial personal project** whose AI/storage workloads run on the owner's computer, while the application is reachable from anywhere at **https://stroy.mostdef.ru**.
-
-Preferred v0.1 ingress:
+STROY is a **single-user, non-commercial personal project**. The public application runs on the owner's VPS at **https://stroy.mostdef.ru**; GPU-heavy AI/rendering runs on the owner's home workstation.
 
 ```text
-Internet
-  -> stroy.mostdef.ru
-  -> identity-aware access layer (owner only)
-  -> outbound tunnel from the home machine
-  -> STROY Web/API
-  -> local PostgreSQL / Redis / MinIO / Qwen / ComfyUI / Blender
+Browser
+  -> stroy.mostdef.ru (A -> VPS)
+  -> Caddy / HTTPS
+  -> STROY Web + API + owner auth
+  -> PostgreSQL / Redis / MinIO on VPS
+
+Home workstation
+  -> STROY GPU worker (outbound HTTPS only)
+  -> local Qwen + ComfyUI/FLUX + Blender
 ```
 
 - No public registration or multi-user/RBAC scope.
-- Production auth should happen at the Internet edge and be validated by the origin without a second login screen.
-- A local-password mode may exist only for local development/fallback.
-- PostgreSQL, Redis, MinIO, Qwen, ComfyUI and Blender remain private infrastructure and are never published directly.
-- Direct public-IP/reverse-proxy deployment is a fallback, not the default.
+- The VPS exposes only HTTPS (and optionally HTTP for ACME redirect).
+- PostgreSQL, Redis and MinIO are private to the VPS.
+- Qwen, ComfyUI and Blender are private to the home workstation.
+- The home workstation requires no inbound Internet port.
+- The GPU worker authenticates to the VPS with a dedicated service credential and claims jobs over HTTPS.
 
 ## Model policy
 
@@ -131,5 +133,5 @@ Start here:
 
 Start with the umbrella epic: [#25 — One-room geometry-preserving AI interior design](https://github.com/MostDef2000/stroy/issues/25).
 
-Critical path: Scene/API foundation (#1–#5) + owner-only auth (#26) + public ingress (#27) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
+Critical path: Scene/API foundation (#1–#5) + owner auth (#26) + VPS deployment (#27) + remote GPU worker (#28) → Blender/camera/control passes (#6–#8) → Qwen/style/ComfyUI (#9–#13) → preservation + editing (#14–#16) → web editor (#17–#19) → end-to-end acceptance (#20).
 
