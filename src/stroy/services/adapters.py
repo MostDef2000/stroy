@@ -155,6 +155,25 @@ class ComfyUIAdapter:
     def provenance(self) -> dict[str, Any]:
         return {"adapter": "comfyui"}
 
+    async def upload_input_image(
+        self,
+        *,
+        filename: str,
+        data: bytes,
+        media_type: str = "image/png",
+    ) -> str:
+        payload = await _request_json(
+            self.client,
+            "POST",
+            f"{self.base_url}/upload/image",
+            files={"image": (filename, data, media_type)},
+            data={"overwrite": "true"},
+        )
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise AdapterProtocolError("ComfyUI upload response is missing image name")
+        return name
+
     async def submit(self, workflow: dict[str, Any], client_id: str) -> str:
         data = await _request_json(
             self.client,
