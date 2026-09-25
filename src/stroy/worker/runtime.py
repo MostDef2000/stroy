@@ -98,6 +98,10 @@ class WorkerRunner:
                 {"worker_id": self.client.worker_id},
             )
             renew_task = asyncio.create_task(self._renew_lease(job_id, lease_id, stop))
+            input_assets: dict[str, bytes] = {}
+            for asset_id, url in (job.get("download_urls") or {}).items():
+                input_assets[str(asset_id)] = await self.client.download_input(str(url))
+            job["_input_assets"] = input_assets
             result = await executor.execute(job)
 
             raw_artifacts = result.pop("_artifacts", [])
