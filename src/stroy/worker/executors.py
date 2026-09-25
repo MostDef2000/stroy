@@ -4,6 +4,7 @@ import json
 from typing import Any, Protocol
 
 from stroy.generation import GenerationContext, WorkflowManifest
+from stroy.generation import WorkflowManifest
 from stroy.services.adapters import ComfyUIAdapter
 
 
