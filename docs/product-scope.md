@@ -4,7 +4,7 @@
 
 STROY is a personal, non-commercial renovation tool for the owner's apartment. It creates a persistent, editable digital twin of the real apartment and uses AI running on the owner's computer to explore interior-design variants without silently changing the physical apartment.
 
-The v0.1 deployment is single-user and authenticated. Public registration, organizations, teams, subscriptions and RBAC are out of scope.
+The v0.1 deployment is single-user and authenticated, but intentionally reachable from anywhere at `https://stroy.mostdef.ru`. Public registration, organizations, teams, subscriptions and RBAC are out of scope.
 
 The product is intentionally split into two concerns:
 
@@ -58,4 +58,4 @@ v0.1 proves a single vertical slice for **one room**.
 5. **Non-destructive editing.** User-visible edits are represented as commands and revisions.
 6. **Replaceable AI runtimes.** Domain objects do not depend on a specific LLM or diffusion checkpoint.
 7. **Local-first.** Qwen, FLUX/ComfyUI, Blender and project assets are designed to run on the owner's computer.
-8. **Private by default.** The web/API surface is authenticated and project assets are not anonymously accessible.
+8. **Private data, public reachability.** `stroy.mostdef.ru` is Internet-reachable, but every project/asset/generation route is owner-only and the local model/storage services are never directly public.
