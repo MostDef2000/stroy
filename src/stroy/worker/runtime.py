@@ -130,7 +130,13 @@ class WorkerRunner:
                     await self.client.release(job_id, lease_id)
                     return True
 
-                await asyncio.sleep(min(2.0, self.lease_renew_seconds))
+                done, _ = await asyncio.wait(
+                    {execution_task},
+                    timeout=min(2.0, self.lease_renew_seconds),
+                )
+                if execution_task in done:
+                    break
+
                 lease_state = await self.client.lease_status(job_id, lease_id)
                 if lease_state.get("status") == "cancelled":
                     await self._cancel_executor(executor, job)
