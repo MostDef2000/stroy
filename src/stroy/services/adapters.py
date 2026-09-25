@@ -38,6 +38,11 @@ class AdapterProtocolError(AdapterError):
     retryable = False
 
 
+class AdapterExecutionError(AdapterError):
+    code = "runtime_execution_error"
+    retryable = False
+
+
 async def _request_json(
     client: httpx.AsyncClient,
     method: str,
@@ -182,9 +187,44 @@ class ComfyUIAdapter:
                     raise AdapterProtocolError(
                         "ComfyUI history entry must be an object"
                     )
-                return result
+                status = result.get("status") or {}
+                if status and not isinstance(status, dict):
+                    raise AdapterProtocolError(
+                        "ComfyUI history status must be an object"
+                    )
+                status_str = str(status.get("status_str", "")).lower()
+                messages = status.get("messages") or []
+                has_execution_error = any(
+                    isinstance(message, (list, tuple))
+                    and bool(message)
+                    and message[0] == "execution_error"
+                    for message in messages
+                )
+                if status_str in {"error", "failed"} or has_execution_error:
+                    raise AdapterExecutionError(
+                        f"ComfyUI prompt failed: {prompt_id}"
+                    )
+                if (
+                    status.get("completed") is True
+                    or status_str == "success"
+                    or bool(result.get("outputs"))
+                ):
+                    return result
             await asyncio.sleep(poll_seconds)
         raise AdapterTimeout(f"ComfyUI prompt timed out: {prompt_id}")
+
+    async def cancel(self, prompt_id: str) -> bool:
+        payload = await _request_json(
+            self.client,
+            "POST",
+            f"{self.base_url}/api/jobs/{prompt_id}/cancel",
+        )
+        cancelled = payload.get("cancelled")
+        if not isinstance(cancelled, bool):
+            raise AdapterProtocolError(
+                "ComfyUI cancel response is missing boolean cancelled"
+            )
+        return cancelled
 
     async def collect_output_images(
         self,
