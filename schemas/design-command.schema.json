@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stoy.local/schemas/design-command.schema.json",
+  "title": "STOY Design Command",
+  "type": "object",
+  "required": ["schema_version", "command_id", "base_revision_id", "operation", "target_id", "parameters", "origin"],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "command_id": {"type": "string", "minLength": 1},
+    "base_revision_id": {"type": "string", "minLength": 1},
+    "operation": {"enum": ["set_material", "set_color", "add_object", "remove_object", "replace_object_from_reference", "move_object", "set_light_intent"]},
+    "target_id": {"type": "string", "minLength": 1},
+    "parameters": {"type": "object", "additionalProperties": true},
+    "reference_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "origin": {"enum": ["user", "agent", "system"]},
+    "request_text": {"type": "string"}
+  },
+  "additionalProperties": false
+}
