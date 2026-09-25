@@ -1,42 +1,54 @@
-# ADR 0006: Remote access uses a public hostname with private origin
+# ADR 0006: VPS control plane with outbound home GPU worker
 
 - Status: Accepted
 - Date: 2026-09-25
 
 ## Context
 
-STROY must be reachable from anywhere at `https://stroy.mostdef.ru`, while Qwen, FLUX/ComfyUI, Blender, PostgreSQL, Redis and MinIO remain on the owner's computer.
+`stroy.mostdef.ru` already has an A record pointing to the owner's VPS. The application must be reachable from anywhere, while Qwen, FLUX/ComfyUI and Blender should run on the owner's personal workstation.
 
-Home Internet connections may have changing public IPs, NAT/CGNAT, and should not expose internal AI/storage services.
+Exposing the home workstation or model runtime ports directly to the Internet is unnecessary and increases operational risk.
 
 ## Decision
 
-The preferred v0.1 deployment publishes only the STROY web/API surface through an outbound tunnel.
+Split STROY into two deployment roles.
 
-Primary profile:
+### VPS control plane
 
-- hostname: `stroy.mostdef.ru`;
-- edge access control: owner identity only;
-- tunnel: outbound from the home machine;
-- origin listener: loopback/private container network;
-- no public port forwarding required;
-- local infrastructure/model services remain private.
+The VPS hosts:
 
-The initial implementation target is Cloudflare Tunnel + Cloudflare Access because it supports public hostnames, owner-only access policies and outbound-only origin connectivity.
+- Caddy HTTPS ingress;
+- STROY web/API;
+- native single-owner authentication;
+- PostgreSQL;
+- Redis;
+- MinIO/S3-compatible object storage;
+- durable jobs and worker leases.
 
-A direct public-IP + Caddy deployment remains a fallback profile when desired/possible.
+### Home GPU worker
+
+The home workstation runs `stroy-worker` and local:
+
+- Qwen;
+- ComfyUI / FLUX;
+- Blender.
+
+The worker makes outbound HTTPS requests to the VPS, authenticates with a dedicated service credential, claims leased jobs, transfers required assets, executes them locally and uploads results.
+
+The worker never connects directly to PostgreSQL or Redis and requires no inbound home port.
 
 ## Consequences
 
 Positive:
 
-- remote access works without exposing the home origin directly;
-- dynamic IP/CGNAT are less likely to block deployment;
-- edge authentication happens before requests reach the application;
-- infrastructure ports remain private.
+- the existing VPS/domain setup is used directly;
+- web/API stay available while the home GPU machine is offline;
+- no CGNAT/dynamic-home-IP problem;
+- Qwen/ComfyUI remain private;
+- durable application data has one always-on home on the VPS.
 
 Trade-offs:
 
-- remote availability depends on the tunnel/edge provider;
-- tunnel credentials and DNS configuration become operational dependencies;
-- direct-provider independence requires maintaining the fallback deployment profile.
+- large assets move between VPS and home workstation;
+- GPU work depends on the home worker being online;
+- job leasing/heartbeat and worker authentication become first-class product infrastructure.
