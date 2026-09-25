@@ -57,3 +57,14 @@ Actual limits belong in benchmark documentation.
 ## Data hygiene
 
 Never commit model weights, generated renders, uploaded apartment data, API tokens or private reference images.
+
+## Production split
+
+The root local-development setup may run infrastructure and model runtimes on one workstation for convenience.
+
+Production is intentionally split:
+
+- VPS: Caddy, web/API, PostgreSQL, Redis, MinIO;
+- home workstation: `stroy-worker`, Qwen, ComfyUI/FLUX, Blender.
+
+Use `deploy/vps/env.example` for VPS settings and `apps/worker/env.example` for the home worker. The worker communicates only with the VPS application API over outbound HTTPS; it does not connect directly to PostgreSQL or Redis.
