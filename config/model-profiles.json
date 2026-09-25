@@ -10,8 +10,11 @@
       "source": "https://huggingface.co/Qwen/Qwen3-14B",
       "reviewed_on": "2026-09-25"
     },
-    "approved_uses": ["local-development", "commercial-evaluation"],
-    "notes": "Quantized derivatives must record their own source and quantization method."
+    "approved_uses": [
+      "local-development",
+      "personal-non-commercial"
+    ],
+    "notes": "Primary local agent profile. Quantized derivatives must record their source and quantization method."
   },
   {
     "id": "flux1-schnell",
@@ -24,8 +27,11 @@
       "source": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
       "reviewed_on": "2026-09-25"
     },
-    "approved_uses": ["local-development", "commercial-evaluation"],
-    "notes": "Bootstrap image profile."
+    "approved_uses": [
+      "local-development",
+      "personal-non-commercial"
+    ],
+    "notes": "Permissive bootstrap image profile."
   },
   {
     "id": "flux-dev-family",
@@ -38,7 +44,9 @@
       "source": "https://bfl.ai/legal/non-commercial-license-terms",
       "reviewed_on": "2026-09-25"
     },
-    "approved_uses": ["non-commercial-research"],
-    "notes": "Commercial self-hosting requires an applicable commercial license/agreement."
+    "approved_uses": [
+      "personal-non-commercial"
+    ],
+    "notes": "Allowed for STROY's current personal non-commercial local use; re-review terms if project scope changes."
   }
 ]
