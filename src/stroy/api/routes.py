@@ -19,7 +19,7 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
+from stroy.db.models import AssetRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
