@@ -535,6 +535,12 @@ async def worker_job_renew(job_id: str, payload: LeaseRequest, request: Request,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    worker = await session.get(WorkerRow, payload.worker_id)
+    if worker is not None:
+        worker.status = "online"
+        worker.last_heartbeat = datetime.now(timezone.utc)
+        await session.commit()
     return job_view(row)
 
 
