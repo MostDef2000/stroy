@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
         default="renders/golden-room",
     )
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument(
+        "--resolution-scale",
+        type=float,
+        default=1.0,
+        help="Scale camera resolution and intrinsics for smoke renders.",
+    )
     return parser.parse_args()
 
 
@@ -38,6 +44,17 @@ async def run(args: argparse.Namespace) -> None:
     scene = Scene.model_validate_json(
         Path(args.scene).read_text(encoding="utf-8")
     )
+    if args.resolution_scale <= 0:
+        raise ValueError("resolution scale must be positive")
+    if args.resolution_scale != 1.0:
+        scene = scene.model_copy(deep=True)
+        for camera in scene.cameras:
+            camera.width_px = max(1, round(camera.width_px * args.resolution_scale))
+            camera.height_px = max(1, round(camera.height_px * args.resolution_scale))
+            camera.intrinsics.fx *= args.resolution_scale
+            camera.intrinsics.fy *= args.resolution_scale
+            camera.intrinsics.cx *= args.resolution_scale
+            camera.intrinsics.cy *= args.resolution_scale
     plan = build_blender_plan(
         scene,
         scene_revision_id=args.revision_id,
