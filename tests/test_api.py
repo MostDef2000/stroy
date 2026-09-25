@@ -76,6 +76,14 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                             "id": "object.sofa.main",
                             "kind": "furniture",
                             "locks": {},
+                        },
+                        {
+                            "id": "surface.wall.living.north",
+                            "kind": "wall",
+                            "locks": {
+                                "geometry": True,
+                                "transform": True,
+                            },
                         }
                     ],
                     "cameras": [],
@@ -101,6 +109,21 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                 command_response.json()["scene"]["entities"][0]["metadata"]["color"]
                 == "#D7C4AB"
             )
+
+            locked = await client.post(
+                f"/api/v1/projects/{project_id}/scene/commands",
+                headers=headers,
+                json={
+                    "command_id": "locked-command",
+                    "base_revision_id": command_response.json()["revision_id"],
+                    "operation": "move_object",
+                    "target_id": "surface.wall.living.north",
+                    "parameters": {"translation_mm": [10, 0, 0]},
+                    "origin": "agent",
+                },
+            )
+            assert locked.status_code == 409
+            assert locked.json()["detail"]["code"] == "command_rejected"
             async with app.state.session_factory() as db:
                 command_row = (
                     await db.execute(
@@ -149,6 +172,18 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             )
             assert input_upload.status_code == 201
             input_asset_id = input_upload.json()["id"]
+
+            duplicate_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("duplicate.png", png_bytes(), "image/png")},
+            )
+            assert duplicate_upload.status_code == 201
+            assert (
+                duplicate_upload.json()["duplicate_of_asset_id"]
+                == input_asset_id
+            )
 
             job_response = await client.post(
                 f"/api/v1/projects/{project_id}/jobs",
