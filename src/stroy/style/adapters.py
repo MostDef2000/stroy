@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from PIL import Image, ImageStat
 
 from stroy.services.adapters import AdapterProtocolError, OpenAICompatibleLLM
-from stroy.style import StyleProfileProposal
+from stroy.style.models import StyleProfileProposal
 
 
 @dataclass(frozen=True)
