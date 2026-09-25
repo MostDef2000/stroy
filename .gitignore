@@ -17,6 +17,8 @@ build/
 
 # Node
 node_modules/
+package-lock.json
+*.tsbuildinfo
 .next/
 out/
 coverage/

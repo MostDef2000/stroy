@@ -1,0 +1,81 @@
+# This file is a TEMPLATE copied to /etc/nginx/sites-available/stroy.mostdef.ru on the VPS;
+# never commit the installed copy.
+
+server {
+    listen 80;
+    server_name stroy.mostdef.ru;
+
+    # Redirect all HTTP requests to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name stroy.mostdef.ru;
+
+    # Note: The SSL certificate must be issued (e.g., via certbot) before enabling this vhost.
+    # TLS certificates managed by certbot (certbot --nginx or webroot on the existing nginx)
+    ssl_certificate /etc/letsencrypt/live/stroy.mostdef.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/stroy.mostdef.ru/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 100M;
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # Security headers (inherited by all locations unless overridden)
+    add_header X-Content-Type-Options nosniff;
+    add_header Referrer-Policy strict-origin-when-cross-origin;
+    add_header X-Frame-Options DENY;
+
+    # Proxy headers (inherited by all proxy locations)
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+
+    # Backend API proxy
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location = /health {
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location = /ready {
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location /docs {
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location = /redoc {
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location = /openapi.json {
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    # Static web assets
+    root /var/www/stroy.mostdef.ru;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Long-term cache for hashed assets
+    location /assets/ {
+        add_header X-Content-Type-Options nosniff;
+        add_header Referrer-Policy strict-origin-when-cross-origin;
+        add_header X-Frame-Options DENY;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # No-cache for the entry point
+    location = /index.html {
+        add_header X-Content-Type-Options nosniff;
+        add_header Referrer-Policy strict-origin-when-cross-origin;
+        add_header X-Frame-Options DENY;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+}

@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down infra-logs install lint test check api web worker-fake password-hash render-golden
+.PHONY: infra-up infra-down infra-logs install lint test check api web worker-fake password-hash render-golden web-dist
 
 infra-up:
 	docker compose up -d postgres redis minio
@@ -40,3 +40,7 @@ worker-fake:
 
 render-golden:
 	python3 scripts/render_golden_room.py
+
+web-dist:
+	cd apps/web && npm install && npm run build
+	@echo "Web distribution built in apps/web/dist. Sync to /var/www/stroy.mostdef.ru on VPS."

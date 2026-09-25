@@ -1,21 +1,4 @@
 services:
-  web:
-    build:
-      context: ../..
-      dockerfile: deploy/vps/Dockerfile.web
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - edge
-    depends_on:
-      api:
-        condition: service_healthy
-
   api:
     build:
       context: ../..
@@ -32,8 +15,8 @@ services:
       STROY_S3_ENDPOINT: http://minio:9000
       STROY_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
       STROY_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-    expose:
-      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
     networks:
       - edge
       - private
@@ -49,6 +32,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 192M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgres:
     image: postgres:16-alpine
@@ -66,10 +60,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 224M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --maxmemory 48mb --maxmemory-policy noeviction --appendonly yes
     volumes:
       - stroy_redis:/data
     networks:
@@ -79,6 +85,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   minio:
     image: minio/minio
@@ -91,6 +108,22 @@ services:
       - stroy_minio:/data
     networks:
       - private
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 320M
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   edge:
@@ -98,8 +131,6 @@ networks:
     internal: true
 
 volumes:
-  caddy_data:
-  caddy_config:
   stroy_postgres:
   stroy_redis:
   stroy_minio:

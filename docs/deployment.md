@@ -17,10 +17,12 @@ stroy.mostdef.ru
   |
   | A record -> VPS
   v
-Caddy
+Host Nginx
+  |
+  +--> /var/www/stroy.mostdef.ru (Static)
   |
   v
-STROY Web/API
+STROY Web/API (127.0.0.1:8000)
   |
   +--> PostgreSQL
   +--> Redis
@@ -52,15 +54,16 @@ The VPS is always-on and owns:
 
 Only ports needed for public web traffic should be exposed externally. PostgreSQL, Redis and MinIO remain on a private Docker/network namespace or loopback-only binding.
 
-## Caddy
+## Host Nginx
 
-Caddy is the preferred reverse proxy for v0.1 because the domain already resolves directly to the VPS.
+Host nginx is the reverse proxy for v0.1 because the domain already resolves directly to the VPS and the host already terminates TLS for other vhosts.
 
 Responsibilities:
 
-- automatic HTTPS certificate issuance/renewal;
+- TLS certificate issuance/renewal via certbot;
 - HTTP -> HTTPS redirect;
-- reverse proxy to the STROY application;
+- serving the built web distribution from `/var/www/stroy.mostdef.ru`;
+- reverse proxy to the STROY API container on `127.0.0.1:8000`;
 - standard security headers where appropriate;
 - request/body limits coordinated with the application for asset uploads.
 
@@ -150,7 +153,7 @@ Model weights on the home machine do not need VPS backup if they can be reproduc
 v0.1 should provide:
 
 - VPS Docker Compose profile;
-- Caddy configuration;
+- nginx vhost configuration template;
 - environment/secrets example;
 - systemd or Docker restart policy;
 - database migration command;
