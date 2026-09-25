@@ -1,8 +1,8 @@
-# STOY
+# STROY
 
 Local-first AI interior design built around a **geometry-preserving digital twin** of a real apartment.
 
-STOY is not an image-to-image interior generator. The product separates the immutable physical apartment from the editable design layer:
+STROY is not an image-to-image interior generator. The product separates the immutable physical apartment from the editable design layer:
 
 1. ingest plans, measurements, photos/video and later LiDAR/DWG/DXF;
 2. reconstruct a canonical semantic 3D scene;
@@ -53,7 +53,7 @@ Directories are introduced incrementally by implementation issues. The contracts
 
 ## Initial technology direction
 
-- **Scene/geometry:** canonical STOY scene model; Blender is an execution/render engine, not the source of truth.
+- **Scene/geometry:** canonical STROY scene model; Blender is an execution/render engine, not the source of truth.
 - **LLM/agent:** Qwen 14B-class model behind an OpenAI-compatible adapter. Initial target profile: `Qwen/Qwen3-14B`.
 - **Image runtime:** ComfyUI behind an internal adapter. Workflows are versioned and model-specific.
 - **3D web:** Three.js / React Three Fiber is the intended viewer layer.
