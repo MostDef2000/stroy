@@ -4,7 +4,7 @@
 
 STROY combines deterministic geometry with probabilistic AI. Canonical state is therefore isolated from rendering and generation runtimes.
 
-\`\`\`text
+```text
 Internet / Browser
   |
   v
@@ -33,7 +33,7 @@ STROY Web/API + owner auth
           +--> Qwen
           +--> ComfyUI / FLUX
           +--> Blender
-\`\`\`
+```
 
 ## Bounded contexts
 
