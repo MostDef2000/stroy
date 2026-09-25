@@ -4,9 +4,10 @@ import asyncio
 import os
 
 from stroy.models import ModelProfileRegistry
+from stroy.rendering import BlenderAdapter
 from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
 from stroy.worker.client import WorkerClient
-from stroy.worker.executors import ComfyUIExecutor, FakeStyleExecutor, QwenExecutor
+from stroy.worker.executors import BlenderExecutor, ComfyUIExecutor, FakeStyleExecutor, QwenExecutor
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
 
 
@@ -41,12 +42,17 @@ async def _run() -> None:
             profile_id=llm_profile.id,
         )
         comfy = ComfyUIAdapter(os.getenv("STROY_COMFYUI_URL", "http://127.0.0.1:8188"))
+        blender = BlenderAdapter(
+            os.getenv("STROY_BLENDER_BIN", "blender"),
+            script_path=os.getenv("STROY_BLENDER_SCRIPT", "blender/stroy_blender.py"),
+            timeout_seconds=int(os.getenv("STROY_BLENDER_TIMEOUT_SECONDS", "900")),
+        )
         executors = {
             "llm.complete": QwenExecutor(llm),
             "style.analyze": QwenExecutor(llm),
             "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id),
             "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id),
-            "render.blender": FakeExecutor("pending-blender-adapter"),
+            "render.blender": BlenderExecutor(blender),
             "quality.geometry_check": FakeExecutor("pending-quality-adapter"),
         }
         models = [llm_profile.id, image_profile.id]
