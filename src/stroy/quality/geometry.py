@@ -3,7 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Literal
 
-from PIL import Image, ImageChops, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageFilter
 from pydantic import BaseModel, ConfigDict, Field
 
 
