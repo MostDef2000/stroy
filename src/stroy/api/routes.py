@@ -668,6 +668,21 @@ async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSess
     row = await _leased_job(session, job_id)
     try:
         processed_result = await apply_design_agent_result(session, row, payload.result)
+    except (ValueError, CommandRejected) as exc:
+        try:
+            row = await fail_job(
+                session,
+                row,
+                worker_id=payload.worker_id,
+                lease_id=payload.lease_id,
+                error={"code": "agent_result_rejected", "detail": str(exc)},
+                runtime_provenance=payload.runtime_provenance,
+            )
+        except ValueError as lease_exc:
+            raise HTTPException(status_code=409, detail=str(lease_exc)) from lease_exc
+        return job_view(row)
+
+    try:
         row = await complete_job(
             session,
             row,
@@ -676,15 +691,8 @@ async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSess
             result=processed_result,
             runtime_provenance=payload.runtime_provenance,
         )
-    except (ValueError, CommandRejected) as exc:
-        row = await fail_job(
-            session,
-            row,
-            worker_id=payload.worker_id,
-            lease_id=payload.lease_id,
-            error={"code": "agent_result_rejected", "detail": str(exc)},
-            runtime_provenance=payload.runtime_provenance,
-        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return job_view(row)
 
 
