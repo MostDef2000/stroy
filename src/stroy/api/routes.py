@@ -19,7 +19,7 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, WorkerRow
+from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
@@ -34,6 +34,7 @@ from stroy.services.jobs import (
     renew_lease,
     update_progress,
 )
+from stroy.services.styles import create_style_profile_from_job, list_style_profiles
 from stroy.services.scenes import (
     apply_scene_command,
     create_project,
@@ -88,6 +89,13 @@ class ProjectCreate(BaseModel):
 
 class DesignInstruction(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+    idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class StyleAnalyzeRequest(BaseModel):
+    source_text: str = Field(min_length=1, max_length=4000)
+    reference_asset_ids: list[str] = Field(min_length=3, max_length=5)
+    overrides: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
@@ -432,6 +440,99 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
 
 
 @router.post(
+    "/api/v1/projects/{project_id}/style-profiles/analyze",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def style_profile_analyze(
+    project_id: str,
+    payload: StyleAnalyzeRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    source_assets: list[AssetRow] = []
+    for asset_id in payload.reference_asset_ids:
+        asset = await session.get(AssetRow, asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_style_reference",
+                    "asset_id": asset_id,
+                },
+            )
+        if asset.role != "reference" or not asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_style_reference",
+                    "asset_id": asset_id,
+                    "detail": "style references must be image assets with role=reference",
+                },
+            )
+        source_assets.append(asset)
+
+    row = await create_job(
+        session,
+        project_id=project_id,
+        job_type="style.analyze",
+        required_capabilities=["style_analysis"],
+        payload={
+            "purpose": "style_profile",
+            "source_text": payload.source_text,
+            "input_asset_ids": [asset.id for asset in source_assets],
+            "overrides": payload.overrides,
+            "model_profile": request.app.state.settings.llm_model_profile,
+        },
+        idempotency_key=payload.idempotency_key,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+    )
+    return job_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/style-profiles",
+    dependencies=[Depends(require_owner)],
+)
+async def style_profile_list(project_id: str, session: DbSession):
+    rows = await list_style_profiles(session, project_id)
+    return [
+        {
+            "id": row.id,
+            "project_id": row.project_id,
+            "model_profile": row.model_profile,
+            "correlation_id": row.correlation_id,
+            "created_at": row.created_at,
+            "profile": row.profile_json,
+        }
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/v1/style-profiles/{style_profile_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def style_profile_get(style_profile_id: str, session: DbSession):
+    row = await session.get(StyleProfileRow, style_profile_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="style profile not found")
+    return {
+        "id": row.id,
+        "project_id": row.project_id,
+        "model_profile": row.model_profile,
+        "correlation_id": row.correlation_id,
+        "created_at": row.created_at,
+        "profile": row.profile_json,
+    }
+
+
+@router.post(
     "/api/v1/projects/{project_id}/design/instructions",
     status_code=201,
     dependencies=[Depends(require_csrf)],
@@ -698,6 +799,17 @@ async def worker_job_complete(
             payload.result,
             dispatcher=request.app.state.job_dispatcher,
         )
+        if row.job_type == "style.analyze":
+            style_row = await create_style_profile_from_job(
+                session,
+                row,
+                processed_result,
+            )
+            processed_result = {
+                **processed_result,
+                "style_profile_id": style_row.id,
+                "style_profile": style_row.profile_json,
+            }
     except AgentToolError as exc:
         try:
             row = await fail_job(
