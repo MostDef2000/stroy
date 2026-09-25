@@ -68,3 +68,45 @@ Production is intentionally split:
 - home workstation: `stroy-worker`, Qwen, ComfyUI/FLUX, Blender.
 
 Use `deploy/vps/env.example` for VPS settings and `apps/worker/env.example` for the home worker. The worker communicates only with the VPS application API over outbound HTTPS; it does not connect directly to PostgreSQL or Redis.
+
+
+## Run the mocked vertical slice
+
+The application can be exercised without Qwen, FLUX, Blender or a VPS.
+
+```bash
+make install
+cp .env.example .env
+make password-hash
+```
+
+Put the generated Argon2id value into `STROY_AUTH_PASSWORD_HASH` in `.env`, then:
+
+```bash
+make infra-up
+make api
+```
+
+In separate terminals:
+
+```bash
+make web
+make worker-fake
+```
+
+Open `http://localhost:5173`.
+
+The fake worker uses the same remote-worker protocol as the future home GPU worker. It can claim jobs and execute deterministic fake LLM/image/render operations so auth, revisions, queues and UI can be tested before real model integration.
+
+Useful flow:
+
+1. sign in as the configured owner;
+2. create a project;
+3. click **Golden room**;
+4. type `Сделай диван бежевым и убери стол`;
+5. the instruction becomes an `llm.complete` job;
+6. the fake worker returns typed tool calls;
+7. the VPS/API-side command engine validates locks and creates revisions;
+8. the scene viewer refreshes to the resulting canonical state.
+
+For a future real home-model integration, set `STROY_WORKER_EXECUTOR_MODE=local` and configure the local Qwen OpenAI-compatible and ComfyUI endpoints.
