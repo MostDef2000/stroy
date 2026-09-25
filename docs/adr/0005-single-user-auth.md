@@ -1,50 +1,40 @@
-# ADR 0005: v0.1 uses owner-only authentication
+# ADR 0005: v0.1 uses single-owner native authentication
 
 - Status: Accepted
 - Date: 2026-09-25
 
 ## Context
 
-STROY is a personal renovation tool. Its AI, rendering and storage workloads run on the owner's computer, but the web application must be available remotely at `https://stroy.mostdef.ru`.
-
-Apartment photos, plans and generated designs are private data. A public registration system, organizations and RBAC would add complexity without serving the single-owner use case.
+STROY is reachable from the Internet at `https://stroy.mostdef.ru` through the owner's VPS. Apartment plans, photos and generated designs are private. The product has one owner and does not need registration, organizations or RBAC.
 
 ## Decision
 
-STROY has one logical owner identity.
+Production authentication is implemented by STROY itself.
 
-### Production
+- One configured owner account.
+- No public registration.
+- Password is stored only as a strong Argon2id hash.
+- Browser authentication uses an HttpOnly + Secure session cookie.
+- State-changing requests use CSRF protection.
+- Login is rate-limited/backed off against brute-force attempts.
+- Sessions expire and can be invalidated by logout.
+- Project, asset, job and generation endpoints require owner authentication.
+- Health endpoints expose no sensitive project/runtime details.
 
-For the Internet-facing deployment:
+Worker authentication is separate from browser owner authentication. A home GPU worker uses a dedicated high-entropy service credential and cannot use browser sessions.
 
-- `stroy.mostdef.ru` is protected by an identity-aware edge access layer;
-- the allow policy matches only the owner's configured identity;
-- the home origin is reached through an outbound tunnel;
-- the origin validates the signed edge identity/token, or the tunnel daemon validates it before forwarding;
-- after successful edge authentication, STROY does not require a second login form;
-- project, asset, job and generation routes are authenticated;
-- infrastructure services are never directly published.
-
-### Local development / fallback
-
-A `local-password` mode may be supported for development or emergency fallback:
-
-- password stored only as a strong hash (Argon2id preferred);
-- HttpOnly session cookie;
-- CSRF protection for state-changing cookie-authenticated requests;
-- no public registration.
+A future TOTP/WebAuthn second factor can be added without changing the single-owner authorization model.
 
 ## Consequences
 
 Positive:
 
-- the owner can access STROY from anywhere;
-- the home origin does not need to expose a public listening port in the preferred deployment;
-- there is one user model rather than a full identity/RBAC subsystem;
-- sensitive apartment data is not anonymously accessible.
+- no external identity provider is required;
+- authorization remains simple and aligned with the single-owner project;
+- the VPS can authenticate access from any network.
 
 Trade-offs:
 
-- production access depends on the configured edge identity/tunnel provider;
-- local-password mode still requires its own secure session implementation;
+- STROY owns secure password/session implementation;
+- Internet exposure requires disciplined rate limiting, secure cookies, CSRF protection and patching;
 - adding collaborators later requires a new authorization model and ADR.
