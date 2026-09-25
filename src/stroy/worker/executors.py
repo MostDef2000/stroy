@@ -10,6 +10,7 @@ from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
+from stroy.style import StyleImage
 
 
 class LLMAdapter(Protocol):
@@ -133,6 +134,47 @@ class ComfyUIExecutor:
         if prompt_id:
             await self.adapter.cancel(prompt_id)
 
+
+
+class VisionStyleExecutor:
+    def __init__(self, client, adapter) -> None:
+        self.client = client
+        self.adapter = adapter
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        downloads = job.get("download_urls") or {}
+        descriptors = payload.get("input_assets") or []
+        if not isinstance(descriptors, list) or not 3 <= len(descriptors) <= 5:
+            raise ValueError("style analysis requires 3-5 image inputs")
+
+        images: list[StyleImage] = []
+        for descriptor in descriptors:
+            if not isinstance(descriptor, dict):
+                raise ValueError("style input descriptor must be an object")
+            asset_id = descriptor.get("id")
+            media_type = descriptor.get("media_type")
+            if not isinstance(asset_id, str) or not isinstance(media_type, str):
+                raise ValueError("style input descriptor requires id and media_type")
+            url = downloads.get(asset_id)
+            if not isinstance(url, str):
+                raise ValueError(f"style input download URL missing: {asset_id}")
+            images.append(
+                StyleImage(
+                    asset_id=asset_id,
+                    media_type=media_type,
+                    data=await self.client.download_input(url),
+                )
+            )
+
+        proposal = await self.adapter.analyze(
+            str(payload.get("source_text") or ""),
+            images,
+        )
+        return {
+            "style_profile": proposal.model_dump(mode="json"),
+            "adapter_provenance": self.adapter.provenance(),
+        }
 
 
 class FakeStyleExecutor:
