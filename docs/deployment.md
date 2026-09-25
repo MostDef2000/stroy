@@ -2,9 +2,11 @@
 
 ## Goal
 
-The owner can open **https://stroy.mostdef.ru** from anywhere while all AI, storage and rendering workloads remain on the home computer.
+The owner opens **https://stroy.mostdef.ru** from anywhere.
 
-## Preferred topology
+The DNS A record already points `stroy.mostdef.ru` to the owner's VPS. The VPS hosts the persistent STROY control plane. GPU-heavy workloads remain on the home workstation.
+
+## Production topology
 
 ```text
 Browser
@@ -13,95 +15,144 @@ Browser
   v
 stroy.mostdef.ru
   |
+  | A record -> VPS
   v
-Cloudflare Access
-  |   allow: owner identity only
-  v
-Cloudflare Tunnel
-  |   outbound-only connection from home
+Caddy
+  |
   v
 STROY Web/API
   |
-  +--> PostgreSQL (loopback/private)
-  +--> Redis      (loopback/private)
-  +--> MinIO      (loopback/private)
-  +--> Qwen       (loopback/private)
-  +--> ComfyUI    (loopback/private)
-  +--> Blender    (local process)
+  +--> PostgreSQL
+  +--> Redis
+  +--> MinIO
+  +--> Worker API
+          ^
+          | outbound HTTPS
+          |
+    stroy-worker @ home PC
+          |
+          +--> Qwen
+          +--> ComfyUI / FLUX
+          +--> Blender
 ```
 
-## Why this is the default
+## VPS responsibilities
 
-- no router port-forwarding is required;
-- no static public IP is required;
-- it works behind common home NAT/CGNAT setups;
-- the public hostname can be protected before traffic reaches the home machine;
-- only the STROY application is published, not its infrastructure services.
+The VPS is always-on and owns:
 
-## Edge access policy
+- HTTPS ingress for `stroy.mostdef.ru`;
+- web application;
+- API;
+- owner authentication/session state;
+- PostgreSQL metadata and revision history;
+- Redis job coordination;
+- MinIO/S3-compatible project assets;
+- durable job records;
+- worker registration/leases.
 
-Create a self-hosted application for `stroy.mostdef.ru`.
+Only ports needed for public web traffic should be exposed externally. PostgreSQL, Redis and MinIO remain on a private Docker/network namespace or loopback-only binding.
 
-Policy intent:
+## Caddy
 
-- default deny;
-- allow only the owner's chosen identity/email;
-- require re-authentication on a reasonable interval;
-- do not expose an unauthenticated bypass hostname.
+Caddy is the preferred reverse proxy for v0.1 because the domain already resolves directly to the VPS.
 
-The origin must validate authenticated requests. Prefer the tunnel provider's built-in Access protection/token validation or validate the signed Access token in the STROY ingress adapter.
+Responsibilities:
 
-## Origin binding
+- automatic HTTPS certificate issuance/renewal;
+- HTTP -> HTTPS redirect;
+- reverse proxy to the STROY application;
+- standard security headers where appropriate;
+- request/body limits coordinated with the application for asset uploads.
 
-The STROY production HTTP listener should bind to loopback or a private container network and be reachable by the tunnel daemon, not by the public Internet.
+The VPS firewall should expose only SSH administration as required and web ports 80/443. Database/storage/model ports are not public.
 
-PostgreSQL, Redis, MinIO, Qwen and ComfyUI stay bound to loopback/private networking.
+## Owner authentication
 
-## Authentication modes
+Production uses STROY's native single-user owner authentication:
 
-STROY should support:
+- no public registration;
+- Argon2id password hash;
+- HttpOnly + Secure session cookie;
+- CSRF protection;
+- login throttling/backoff;
+- session expiration and logout;
+- private asset access.
 
-- `cloudflare-access` — production/default for `stroy.mostdef.ru`;
-- `local-password` — local development or emergency fallback;
-- `disabled` — tests only.
+A future optional TOTP/WebAuthn second factor can be added without changing the single-owner data model.
 
-In `cloudflare-access` mode, do not show a second application login form after edge authentication.
+## Home GPU worker
 
-## DNS
+The home computer runs `stroy-worker`. It does not accept inbound Internet connections.
 
-Preferred deployment uses a tunnel-backed public hostname for `stroy.mostdef.ru`.
+The worker:
 
-The exact DNS setup depends on where `mostdef.ru` is hosted. A full Cloudflare DNS setup is simplest, but a partial/CNAME setup can also be used when supported by the DNS provider/account configuration.
+1. authenticates to the VPS with a dedicated worker credential;
+2. registers capabilities and runtime/model versions;
+3. maintains heartbeat/availability;
+4. long-polls or maintains an outbound connection for work;
+5. claims a job lease;
+6. downloads required input assets;
+7. executes Qwen, Blender or ComfyUI locally;
+8. uploads result assets and manifests;
+9. completes/fails the leased job.
 
-## Direct-public-IP fallback
+The worker must never connect directly to VPS PostgreSQL or Redis.
 
-If Tunnel/Access is not used, the fallback is:
+## Worker authentication
+
+Browser-owner credentials and worker credentials are separate security domains.
+
+Initial worker auth may use a high-entropy service token stored only on:
+
+- VPS secret configuration;
+- the home workstation secret configuration.
+
+The API stores only a safe representation where feasible and supports token rotation/revocation. A later version may use mTLS.
+
+## Asset transfer
+
+Canonical assets live in VPS object storage.
+
+For worker jobs, prefer one of:
+
+- short-lived pre-signed MinIO/S3 GET/PUT URLs;
+- authenticated streaming through the API.
+
+Pre-signed URLs are preferred for large image/render assets because they keep binary traffic out of application workers while retaining time-limited access.
+
+## Availability behavior
+
+The VPS remains usable for project browsing/history while the home GPU workstation is offline.
+
+GPU-dependent jobs should show a state such as:
 
 ```text
-Internet
-  -> router 80/443
-  -> Caddy
-  -> STROY Web/API
+queued -> waiting_for_worker -> leased -> running -> succeeded
+                                      \-> lease_expired -> queued/retry
+                                      \-> failed
 ```
 
-Requirements:
+The UI should clearly indicate that the local GPU worker is offline rather than treating it as a generic generation failure.
 
-- DNS for `stroy.mostdef.ru` must resolve to the home public IP;
-- dynamic DNS is needed if the ISP changes the address;
-- ports 80/443 must be forwarded;
-- Caddy terminates and renews HTTPS certificates;
-- origin authentication remains mandatory;
-- firewall rules must expose only the reverse proxy;
-- infrastructure/model ports remain private.
+## Backups
 
-This is a fallback because it exposes the home public IP and depends on ISP/NAT conditions.
+At minimum back up:
 
-## Operational rules
+- PostgreSQL;
+- MinIO/project asset storage;
+- application secrets required to restore sessions/tokens as appropriate;
+- workflow/model profile configuration.
 
-- no model/runtime admin UI is exposed publicly;
-- no MinIO console is exposed publicly;
-- secrets stay in local environment/secret storage;
-- tunnel credentials are never committed;
-- generated apartment assets are authenticated/private by default;
-- maintain backups of PostgreSQL metadata and the asset bucket;
-- remote access must fail closed if the identity layer is unavailable or misconfigured.
+Model weights on the home machine do not need VPS backup if they can be reproduced from documented model profiles.
+
+## Deployment automation
+
+v0.1 should provide:
+
+- VPS Docker Compose profile;
+- Caddy configuration;
+- environment/secrets example;
+- systemd or Docker restart policy;
+- database migration command;
+- backup/restore notes;
+- home-worker install/run instructions.
