@@ -50,6 +50,8 @@ class DesignCommandRow(Base):
     reference_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(20))
     request_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_profile: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
