@@ -269,8 +269,7 @@ async def workers(request: Request, session: DbSession):
         {
             "id": row.id,
             "display_name": row.display_name,
-            "online": (now - row.last_heartbeat).total_seconds() <= grace,
-            "capabilities": row.capabilities,
+            "online": (\n                now\n                - (\n                    row.last_heartbeat\n                    if row.last_heartbeat.tzinfo\n                    else row.last_heartbeat.replace(tzinfo=timezone.utc)\n                )\n            ).total_seconds() <= grace,\n            "capabilities": row.capabilities,
             "models": row.models,
             "runtimes": row.runtimes,
             "last_heartbeat": row.last_heartbeat,
