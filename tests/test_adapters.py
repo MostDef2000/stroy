@@ -1,7 +1,14 @@
 import httpx
 import pytest
 
-from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
+from stroy.services.adapters import (
+    AdapterProtocolError,
+    AdapterTimeout,
+    AdapterUnavailable,
+    ComfyUIAdapter,
+    FakeLLMAdapter,
+    OpenAICompatibleLLM,
+)
 from stroy.worker.executors import QwenExecutor
 
 
@@ -50,6 +57,13 @@ async def test_fake_llm_produces_typed_intent():
 @pytest.mark.asyncio
 async def test_qwen_executor_normalizes_openai_tool_calls():
     class RawAdapter:
+        def provenance(self):
+            return {
+                "adapter": "raw-test",
+                "model_profile": "qwen-test",
+                "model": "test/model",
+            }
+
         async def complete(self, messages, *, tools=None):
             return {
                 "choices": [
@@ -80,9 +94,9 @@ async def test_qwen_executor_normalizes_openai_tool_calls():
             }
         }
     )
-    assert result == {
-        "content": None,
-        "tool_calls": [
+    assert result["content"] is None
+    assert result["adapter_provenance"]["model_profile"] == "qwen-test"
+    assert result["tool_calls"] == [
             {
                 "name": "set_color",
                 "arguments": {
@@ -90,8 +104,43 @@ async def test_qwen_executor_normalizes_openai_tool_calls():
                     "color": "#D7C4AB",
                 },
             }
-        ],
-    }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_maps_timeout():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timeout", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleLLM("http://qwen/v1", "local", "model", client=client)
+    with pytest.raises(AdapterTimeout):
+        await adapter.complete([{"role": "user", "content": "hello"}])
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_maps_server_unavailable():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "busy"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleLLM("http://qwen/v1", "local", "model", client=client)
+    with pytest.raises(AdapterUnavailable):
+        await adapter.complete([{"role": "user", "content": "hello"}])
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_comfyui_missing_prompt_id_is_protocol_error():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = ComfyUIAdapter("http://comfy", client=client)
+    with pytest.raises(AdapterProtocolError):
+        await adapter.submit({}, "worker")
+    await client.aclose()
 
 
 @pytest.mark.asyncio
