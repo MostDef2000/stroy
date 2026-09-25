@@ -28,7 +28,7 @@ def test_scene_model_matches_versioned_json_schema() -> None:
         ],
         cameras=[],
     )
-    jsonschema.validate(scene.model_dump(mode="json"), schema("scene.schema.json"))
+    jsonschema.validate(scene.model_dump(mode="json", exclude_none=True), schema("scene.schema.json"))
 
 
 def test_design_command_matches_versioned_json_schema() -> None:
@@ -41,7 +41,7 @@ def test_design_command_matches_versioned_json_schema() -> None:
         origin="user",
     )
     jsonschema.validate(
-        command.model_dump(mode="json"),
+        command.model_dump(mode="json", exclude_none=True),
         schema("design-command.schema.json"),
     )
 
