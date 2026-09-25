@@ -5,12 +5,23 @@ on:
   pull_request:
 
 jobs:
-  repository-contracts:
+  contracts-and-python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Validate JSON contracts
         run: python scripts/check_json.py
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Test
+        run: pytest -q
