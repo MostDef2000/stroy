@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: stoy
-      POSTGRES_PASSWORD: stoy
-      POSTGRES_DB: stoy
+      POSTGRES_USER: stroy
+      POSTGRES_PASSWORD: stroy
+      POSTGRES_DB: stroy
     ports:
       - "5432:5432"
     volumes:
-      - stoy_postgres:/var/lib/postgresql/data
+      - stroy_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U stoy"]
+      test: ["CMD-SHELL", "pg_isready -U stroy"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -20,7 +20,7 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - stoy_redis:/data
+      - stroy_redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -31,15 +31,15 @@ services:
     image: minio/minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: stoy
-      MINIO_ROOT_PASSWORD: stoy-development-only
+      MINIO_ROOT_USER: stroy
+      MINIO_ROOT_PASSWORD: stroy-development-only
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - stoy_minio:/data
+      - stroy_minio:/data
 
 volumes:
-  stoy_postgres:
-  stoy_redis:
-  stoy_minio:
+  stroy_postgres:
+  stroy_redis:
+  stroy_minio:
