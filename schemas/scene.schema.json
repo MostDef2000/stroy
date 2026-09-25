@@ -3,117 +3,324 @@
   "$id": "https://stroy.local/schemas/scene.schema.json",
   "title": "STROY Scene",
   "type": "object",
-  "required": ["schema_version", "scene_id", "project_id", "units", "coordinate_system", "entities", "cameras"],
+  "required": [
+    "schema_version",
+    "scene_id",
+    "project_id",
+    "units",
+    "coordinate_system",
+    "entities",
+    "cameras"
+  ],
   "properties": {
-    "schema_version": {"const": "0.1.0"},
-    "scene_id": {"type": "string", "minLength": 1},
-    "project_id": {"type": "string", "minLength": 1},
-    "units": {"const": "mm"},
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "scene_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "units": {
+      "const": "mm"
+    },
     "coordinate_system": {
       "type": "object",
-      "required": ["handedness", "up_axis"],
+      "required": [
+        "handedness",
+        "up_axis"
+      ],
       "properties": {
-        "handedness": {"const": "right"},
-        "up_axis": {"const": "Z"}
+        "handedness": {
+          "const": "right"
+        },
+        "up_axis": {
+          "const": "Z"
+        }
       },
       "additionalProperties": false
     },
     "entities": {
       "type": "array",
-      "items": {"$ref": "#/$defs/entity"}
+      "items": {
+        "$ref": "#/$defs/entity"
+      }
     },
     "cameras": {
       "type": "array",
-      "items": {"$ref": "#/$defs/camera"}
+      "items": {
+        "$ref": "#/$defs/camera"
+      }
     },
-    "metadata": {"type": "object", "additionalProperties": true}
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
   },
   "$defs": {
     "vec3": {
       "type": "array",
-      "prefixItems": [{"type":"number"},{"type":"number"},{"type":"number"}],
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
       "minItems": 3,
       "maxItems": 3
     },
     "locks": {
       "type": "object",
       "properties": {
-        "geometry": {"type": "boolean", "default": false},
-        "transform": {"type": "boolean", "default": false},
-        "material": {"type": "boolean", "default": false}
+        "geometry": {
+          "type": "boolean",
+          "default": false
+        },
+        "transform": {
+          "type": "boolean",
+          "default": false
+        },
+        "material": {
+          "type": "boolean",
+          "default": false
+        }
       },
       "additionalProperties": false
     },
     "provenance": {
       "type": "object",
-      "required": ["source"],
+      "required": [
+        "source"
+      ],
       "properties": {
-        "source": {"enum": ["user", "imported", "measured", "estimated", "model_inferred"]},
-        "asset_ids": {"type": "array", "items": {"type": "string"}},
-        "note": {"type": "string"}
+        "source": {
+          "enum": [
+            "user",
+            "imported",
+            "measured",
+            "estimated",
+            "model_inferred"
+          ]
+        },
+        "asset_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "entity": {
       "type": "object",
-      "required": ["id", "kind", "locks"],
+      "required": [
+        "id",
+        "kind",
+        "locks"
+      ],
       "properties": {
-        "id": {"type": "string", "minLength": 1},
-        "kind": {"enum": ["room", "wall", "floor", "ceiling", "door", "window", "architectural", "furniture", "light", "utility"]},
-        "room_id": {"type": ["string", "null"]},
-        "display_name": {"type": "string"},
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "room",
+            "wall",
+            "floor",
+            "ceiling",
+            "door",
+            "window",
+            "architectural",
+            "furniture",
+            "light",
+            "utility"
+          ]
+        },
+        "room_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "type": "string"
+        },
         "transform": {
           "type": "object",
           "properties": {
-            "translation_mm": {"$ref": "#/$defs/vec3"},
-            "rotation_deg": {"$ref": "#/$defs/vec3"},
-            "scale": {"$ref": "#/$defs/vec3"}
+            "translation_mm": {
+              "$ref": "#/$defs/vec3"
+            },
+            "rotation_deg": {
+              "$ref": "#/$defs/vec3"
+            },
+            "scale": {
+              "$ref": "#/$defs/vec3"
+            }
           },
           "additionalProperties": false
         },
-        "geometry": {"type": "object", "additionalProperties": true},
-        "material_ref": {"type": ["string", "null"]},
-        "locks": {"$ref": "#/$defs/locks"},
-        "provenance": {"$ref": "#/$defs/provenance"},
-        "metadata": {"type": "object", "additionalProperties": true}
+        "geometry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "material_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locks": {
+          "$ref": "#/$defs/locks"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
       },
       "additionalProperties": false
     },
     "camera": {
       "type": "object",
-      "required": ["id", "width_px", "height_px", "intrinsics", "transform"],
+      "required": [
+        "id",
+        "width_px",
+        "height_px",
+        "intrinsics",
+        "transform"
+      ],
       "properties": {
-        "id": {"type": "string", "minLength": 1},
-        "width_px": {"type": "integer", "minimum": 1},
-        "height_px": {"type": "integer", "minimum": 1},
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "width_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height_px": {
+          "type": "integer",
+          "minimum": 1
+        },
         "intrinsics": {
           "type": "object",
-          "required": ["fx", "fy", "cx", "cy"],
+          "required": [
+            "fx",
+            "fy",
+            "cx",
+            "cy"
+          ],
           "properties": {
-            "fx": {"type": "number", "exclusiveMinimum": 0},
-            "fy": {"type": "number", "exclusiveMinimum": 0},
-            "cx": {"type": "number"},
-            "cy": {"type": "number"}
+            "fx": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "fy": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "cx": {
+              "type": "number"
+            },
+            "cy": {
+              "type": "number"
+            }
           },
           "additionalProperties": false
         },
         "transform": {
           "type": "object",
-          "required": ["translation_mm", "rotation_deg"],
+          "required": [
+            "translation_mm",
+            "rotation_deg"
+          ],
           "properties": {
-            "translation_mm": {"$ref": "#/$defs/vec3"},
-            "rotation_deg": {"$ref": "#/$defs/vec3"}
+            "translation_mm": {
+              "$ref": "#/$defs/vec3"
+            },
+            "rotation_deg": {
+              "$ref": "#/$defs/vec3"
+            }
           },
           "additionalProperties": false
         },
-        "provenance": {"$ref": "#/$defs/provenance"},
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
         "calibration": {
           "type": "object",
           "properties": {
-            "quality": {"type": "number", "minimum": 0, "maximum": 1},
-            "residual": {"type": "number", "minimum": 0}
+            "quality": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "residual": {
+              "type": "number",
+              "minimum": 0
+            },
+            "method": {
+              "enum": [
+                "manual",
+                "correspondences",
+                "imported"
+              ]
+            },
+            "observations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "world_mm",
+                  "image_px"
+                ],
+                "properties": {
+                  "world_mm": {
+                    "$ref": "#/$defs/vec3"
+                  },
+                  "image_px": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ],
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
           },
           "additionalProperties": false
+        },
+        "source_asset_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
