@@ -127,3 +127,52 @@ class ComfyUIExecutor:
         prompt_id = self.active_prompts.get(job_id)
         if prompt_id:
             await self.adapter.cancel(prompt_id)
+
+
+
+class FakeStyleExecutor:
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        source_text = str(payload.get("source_text", "")).lower()
+
+        warm = any(token in source_text for token in ("warm", "тепл", "уют"))
+        minimal = any(token in source_text for token in ("minimal", "миним"))
+        wood = any(token in source_text for token in ("wood", "дерев"))
+
+        labels = ["minimal"] if minimal else ["contemporary"]
+        palette = [
+            {"hex": "#D8D0C4", "role": "base"},
+            {"hex": "#8A8178", "role": "accent"},
+        ]
+        materials = [
+            {
+                "name": "natural wood" if wood else "matte plaster",
+                "finish": "matte",
+                "application": "primary surfaces",
+            }
+        ]
+        lighting = {
+            "temperature_k": 3000 if warm else 3500,
+            "intent": ["soft", "ambient"],
+        }
+        forms = {
+            "keywords": ["clean lines", "rounded accents"] if minimal else ["balanced proportions"]
+        }
+        return {
+            "style_profile": {
+                "labels": labels,
+                "palette": palette,
+                "materials": materials,
+                "lighting": lighting,
+                "forms": forms,
+                "negative_constraints": [],
+                "evidence": {
+                    "mode": "fake-style",
+                    "reference_asset_ids": list(payload.get("input_asset_ids") or []),
+                },
+            },
+            "adapter_provenance": {
+                "adapter": "fake-style",
+                "model_profile": "fake",
+            },
+        }
