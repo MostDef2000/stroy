@@ -19,7 +19,7 @@ Browser
    v
 stroy.mostdef.ru -> VPS
    |
-   +--> Caddy / HTTPS
+   +--> nginx / HTTPS (host vhost)
    +--> Web + API + owner auth
    +--> Scene Core / revisions
    +--> PostgreSQL / Redis / MinIO
@@ -69,7 +69,7 @@ STROY is a **single-user, non-commercial personal project**. The public applicat
 ```text
 Browser
   -> stroy.mostdef.ru (A -> VPS)
-  -> Caddy / HTTPS
+  -> nginx / HTTPS (host vhost)
   -> STROY Web + API + owner auth
   -> PostgreSQL / Redis / MinIO on VPS
 

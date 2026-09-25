@@ -1,6 +1,6 @@
 # ADR 0006: VPS control plane with outbound home GPU worker
 
-- Status: Accepted
+- Status: Superseded by ADR-0007 (existing-nginx ingress), 2026-09-25
 - Date: 2026-09-25
 
 ## Context
@@ -17,7 +17,7 @@ Split STROY into two deployment roles.
 
 The VPS hosts:
 
-- Caddy HTTPS ingress;
+- Host Nginx ingress;
 - STROY web/API;
 - native single-owner authentication;
 - PostgreSQL;

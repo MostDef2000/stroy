@@ -11,7 +11,7 @@ Internet / Browser
 stroy.mostdef.ru (A -> VPS)
   |
   v
-Caddy / HTTPS
+nginx / HTTPS (existing host vhost)
   |
   v
 STROY Web/API + owner auth
@@ -61,7 +61,7 @@ Interprets user intent and invokes typed domain tools. It may propose changes bu
 
 `stroy.mostdef.ru` already resolves by A record to the owner's VPS. The VPS is the stable public control plane.
 
-- Caddy terminates HTTPS and proxies only the STROY web/API application.
+- nginx terminates HTTPS via a host vhost and proxies only the STROY web/API application (published on 127.0.0.1:8000).
 - STROY uses one owner account; no public sign-up, teams or RBAC.
 - The password is stored only as a strong Argon2id hash.
 - Browser auth uses an HttpOnly, Secure session cookie with CSRF protection for state-changing requests.
