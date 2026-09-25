@@ -5,9 +5,9 @@
 
 ## Decision
 
-Qwen is accessed through an internal OpenAI-compatible adapter. Image models are accessed through a STOY generation adapter, with ComfyUI as the initial runtime.
+Qwen is accessed through an internal OpenAI-compatible adapter. Image models are accessed through a STROY generation adapter, with ComfyUI as the initial runtime.
 
-Product code depends on STOY contracts, not provider-specific payloads or ComfyUI node IDs.
+Product code depends on STROY contracts, not provider-specific payloads or ComfyUI node IDs.
 
 ## Consequences
 
