@@ -147,7 +147,12 @@ class WorkerRunner:
                     execution_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await execution_task
-                    raise ValueError("worker lease is no longer valid")
+                    stop.set()
+                    if renew_task:
+                        renew_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await renew_task
+                    return True
 
             result = await execution_task
 
