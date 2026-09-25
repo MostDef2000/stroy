@@ -1,0 +1,32 @@
+name: Engineering task
+description: Implementation work for STROY
+title: "[Task] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / outcome
+      description: What should exist or work when this issue is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Concrete implementation scope and constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Use checkboxes where possible.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / notes
