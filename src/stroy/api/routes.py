@@ -20,11 +20,20 @@ from stroy.api.dependencies import (
     require_worker,
 )
 from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, WorkerRow
-from stroy.domain.commands import CommandRejected
+from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
-from stroy.services.jobs import claim_job, complete_job, create_job, fail_job, renew_lease
+from stroy.services.asset_metadata import extract_asset_metadata
+from stroy.services.jobs import (
+    cancel_job,
+    claim_job,
+    complete_job,
+    create_job,
+    fail_job,
+    renew_lease,
+    update_progress,
+)
 from stroy.services.scenes import (
     apply_scene_command,
     create_project,
@@ -36,6 +45,14 @@ from stroy.services.scenes import (
 
 
 router = APIRouter()
+
+
+def _domain_conflict(exc: ValueError) -> HTTPException:
+    code = "revision_conflict" if isinstance(exc, CommandConflict) else "command_rejected"
+    return HTTPException(
+        status_code=409,
+        detail={"code": code, "detail": str(exc)},
+    )
 
 
 def _media_type_allowed(media_type: str, configured: str) -> bool:
@@ -71,6 +88,7 @@ class ProjectCreate(BaseModel):
 
 class DesignInstruction(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+    idempotency_key: str | None = Field(default=None, max_length=160)
 
 
 class SceneRevert(BaseModel):
@@ -82,6 +100,7 @@ class JobCreate(BaseModel):
     job_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
     required_capabilities: list[str] = Field(default_factory=list)
+    idempotency_key: str | None = Field(default=None, max_length=160)
 
 
 class WorkerRegistration(BaseModel):
@@ -107,12 +126,25 @@ class LeaseRequest(BaseModel):
     lease_id: str
 
 
+class JobProgress(LeaseRequest):
+    progress: dict[str, Any] = Field(default_factory=dict)
+    runtime_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
 class JobComplete(LeaseRequest):
     result: dict[str, Any] = Field(default_factory=dict)
+    runtime_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobError(BaseModel):
+    code: str = Field(min_length=1, max_length=120)
+    detail: str = Field(min_length=1, max_length=2000)
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class JobFail(LeaseRequest):
-    error: dict[str, Any]
+    error: JobError
+    runtime_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/health")
@@ -121,9 +153,27 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/ready")
-async def ready(session: DbSession) -> dict[str, str]:
+async def ready(request: Request, session: DbSession) -> dict[str, Any]:
     await session.execute(text("SELECT 1"))
-    return {"status": "ready"}
+    storage_ready = await request.app.state.object_store.ready()
+    dispatch_ready = await request.app.state.job_dispatcher.ready()
+    if not storage_ready or not dispatch_ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "dependency_not_ready",
+                "storage": storage_ready,
+                "dispatcher": dispatch_ready,
+            },
+        )
+    return {
+        "status": "ready",
+        "dependencies": {
+            "database": True,
+            "storage": storage_ready,
+            "dispatcher": dispatch_ready,
+        },
+    }
 
 
 @router.post("/api/v1/auth/login")
@@ -202,7 +252,7 @@ async def scene_initialize(project_id: str, scene: Scene, session: DbSession, ow
     try:
         revision = await initialize_scene(session, project_id, scene)
     except (ValueError, CommandRejected) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return {"revision_id": revision.id, "content_hash": revision.content_hash, "scene": revision.scene_json}
 
 
@@ -255,7 +305,7 @@ async def scene_revert(
             target_revision_id=payload.target_revision_id,
         )
     except (ValueError, CommandRejected) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return {
         "revision_id": revision.id,
         "parent_revision_id": revision.parent_revision_id,
@@ -269,7 +319,7 @@ async def scene_command(project_id: str, command: DesignCommand, session: DbSess
     try:
         revision = await apply_scene_command(session, project_id, command)
     except (ValueError, CommandRejected) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return {
         "revision_id": revision.id,
         "parent_revision_id": revision.parent_revision_id,
@@ -284,12 +334,22 @@ async def asset_upload(
     request: Request,
     session: DbSession,
     owner: OwnerSession,
+    role: str = Form("apartment"),
     file: UploadFile = File(...),
 ):
     if await session.get(ProjectRow, project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
+    if role not in {"apartment", "reference", "derived"}:
+        raise HTTPException(status_code=422, detail="invalid asset role")
     data, media_type = await _validated_upload(file, request)
     digest = hashlib.sha256(data).hexdigest()
+    duplicate_result = await session.execute(
+        select(AssetRow)
+        .where(AssetRow.project_id == project_id, AssetRow.sha256 == digest)
+        .order_by(AssetRow.created_at.asc())
+        .limit(1)
+    )
+    duplicate = duplicate_result.scalar_one_or_none()
     suffix = Path(file.filename or "").suffix[:16]
     object_key = f"projects/{project_id}/{uuid4()}{suffix}"
     await request.app.state.object_store.put_bytes(object_key, data, media_type)
@@ -300,11 +360,22 @@ async def asset_upload(
         media_type=media_type,
         size_bytes=len(data),
         sha256=digest,
+        role=role,
+        metadata_json=extract_asset_metadata(data, media_type),
+        duplicate_of_asset_id=duplicate.id if duplicate else None,
     )
     session.add(row)
     await session.commit()
     await session.refresh(row)
-    return {"id": row.id, "media_type": row.media_type, "size_bytes": row.size_bytes, "sha256": row.sha256}
+    return {
+        "id": row.id,
+        "media_type": row.media_type,
+        "size_bytes": row.size_bytes,
+        "sha256": row.sha256,
+        "role": row.role,
+        "metadata": row.metadata_json,
+        "duplicate_of_asset_id": row.duplicate_of_asset_id,
+    }
 
 
 @router.get(
@@ -325,7 +396,11 @@ async def asset_list(project_id: str, session: DbSession):
             "size_bytes": row.size_bytes,
             "sha256": row.sha256,
             "provenance": row.provenance,
+            "role": row.role,
+            "metadata": row.metadata_json,
             "source_asset_id": row.source_asset_id,
+            "source_asset_ids": row.source_asset_ids,
+            "duplicate_of_asset_id": row.duplicate_of_asset_id,
             "created_at": row.created_at,
         }
         for row in result.scalars()
@@ -353,6 +428,7 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
 async def design_instruction(
     project_id: str,
     payload: DesignInstruction,
+    request: Request,
     session: DbSession,
     owner: OwnerSession,
 ):
@@ -371,18 +447,32 @@ async def design_instruction(
             "messages": [{"role": "user", "content": payload.text}],
             "tools": TOOL_DEFINITIONS,
         },
+        idempotency_key=payload.idempotency_key,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
     )
     return job_view(row)
 
 
 @router.post("/api/v1/projects/{project_id}/jobs", status_code=201, dependencies=[Depends(require_csrf)])
-async def job_create(project_id: str, payload: JobCreate, session: DbSession, owner: OwnerSession):
+async def job_create(
+    project_id: str,
+    payload: JobCreate,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     row = await create_job(
         session,
         project_id=project_id,
         job_type=payload.job_type,
         payload=payload.payload,
         required_capabilities=payload.required_capabilities,
+        idempotency_key=payload.idempotency_key,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
     )
     return job_view(row)
 
@@ -401,6 +491,15 @@ async def job_list(project_id: str, session: DbSession):
     return [job_view(row) for row in result.scalars()]
 
 
+@router.post("/api/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_csrf)])
+async def job_cancel(job_id: str, session: DbSession, owner: OwnerSession):
+    row = await session.get(JobRow, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    row = await cancel_job(session, row)
+    return job_view(row)
+
+
 @router.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_owner)])
 async def job_get(job_id: str, session: DbSession):
     row = await session.get(JobRow, job_id)
@@ -416,6 +515,10 @@ def job_view(row: JobRow) -> dict[str, Any]:
         "job_type": row.job_type,
         "status": row.status,
         "attempt": row.attempt,
+        "idempotency_key": row.idempotency_key,
+        "progress": row.progress,
+        "correlation_id": row.correlation_id,
+        "runtime_provenance": row.runtime_provenance,
         "result": row.result,
         "error": row.error,
         "leased_to": row.leased_to,
@@ -535,7 +638,7 @@ async def worker_job_renew(job_id: str, payload: LeaseRequest, request: Request,
             lease_seconds=request.app.state.settings.worker_lease_seconds,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
 
     worker = await session.get(WorkerRow, payload.worker_id)
     if worker is not None:
@@ -545,26 +648,59 @@ async def worker_job_renew(job_id: str, payload: LeaseRequest, request: Request,
     return job_view(row)
 
 
+@router.post("/api/v1/workers/jobs/{job_id}/progress", dependencies=[Depends(require_worker)])
+async def worker_job_progress(
+    job_id: str,
+    payload: JobProgress,
+    request: Request,
+    session: DbSession,
+):
+    row = await _leased_job(session, job_id)
+    try:
+        row = await update_progress(
+            session,
+            row,
+            worker_id=payload.worker_id,
+            lease_id=payload.lease_id,
+            progress=payload.progress,
+            runtime_provenance=payload.runtime_provenance,
+            lease_seconds=request.app.state.settings.worker_lease_seconds,
+        )
+    except ValueError as exc:
+        raise _domain_conflict(exc) from exc
+    return job_view(row)
+
+
 @router.post("/api/v1/workers/jobs/{job_id}/complete", dependencies=[Depends(require_worker)])
 async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSession):
     row = await _leased_job(session, job_id)
     try:
         processed_result = await apply_design_agent_result(session, row, payload.result)
+    except (ValueError, CommandRejected) as exc:
+        try:
+            row = await fail_job(
+                session,
+                row,
+                worker_id=payload.worker_id,
+                lease_id=payload.lease_id,
+                error={"code": "agent_result_rejected", "detail": str(exc)},
+                runtime_provenance=payload.runtime_provenance,
+            )
+        except ValueError as lease_exc:
+            raise HTTPException(status_code=409, detail=str(lease_exc)) from lease_exc
+        return job_view(row)
+
+    try:
         row = await complete_job(
             session,
             row,
             worker_id=payload.worker_id,
             lease_id=payload.lease_id,
             result=processed_result,
+            runtime_provenance=payload.runtime_provenance,
         )
-    except (ValueError, CommandRejected) as exc:
-        row = await fail_job(
-            session,
-            row,
-            worker_id=payload.worker_id,
-            lease_id=payload.lease_id,
-            error={"code": "agent_result_rejected", "detail": str(exc)},
-        )
+    except ValueError as exc:
+        raise _domain_conflict(exc) from exc
     return job_view(row)
 
 
@@ -627,6 +763,12 @@ async def worker_output_upload(
         size_bytes=len(data),
         sha256=digest,
         provenance="model_inferred",
+        role="derived",
+        metadata_json={
+            **extract_asset_metadata(data, media_type),
+            "job_id": job.id,
+        },
+        source_asset_ids=list(job.payload.get("input_asset_ids") or []),
     )
     session.add(asset)
     await session.commit()
@@ -636,6 +778,9 @@ async def worker_output_upload(
         "media_type": asset.media_type,
         "size_bytes": asset.size_bytes,
         "sha256": asset.sha256,
+        "role": asset.role,
+        "metadata": asset.metadata_json,
+        "source_asset_ids": asset.source_asset_ids,
     }
 
 
@@ -648,8 +793,9 @@ async def worker_job_fail(job_id: str, payload: JobFail, session: DbSession):
             row,
             worker_id=payload.worker_id,
             lease_id=payload.lease_id,
-            error=payload.error,
+            error=payload.error.model_dump(mode="json"),
+            runtime_provenance=payload.runtime_provenance,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _domain_conflict(exc) from exc
     return job_view(row)

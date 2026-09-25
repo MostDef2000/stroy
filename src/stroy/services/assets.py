@@ -12,6 +12,7 @@ from stroy.config import Settings
 
 class ObjectStore(Protocol):
     async def initialize(self) -> None: ...
+    async def ready(self) -> bool: ...
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None: ...
     async def get_bytes(self, key: str) -> bytes: ...
     async def presign_get(self, key: str, expires_seconds: int = 900) -> str | None: ...
@@ -26,6 +27,9 @@ class MemoryObjectStore:
 
     async def initialize(self) -> None:
         return None
+
+    async def ready(self) -> bool:
+        return True
 
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None:
         self.objects[key] = data
@@ -58,6 +62,13 @@ class S3ObjectStore:
             await asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket)
         except ClientError:
             await asyncio.to_thread(self.client.create_bucket, Bucket=self.bucket)
+
+    async def ready(self) -> bool:
+        try:
+            await asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket)
+            return True
+        except ClientError:
+            return False
 
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None:
         await asyncio.to_thread(

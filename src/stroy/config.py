@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./stroy.db"
     auto_create_schema: bool = True
 
+    redis_url: str = ""
+    redis_job_channel: str = "stroy:jobs"
+
     storage_backend: str = "memory"
     max_upload_bytes: int = 100 * 1024 * 1024
     upload_allowed_media_types: str = (

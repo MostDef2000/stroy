@@ -78,11 +78,38 @@ function CameraController({ calibrated }: { calibrated: SceneCamera | null }) {
       "XYZ"
     );
 
-    const verticalFov =
-      2 * Math.atan(calibrated.height_px / (2 * calibrated.intrinsics.fy));
-    camera.fov = (verticalFov * 180) / Math.PI;
-    camera.aspect = calibrated.width_px / calibrated.height_px;
-    camera.updateProjectionMatrix();
+    const { fx, fy, cx, cy } = calibrated.intrinsics;
+    const width = calibrated.width_px;
+    const height = calibrated.height_px;
+    const near = 0.01;
+    const far = 1000;
+
+    camera.near = near;
+    camera.far = far;
+    camera.aspect = width / height;
+    camera.fov = (2 * Math.atan(height / (2 * fy)) * 180) / Math.PI;
+
+    // OpenCV-style pixel intrinsics -> Three.js/OpenGL off-axis projection.
+    // This preserves fx/fy independently and accounts for a non-centered cx/cy.
+    camera.projectionMatrix.set(
+      (2 * fx) / width,
+      0,
+      1 - (2 * cx) / width,
+      0,
+      0,
+      (2 * fy) / height,
+      (2 * cy) / height - 1,
+      0,
+      0,
+      0,
+      -(far + near) / (far - near),
+      (-2 * far * near) / (far - near),
+      0,
+      0,
+      -1,
+      0
+    );
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   }, [calibrated, camera]);
 
   return null;

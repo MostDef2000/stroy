@@ -75,7 +75,12 @@ class WorkerRunner:
             await self.client.fail(
                 job_id,
                 lease_id,
-                {"code": "unsupported_job_type", "detail": job["job_type"]},
+                {
+                    "code": "unsupported_job_type",
+                    "detail": job["job_type"],
+                    "context": {},
+                },
+                {"worker_id": self.client.worker_id},
             )
             return True
 
@@ -83,12 +88,23 @@ class WorkerRunner:
         renew_task: asyncio.Task | None = None
         try:
             await self.client.start(job_id, lease_id)
+            await self.client.progress(
+                job_id,
+                lease_id,
+                {"phase": "executing", "fraction": 0.0},
+                {"worker_id": self.client.worker_id},
+            )
             renew_task = asyncio.create_task(self._renew_lease(job_id, lease_id, stop))
             result = await executor.execute(job)
             stop.set()
             if renew_task:
                 await renew_task
-            await self.client.complete(job_id, lease_id, result)
+            await self.client.complete(
+                job_id,
+                lease_id,
+                result,
+                {"worker_id": self.client.worker_id},
+            )
         except Exception as exc:
             stop.set()
             if renew_task:
@@ -98,7 +114,12 @@ class WorkerRunner:
             await self.client.fail(
                 job_id,
                 lease_id,
-                {"code": "executor_error", "detail": str(exc)},
+                {
+                    "code": "executor_error",
+                    "detail": str(exc),
+                    "context": {},
+                },
+                {"worker_id": self.client.worker_id},
             )
         return True
 

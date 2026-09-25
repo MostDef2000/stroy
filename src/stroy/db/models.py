@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from stroy.db.base import Base
@@ -64,13 +64,25 @@ class AssetRow(Base):
     size_bytes: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     provenance: Mapped[str] = mapped_column(String(40), default="user")
+    role: Mapped[str] = mapped_column(String(40), default="apartment")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     source_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
+    duplicate_of_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class JobRow(Base):
     __tablename__ = "jobs"
-    __table_args__ = (Index("ix_jobs_claim", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_jobs_claim", "status", "created_at"),
+        UniqueConstraint(
+            "project_id",
+            "job_type",
+            "idempotency_key",
+            name="uq_jobs_idempotency",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -80,6 +92,10 @@ class JobRow(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     required_capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    progress: Mapped[dict] = mapped_column(JSON, default=dict)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    runtime_provenance: Mapped[dict] = mapped_column(JSON, default=dict)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     leased_to: Mapped[str | None] = mapped_column(String(100), nullable=True)
     lease_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
