@@ -308,6 +308,9 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert design.status_code == 201
             assert design.json()["job_type"] == "llm.complete"
 
+            design_correlation_id = design.json()["correlation_id"]
+            assert design_correlation_id
+
             llm_claim = await client.post(
                 "/api/v1/workers/jobs/claim",
                 headers=worker_headers,
@@ -316,6 +319,8 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert llm_claim.status_code == 200
             llm_lease = llm_claim.json()
             assert llm_lease["job_type"] == "llm.complete"
+
+            assert llm_lease["payload"]["model_profile"] == "qwen3-14b"
 
             llm_complete = await client.post(
                 f"/api/v1/workers/jobs/{llm_lease['job_id']}/complete",
@@ -326,12 +331,26 @@ async def test_auth_scene_revision_and_worker_flow(settings):
                     "result": {
                         "tool_calls": [
                             {
+                                "name": "get_entity",
+                                "arguments": {
+                                    "target_id": "object.sofa.main",
+                                },
+                            },
+                            {
                                 "name": "set_color",
                                 "arguments": {
                                     "target_id": "object.sofa.main",
                                     "color": "#D7C4AB",
                                 },
-                            }
+                            },
+                            {
+                                "name": "create_design_revision",
+                                "arguments": {"label": "beige sofa"},
+                            },
+                            {
+                                "name": "render_preview",
+                                "arguments": {},
+                            },
                         ]
                     },
                 },
@@ -339,6 +358,25 @@ async def test_auth_scene_revision_and_worker_flow(settings):
             assert llm_complete.status_code == 200
             assert llm_complete.json()["status"] == "succeeded"
             assert len(llm_complete.json()["result"]["applied_revision_ids"]) == 1
+
+            agent_result = llm_complete.json()["result"]
+            assert len(agent_result["preview_job_ids"]) == 1
+            assert [item["name"] for item in agent_result["tool_results"]] == [
+                "get_entity",
+                "create_design_revision",
+                "render_preview",
+            ]
+
+            async with app.state.session_factory() as db:
+                agent_command = (
+                    await db.execute(
+                        select(DesignCommandRow).where(
+                            DesignCommandRow.origin == "agent"
+                        )
+                    )
+                ).scalar_one()
+                assert agent_command.model_profile == "qwen3-14b"
+                assert agent_command.correlation_id == design_correlation_id
 
             final_scene = await client.get(f"/api/v1/projects/{project_id}/scene")
             assert final_scene.status_code == 200
