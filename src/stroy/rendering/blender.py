@@ -90,6 +90,8 @@ class BlenderCameraPlan(BaseModel):
     pixel_aspect_y: float
     shift_x: float
     shift_y: float
+    clip_start_m: float = 0.01
+    clip_end_m: float = 1000.0
 
 
 class BlenderPlan(BaseModel):
@@ -102,7 +104,7 @@ class BlenderPlan(BaseModel):
     camera: BlenderCameraPlan
     entities: list[BlenderEntityPlan]
     passes: list[str] = Field(default_factory=lambda: list(PASS_NAMES))
-    renderer_profile: str = "blender-eevee-v0"
+    renderer_profile: str = "blender-cycles-v0"
 
     def canonical_json(self) -> str:
         return json.dumps(
@@ -156,7 +158,7 @@ def build_blender_plan(
     scene_revision_id: str,
     camera_id: str,
     design_revision_id: str | None = None,
-    renderer_profile: str = "blender-eevee-v0",
+    renderer_profile: str = "blender-cycles-v0",
 ) -> BlenderPlan:
     camera = next((item for item in scene.cameras if item.id == camera_id), None)
     if camera is None:
