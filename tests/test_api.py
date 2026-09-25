@@ -863,3 +863,122 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
             }
             assert set(pass_assets).issubset(tagged)
             assert all(tagged[name]["role"] == "derived" for name in pass_assets)
+
+
+
+@pytest.mark.asyncio
+async def test_camera_crud_creates_immutable_scene_revisions(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Camera project"},
+            )
+            project_id = project.json()["id"]
+
+            initial = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.camera",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            assert initial.status_code == 201
+            base_revision_id = initial.json()["revision_id"]
+
+            photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "apartment"},
+                files={"file": ("room.png", png_bytes(), "image/png")},
+            )
+            assert photo.status_code == 201
+            photo_id = photo.json()["id"]
+
+            update = await client.put(
+                f"/api/v1/projects/{project_id}/cameras/camera.main",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "camera": {
+                        "id": "camera.main",
+                        "width_px": 1000,
+                        "height_px": 800,
+                        "intrinsics": {
+                            "fx": 800,
+                            "fy": 800,
+                            "cx": 500,
+                            "cy": 400,
+                        },
+                        "transform": {
+                            "translation_mm": [0, -5000, 1500],
+                            "rotation_deg": [90, 0, 0],
+                        },
+                        "source_asset_id": photo_id,
+                        "provenance": {
+                            "source": "measured",
+                            "asset_ids": [photo_id],
+                        },
+                        "calibration": {
+                            "method": "manual",
+                            "observations": [
+                                {
+                                    "world_mm": [0, 0, 1500],
+                                    "image_px": [500, 400],
+                                    "label": "center",
+                                },
+                                {
+                                    "world_mm": [1000, 0, 1500],
+                                    "image_px": [660, 400],
+                                    "label": "right",
+                                },
+                            ],
+                        },
+                    },
+                },
+            )
+            assert update.status_code == 200
+            first_revision_id = update.json()["revision_id"]
+            assert first_revision_id != base_revision_id
+            camera = update.json()["camera"]
+            assert camera["source_asset_id"] == photo_id
+            assert camera["calibration"]["method"] == "correspondences"
+            assert camera["calibration"]["residual"] == pytest.approx(0.0)
+            assert camera["calibration"]["quality"] == pytest.approx(1.0)
+
+            fetched = await client.get(
+                f"/api/v1/projects/{project_id}/cameras/camera.main"
+            )
+            assert fetched.status_code == 200
+            assert fetched.json()["revision_id"] == first_revision_id
+            assert fetched.json()["camera"]["source_asset_id"] == photo_id
+
+            stale = await client.put(
+                f"/api/v1/projects/{project_id}/cameras/camera.main",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "camera": camera,
+                },
+            )
+            assert stale.status_code == 409
+            assert stale.json()["detail"]["code"] == "revision_conflict"
+
+            removed = await client.request(
+                "DELETE",
+                f"/api/v1/projects/{project_id}/cameras/camera.main",
+                headers=headers,
+                json={"base_revision_id": first_revision_id},
+            )
+            assert removed.status_code == 200
+            assert removed.json()["scene"]["cameras"] == []
