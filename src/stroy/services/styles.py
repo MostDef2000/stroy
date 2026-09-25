@@ -40,6 +40,13 @@ async def create_style_profile_from_job(
         if asset is None or asset.project_id != job.project_id:
             raise ValueError(f"style source asset is not in project: {asset_id}")
 
+    adapter_provenance = result.get("adapter_provenance")
+    if not isinstance(adapter_provenance, dict):
+        adapter_provenance = {}
+    actual_model_profile = adapter_provenance.get("model_profile")
+    if not isinstance(actual_model_profile, str) or not actual_model_profile:
+        actual_model_profile = job.payload.get("model_profile")
+
     profile_id = str(uuid4())
     profile = StyleProfile(
         style_profile_id=profile_id,
@@ -54,7 +61,8 @@ async def create_style_profile_from_job(
         metadata={
             "evidence": merged.evidence,
             "job_id": job.id,
-            "model_profile": job.payload.get("model_profile"),
+            "model_profile": actual_model_profile,
+            "adapter_provenance": adapter_provenance,
         },
     )
 
@@ -65,7 +73,7 @@ async def create_style_profile_from_job(
         source_asset_ids=source_asset_ids,
         source_text=profile.source_text,
         profile_json=profile.model_dump(mode="json", exclude_none=True),
-        model_profile=job.payload.get("model_profile"),
+        model_profile=actual_model_profile,
         correlation_id=job.correlation_id,
     )
     session.add(row)
