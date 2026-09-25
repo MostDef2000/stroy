@@ -293,7 +293,8 @@ class BlenderAdapter:
             if process.returncode != 0:
                 detail = stderr.decode("utf-8", errors="replace")[-4000:]
                 raise RuntimeError(f"Blender failed with exit {process.returncode}: {detail}")
-            _ = stdout
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
         finally:
             plan_path.unlink(missing_ok=True)
 
@@ -313,6 +314,11 @@ class BlenderAdapter:
         missing = [name for name, path in expected.items() if not path.exists()]
         if missing:
             raise RuntimeError(
-                "Blender completed without expected outputs: " + ", ".join(missing)
+                "Blender completed without expected outputs: "
+                + ", ".join(missing)
+                + "\nstdout:\n"
+                + stdout_text[-6000:]
+                + "\nstderr:\n"
+                + stderr_text[-6000:]
             )
         return expected
