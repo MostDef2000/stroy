@@ -7,6 +7,8 @@ from stroy.services.adapters import ComfyUIAdapter
 
 
 class LLMAdapter(Protocol):
+    def provenance(self) -> dict[str, Any]: ...
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -54,7 +56,9 @@ class QwenExecutor:
             payload.get("messages", []),
             tools=payload.get("tools"),
         )
-        return normalize_llm_result(raw)
+        result = normalize_llm_result(raw)
+        result["adapter_provenance"] = self.adapter.provenance()
+        return result
 
 
 class ComfyUIExecutor:
