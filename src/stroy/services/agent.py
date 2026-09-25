@@ -156,7 +156,7 @@ async def apply_design_agent_result(
                 "scene_revision_id": actual_base,
                 "camera_id": camera.id,
                 "scene": validation_scene.model_dump(mode="json", exclude_none=True),
-                "renderer_profile": "blender-eevee-v0",
+                "renderer_profile": "blender-cycles-v0",
                 "requested_by_job_id": job.id,
             },
             dispatcher=dispatcher,
