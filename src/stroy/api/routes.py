@@ -315,9 +315,20 @@ async def scene_revert(
 
 
 @router.post("/api/v1/projects/{project_id}/scene/commands", dependencies=[Depends(require_csrf)])
-async def scene_command(project_id: str, command: DesignCommand, session: DbSession, owner: OwnerSession):
+async def scene_command(
+    project_id: str,
+    command: DesignCommand,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
     try:
-        revision = await apply_scene_command(session, project_id, command)
+        revision = await apply_scene_command(
+            session,
+            project_id,
+            command,
+            correlation_id=request.state.request_id,
+        )
     except (ValueError, CommandRejected) as exc:
         raise _domain_conflict(exc) from exc
     return {
@@ -444,6 +455,7 @@ async def design_instruction(
             "purpose": "design_instruction",
             "base_revision_id": current.id,
             "request_text": payload.text,
+            "model_profile": request.app.state.settings.llm_model_profile,
             "messages": [{"role": "user", "content": payload.text}],
             "tools": TOOL_DEFINITIONS,
         },
@@ -672,10 +684,20 @@ async def worker_job_progress(
 
 
 @router.post("/api/v1/workers/jobs/{job_id}/complete", dependencies=[Depends(require_worker)])
-async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSession):
+async def worker_job_complete(
+    job_id: str,
+    payload: JobComplete,
+    request: Request,
+    session: DbSession,
+):
     row = await _leased_job(session, job_id)
     try:
-        processed_result = await apply_design_agent_result(session, row, payload.result)
+        processed_result = await apply_design_agent_result(
+            session,
+            row,
+            payload.result,
+            dispatcher=request.app.state.job_dispatcher,
+        )
     except (ValueError, CommandRejected) as exc:
         try:
             row = await fail_job(
