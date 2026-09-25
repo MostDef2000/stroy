@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 from typing import Any, Protocol
 
+from stroy.domain.models import Scene
 from stroy.generation import GenerationContext, WorkflowManifest
+from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
 
 
@@ -175,4 +179,78 @@ class FakeStyleExecutor:
                 "adapter": "fake-style",
                 "model_profile": "fake",
             },
+        }
+
+
+
+class BlenderExecutor:
+    def __init__(self, adapter: BlenderAdapter) -> None:
+        self.adapter = adapter
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        raw_scene = payload.get("scene")
+        if not isinstance(raw_scene, dict):
+            raise ValueError("render job requires payload.scene")
+        scene = Scene.model_validate(raw_scene)
+
+        scene_revision_id = payload.get("scene_revision_id")
+        camera_id = payload.get("camera_id")
+        render_id = payload.get("render_id")
+        if not all(
+            isinstance(value, str) and value
+            for value in (scene_revision_id, camera_id, render_id)
+        ):
+            raise ValueError(
+                "render job requires render_id, scene_revision_id and camera_id"
+            )
+
+        plan = build_blender_plan(
+            scene,
+            scene_revision_id=scene_revision_id,
+            design_revision_id=payload.get("design_revision_id"),
+            camera_id=camera_id,
+            renderer_profile=str(
+                payload.get("renderer_profile", "blender-eevee-v0")
+            ),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="stroy-blender-") as tmp:
+            outputs = await self.adapter.run(plan, output_dir=tmp, render=True)
+            artifacts = []
+            media_types = {
+                "rgb": "image/png",
+                "depth": "image/x-exr",
+                "normals": "image/x-exr",
+                "object_ids": "image/x-exr",
+                "material_ids": "image/x-exr",
+                "metadata": "application/json",
+            }
+            for semantic_name, path in outputs.items():
+                artifacts.append(
+                    {
+                        "semantic_name": semantic_name,
+                        "filename": Path(path).name,
+                        "media_type": media_types[semantic_name],
+                        "data": Path(path).read_bytes(),
+                    }
+                )
+
+        return {
+            "renderer_profile": plan.renderer_profile,
+            "scene_metadata": json.loads(
+                next(
+                    item["data"]
+                    for item in artifacts
+                    if item["semantic_name"] == "metadata"
+                ).decode("utf-8")
+            ),
+            "_artifacts": artifacts,
+            "_render_context": RenderContext(
+                render_id=render_id,
+                scene_revision_id=scene_revision_id,
+                design_revision_id=payload.get("design_revision_id"),
+                camera_id=camera_id,
+                renderer_profile=plan.renderer_profile,
+            ).model_dump(mode="json", exclude_none=True),
         }
