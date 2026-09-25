@@ -8,6 +8,27 @@ from uuid import uuid4
 from stroy.domain.models import DesignCommand, Scene
 
 
+class AgentToolError(ValueError):
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.context = context or {}
+
+    def as_error(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "detail": self.detail,
+            "context": self.context,
+        }
+
+
 class ToolArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -142,21 +163,37 @@ CONTROL_TOOL_NAMES = {"create_design_revision", "render_preview"}
 def validate_tool_call(call: dict[str, Any]) -> tuple[str, ToolArgs]:
     name = call.get("name")
     if not isinstance(name, str) or name not in TOOL_ARGUMENT_MODELS:
-        raise ValueError(f"unsupported agent tool: {name}")
+        raise AgentToolError(
+            "unknown_tool",
+            f"unsupported agent tool: {name}",
+            context={"tool_name": name},
+        )
     arguments = call.get("arguments") or {}
     if not isinstance(arguments, dict):
-        raise ValueError(f"agent tool arguments must be an object: {name}")
+        raise AgentToolError(
+            "invalid_tool_args",
+            f"agent tool arguments must be an object: {name}",
+            context={"tool_name": name},
+        )
     try:
         parsed = TOOL_ARGUMENT_MODELS[name].model_validate(arguments)
     except ValueError as exc:
-        raise ValueError(f"invalid arguments for agent tool {name}: {exc}") from exc
+        raise AgentToolError(
+            "invalid_tool_args",
+            f"invalid arguments for agent tool {name}: {exc}",
+            context={"tool_name": name},
+        ) from exc
     return name, parsed
 
 
 def execute_read_tool(scene: Scene, call: dict[str, Any]) -> dict[str, Any]:
     name, parsed = validate_tool_call(call)
     if name not in READ_TOOL_NAMES:
-        raise ValueError(f"tool is not read-only: {name}")
+        raise AgentToolError(
+            "invalid_tool_mode",
+            f"tool is not read-only: {name}",
+            context={"tool_name": name},
+        )
 
     if name == "get_scene":
         return scene.model_dump(mode="json", exclude_none=True)
@@ -177,7 +214,11 @@ def execute_read_tool(scene: Scene, call: dict[str, Any]) -> dict[str, Any]:
             if entity.room_id == room_id
         ]
         if room is None and not entities:
-            raise ValueError(f"unknown room: {room_id}")
+            raise AgentToolError(
+                "unknown_entity",
+                f"unknown room: {room_id}",
+                context={"entity_id": room_id},
+            )
         return {
             "room": room.model_dump(mode="json", exclude_none=True) if room else None,
             "entities": entities,
@@ -187,7 +228,11 @@ def execute_read_tool(scene: Scene, call: dict[str, Any]) -> dict[str, Any]:
         target_id = parsed.target_id  # type: ignore[attr-defined]
         entity = next((entity for entity in scene.entities if entity.id == target_id), None)
         if entity is None:
-            raise ValueError(f"unknown entity: {target_id}")
+            raise AgentToolError(
+                "unknown_entity",
+                f"unknown entity: {target_id}",
+                context={"entity_id": target_id},
+            )
         return entity.model_dump(mode="json", exclude_none=True)
 
     room_id = parsed.room_id  # type: ignore[attr-defined]
@@ -210,7 +255,11 @@ def tool_call_to_command(
 ) -> DesignCommand:
     name, parsed = validate_tool_call(call)
     if name not in MUTATION_TOOL_NAMES:
-        raise ValueError(f"agent tool does not map to a design command: {name}")
+        raise AgentToolError(
+            "invalid_tool_mode",
+            f"agent tool does not map to a design command: {name}",
+            context={"tool_name": name},
+        )
 
     arguments = parsed.model_dump(exclude_none=True)
     target_id = arguments.pop("target_id")
