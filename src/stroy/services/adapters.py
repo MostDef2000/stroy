@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from typing import Any
 
 import httpx
@@ -66,6 +67,30 @@ async def _request_json(
     if not isinstance(payload, dict):
         raise AdapterProtocolError(f"runtime JSON root must be an object: {url}")
     return payload
+
+
+async def _request_bytes(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> bytes:
+    try:
+        response = await client.request(method, url, **kwargs)
+    except httpx.TimeoutException as exc:
+        raise AdapterTimeout(f"request timed out: {url}") from exc
+    except httpx.RequestError as exc:
+        raise AdapterUnavailable(f"request failed: {url}: {exc}") from exc
+
+    if response.status_code >= 500:
+        raise AdapterUnavailable(
+            f"runtime returned HTTP {response.status_code}: {url}"
+        )
+    if response.status_code >= 400:
+        raise AdapterProtocolError(
+            f"runtime rejected request with HTTP {response.status_code}: {url}"
+        )
+    return response.content
 
 
 class OpenAICompatibleLLM:
@@ -160,6 +185,54 @@ class ComfyUIAdapter:
                 return result
             await asyncio.sleep(poll_seconds)
         raise AdapterTimeout(f"ComfyUI prompt timed out: {prompt_id}")
+
+    async def collect_output_images(
+        self,
+        history: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        outputs = history.get("outputs") or {}
+        if not isinstance(outputs, dict):
+            raise AdapterProtocolError("ComfyUI history.outputs must be an object")
+
+        artifacts: list[dict[str, Any]] = []
+        for node_output in outputs.values():
+            if not isinstance(node_output, dict):
+                continue
+            images = node_output.get("images") or []
+            if not isinstance(images, list):
+                raise AdapterProtocolError("ComfyUI output images must be a list")
+            for descriptor in images:
+                if not isinstance(descriptor, dict):
+                    raise AdapterProtocolError(
+                        "ComfyUI image descriptor must be an object"
+                    )
+                filename = descriptor.get("filename")
+                if not isinstance(filename, str) or not filename:
+                    raise AdapterProtocolError(
+                        "ComfyUI image descriptor is missing filename"
+                    )
+                subfolder = descriptor.get("subfolder") or ""
+                image_type = descriptor.get("type") or "output"
+                data = await _request_bytes(
+                    self.client,
+                    "GET",
+                    f"{self.base_url}/view",
+                    params={
+                        "filename": filename,
+                        "subfolder": subfolder,
+                        "type": image_type,
+                    },
+                )
+                safe_name = filename.replace("\\", "/").split("/")[-1]
+                media_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+                artifacts.append(
+                    {
+                        "filename": safe_name,
+                        "media_type": media_type,
+                        "data": data,
+                    }
+                )
+        return artifacts
 
 
 class FakeLLMAdapter:
