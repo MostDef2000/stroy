@@ -139,3 +139,73 @@ async def list_generation_manifests(
         )
     )
     return list(result.scalars())
+
+
+
+async def queue_reference_edit(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    design_revision_id: str,
+    camera_id: str,
+    request_text: str,
+    target_entity_id: str,
+    reference_asset_id: str,
+    affected_region: dict,
+    protected_entity_ids: list[str],
+    correlation_id: str | None,
+    dispatcher: JobDispatcher | None,
+    workflow_path: Path = DEFAULT_WORKFLOW_PATH,
+) -> JobRow:
+    workflow = load_default_workflow(workflow_path)
+    generation_id = str(uuid4())
+    structured_conditioning = {
+        "purpose": "object_replacement",
+        "regeneration_scope": "targeted",
+        "affected_entity_ids": [target_entity_id],
+        "protected_entity_ids": sorted(set(protected_entity_ids)),
+        "replacement_reference_asset_id": reference_asset_id,
+        "affected_region": affected_region,
+        "request_text": request_text,
+    }
+    payload = {
+        "purpose": "object_replacement",
+        "workflow_manifest": workflow.model_dump(mode="json", exclude_none=True),
+        "inputs": {
+            "prompt": request_text,
+            "seed": 0,
+        },
+        "generation": {
+            "generation_id": generation_id,
+            "scene_revision_id": design_revision_id,
+            "design_revision_id": design_revision_id,
+            "camera_id": camera_id,
+            "seed": 0,
+            "input_asset_ids": [reference_asset_id],
+            "structured_conditioning": structured_conditioning,
+        },
+        "scene_revision_id": design_revision_id,
+        "design_revision_id": design_revision_id,
+        "camera_id": camera_id,
+        "input_asset_ids": [reference_asset_id],
+        "affected_entity_ids": [target_entity_id],
+        "regeneration_scope": "targeted",
+        "replacement": {
+            "target_entity_id": target_entity_id,
+            "reference_asset_id": reference_asset_id,
+            "affected_region": affected_region,
+        },
+    }
+    return await create_job(
+        session,
+        project_id=project_id,
+        job_type="image.edit",
+        required_capabilities=["image_edit"],
+        payload=payload,
+        idempotency_key=(
+            f"replacement:{design_revision_id}:{camera_id}:"
+            f"{target_entity_id}:{reference_asset_id}"
+        ),
+        correlation_id=correlation_id,
+        dispatcher=dispatcher,
+    )
