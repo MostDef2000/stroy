@@ -125,7 +125,12 @@ async def login(payload: LoginRequest, request: Request, response: Response, ses
 
 @router.get("/api/v1/auth/me")
 async def me(request: Request, owner: OwnerSession):
-    return {\n        "authenticated": True,\n        "username": request.app.state.settings.auth_username,\n        "csrf_token": owner.csrf_token,\n    }\n
+    return {
+        "authenticated": True,
+        "username": request.app.state.settings.auth_username,
+        "csrf_token": owner.csrf_token,
+    }
+
 
 @router.post("/api/v1/auth/logout", dependencies=[Depends(require_csrf)])
 async def logout(response: Response, session: DbSession, owner: OwnerSession):
@@ -269,7 +274,16 @@ async def workers(request: Request, session: DbSession):
         {
             "id": row.id,
             "display_name": row.display_name,
-            "online": (\n                now\n                - (\n                    row.last_heartbeat\n                    if row.last_heartbeat.tzinfo\n                    else row.last_heartbeat.replace(tzinfo=timezone.utc)\n                )\n            ).total_seconds() <= grace,\n            "capabilities": row.capabilities,
+            "online": (
+                now
+                - (
+                    row.last_heartbeat
+                    if row.last_heartbeat.tzinfo
+                    else row.last_heartbeat.replace(tzinfo=timezone.utc)
+                )
+            ).total_seconds()
+            <= grace,
+            "capabilities": row.capabilities,
             "models": row.models,
             "runtimes": row.runtimes,
             "last_heartbeat": row.last_heartbeat,
