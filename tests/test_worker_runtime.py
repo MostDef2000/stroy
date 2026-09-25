@@ -17,6 +17,7 @@ class FakeClient:
         self.uploaded = 0
         self.last_result = None
         self.last_runtime_provenance = None
+        self.uploaded_semantics = {}
 
     async def heartbeat(self) -> None:
         self.heartbeats += 1
@@ -52,11 +53,15 @@ class FakeClient:
         filename: str,
         data: bytes,
         media_type: str = "application/octet-stream",
+        semantic_name: str | None = None,
     ) -> dict:
         self.uploaded += 1
         assert filename
         assert data
-        return {"id": f"asset-output-{self.uploaded}"}
+        asset_id = f"asset-output-{self.uploaded}"
+        if semantic_name:
+            self.uploaded_semantics[semantic_name] = asset_id
+        return {"id": asset_id}
 
     async def complete(
         self,
@@ -162,5 +167,74 @@ async def _claim_generation_job():
         "job_id": "job-generation",
         "lease_id": "lease-generation",
         "job_type": "image.generate",
+        "payload": {},
+    }
+
+
+
+class RenderExecutor:
+    async def execute(self, job: dict) -> dict:
+        pass_names = ["rgb", "depth", "normals", "object_ids", "material_ids"]
+        artifacts = [
+            {
+                "semantic_name": name,
+                "filename": f"{name}.png" if name == "rgb" else f"{name}.exr",
+                "media_type": "image/png" if name == "rgb" else "image/x-exr",
+                "data": f"{name}-bytes".encode(),
+            }
+            for name in pass_names
+        ]
+        artifacts.append(
+            {
+                "semantic_name": "metadata",
+                "filename": "scene_metadata.json",
+                "media_type": "application/json",
+                "data": b"{}",
+            }
+        )
+        return {
+            "_artifacts": artifacts,
+            "_render_context": {
+                "render_id": "render-1",
+                "scene_revision_id": "scene-rev-1",
+                "camera_id": "camera.main",
+                "renderer_profile": "blender-eevee-v0",
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_worker_finalizes_render_manifest_from_semantic_outputs() -> None:
+    client = FakeClient()
+    client.claim = lambda: _claim_render_job()
+    runner = WorkerRunner(
+        client,
+        {"render.blender": RenderExecutor()},
+        heartbeat_seconds=60,
+        lease_renew_seconds=60,
+    )
+
+    assert await runner.run_once() is True
+    assert client.completed == 1
+    assert client.failed == 0
+    assert client.uploaded == 6
+
+    manifest = client.last_result["render_manifest"]
+    assert manifest["render_id"] == "render-1"
+    assert manifest["scene_revision_id"] == "scene-rev-1"
+    assert manifest["camera_id"] == "camera.main"
+    assert manifest["passes"] == {
+        name: client.uploaded_semantics[name]
+        for name in sorted(
+            ["rgb", "depth", "normals", "object_ids", "material_ids"]
+        )
+    }
+
+
+async def _claim_render_job():
+    return {
+        "job_id": "job-render",
+        "lease_id": "lease-render",
+        "job_type": "render.blender",
         "payload": {},
     }
