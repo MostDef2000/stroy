@@ -589,6 +589,177 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
 
 
 @router.post(
+    "/api/v1/projects/{project_id}/generations",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def generation_create(
+    project_id: str,
+    payload: GenerationRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if payload.scene_revision_id:
+        revision = await session.get(SceneRevisionRow, payload.scene_revision_id)
+        if revision is None or revision.project_id != project_id:
+            raise HTTPException(status_code=404, detail="scene revision not found")
+    else:
+        revision = await latest_revision(session, project_id)
+        if revision is None:
+            raise HTTPException(status_code=409, detail="scene is not initialized")
+    try:
+        row = await queue_render_then_generation(
+            session,
+            project_id=project_id,
+            scene_revision_id=revision.id,
+            camera_id=payload.camera_id,
+            style_profile_id=payload.style_profile_id,
+            user_text=payload.user_text,
+            seed=payload.seed,
+            workflow_id=payload.workflow_id,
+            correlation_id=request.state.request_id,
+            dispatcher=request.app.state.job_dispatcher,
+            idempotency_key=payload.idempotency_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_generation_request", "detail": str(exc)},
+        ) from exc
+    return job_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/generations",
+    dependencies=[Depends(require_owner)],
+)
+async def generation_list(project_id: str, session: DbSession):
+    rows = await list_generation_manifests(session, project_id)
+    diagnostics = {
+        row.generation_id: row
+        for row in await list_geometry_diagnostics(session, project_id)
+    }
+    return [
+        {
+            "id": row.id,
+            "job_id": row.job_id,
+            "scene_revision_id": row.scene_revision_id,
+            "design_revision_id": row.design_revision_id,
+            "camera_id": row.camera_id,
+            "created_at": row.created_at,
+            "manifest": row.manifest_json,
+            "diagnostic": (
+                {
+                    "score": diagnostics[row.id].score,
+                    "metrics": diagnostics[row.id].metrics_json,
+                }
+                if row.id in diagnostics
+                else None
+            ),
+        }
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/v1/generations/{generation_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def generation_get(generation_id: str, session: DbSession):
+    row = await session.get(GenerationManifestRow, generation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="generation not found")
+    diagnostic = (
+        await session.execute(
+            select(GeometryDiagnosticRow).where(
+                GeometryDiagnosticRow.generation_id == generation_id
+            )
+        )
+    ).scalar_one_or_none()
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "project_id": row.project_id,
+        "scene_revision_id": row.scene_revision_id,
+        "design_revision_id": row.design_revision_id,
+        "camera_id": row.camera_id,
+        "created_at": row.created_at,
+        "manifest": row.manifest_json,
+        "diagnostic": (
+            {"score": diagnostic.score, "metrics": diagnostic.metrics_json}
+            if diagnostic
+            else None
+        ),
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/replacements",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def replacement_create(
+    project_id: str,
+    payload: ReplacementRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    asset = await session.get(AssetRow, payload.reference_asset_id)
+    if (
+        asset is None
+        or asset.project_id != project_id
+        or not asset.media_type.startswith("image/")
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_reference_asset"},
+        )
+
+    command = DesignCommand(
+        command_id=str(uuid4()),
+        base_revision_id=payload.base_revision_id,
+        operation="replace_object_from_reference",
+        target_id=payload.target_id,
+        parameters={},
+        reference_asset_ids=[payload.reference_asset_id],
+        origin="user",
+        request_text=payload.user_text,
+    )
+    try:
+        revision = await apply_scene_command(
+            session,
+            project_id,
+            command,
+            correlation_id=request.state.request_id,
+        )
+        render_job = await queue_render_then_generation(
+            session,
+            project_id=project_id,
+            scene_revision_id=revision.id,
+            camera_id=payload.camera_id,
+            style_profile_id=payload.style_profile_id,
+            user_text=payload.user_text,
+            seed=payload.seed,
+            workflow_id=payload.workflow_id,
+            job_type="image.edit",
+            reference_asset_ids=[payload.reference_asset_id],
+            target_entity_ids=[payload.target_id],
+            correlation_id=request.state.request_id,
+            dispatcher=request.app.state.job_dispatcher,
+        )
+    except (ValueError, CommandRejected, CommandConflict) as exc:
+        raise _domain_conflict(exc) from exc
+
+    return {
+        "revision_id": revision.id,
+        "scene": revision.scene_json,
+        "render_job": job_view(render_job),
+    }
+
+
+@router.post(
     "/api/v1/projects/{project_id}/renders",
     status_code=201,
     dependencies=[Depends(require_csrf)],
