@@ -5,13 +5,19 @@
 STROY combines deterministic geometry with probabilistic AI. Canonical state is therefore isolated from rendering and generation runtimes.
 
 ```text
-Web UI
+Internet / Browser
   |
   v
-Single-user Auth
+stroy.mostdef.ru
   |
   v
-API / Project Service
+Owner-only Edge Auth
+  |
+  v
+Outbound Tunnel
+  |
+  v
+STROY Web/API
   |
   +--> Scene Core ----------> PostgreSQL
   |      revisions
@@ -51,20 +57,22 @@ Executes model-specific image workflows behind a stable internal contract. Comfy
 
 Interprets user intent and invokes typed domain tools. It may propose changes but does not write arbitrary scene JSON directly.
 
-## Authentication boundary
+## Internet ingress and authentication boundary
 
-v0.1 is a private, single-user application.
+v0.1 is a private, single-user application that is intentionally reachable from the public Internet at `https://stroy.mostdef.ru`.
 
-- no public sign-up;
-- no organizations, teams or RBAC;
-- owner credentials are configured locally;
-- passwords are stored only as a strong password hash (Argon2id preferred);
-- browser authentication uses an HttpOnly session cookie;
-- state-changing requests require CSRF protection when cookie authentication is used;
-- project assets and generated images require an authenticated request or short-lived authorized URL;
-- Postgres, Redis, MinIO, Qwen, ComfyUI and Blender endpoints are infrastructure services and must not be exposed as public application endpoints.
+Preferred production path:
 
-If the UI is reachable beyond localhost, terminate HTTPS at the application/reverse-proxy boundary.
+- `stroy.mostdef.ru` is protected by an identity-aware edge access layer;
+- only the owner's identity is allowed;
+- the home machine establishes an outbound-only tunnel to the edge provider;
+- the STROY origin is not directly reachable from the Internet;
+- the origin validates the authenticated edge identity/token or uses the tunnel provider's origin-validation feature;
+- there is no public sign-up, organization/team model or RBAC;
+- project assets and generated images require an authenticated request or a short-lived authorized URL;
+- Postgres, Redis, MinIO, Qwen, ComfyUI and Blender remain loopback/private infrastructure and are never published directly.
+
+For local development, a separate local-password mode may be used. If a direct public-IP deployment is ever used instead of a tunnel, HTTPS termination, firewalling, origin authentication and rate limiting become mandatory at the reverse-proxy boundary.
 
 ## Initial runtime choices
 
