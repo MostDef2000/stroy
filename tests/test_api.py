@@ -759,7 +759,7 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
                 json={
                     "scene_revision_id": revision_id,
                     "camera_id": "camera.main",
-                    "renderer_profile": "blender-eevee-v0",
+                    "renderer_profile": "blender-cycles-v0",
                     "idempotency_key": "render-main-v1",
                 },
             )
@@ -833,7 +833,7 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
                             "render_id": lease["payload"]["render_id"],
                             "scene_revision_id": revision_id,
                             "camera_id": "camera.main",
-                            "renderer_profile": "blender-eevee-v0",
+                            "renderer_profile": "blender-cycles-v0",
                             "passes": pass_assets,
                         },
                         "output_asset_ids": list(pass_assets.values()),
