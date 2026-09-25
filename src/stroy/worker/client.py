@@ -61,6 +61,24 @@ class WorkerClient:
         )
         response.raise_for_status()
 
+    async def lease_status(self, job_id: str, lease_id: str) -> dict[str, Any]:
+        response = await self.client.post(
+            f"{self.server_url}/api/v1/workers/jobs/{job_id}/lease-status",
+            json={"worker_id": self.worker_id, "lease_id": lease_id},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def release(self, job_id: str, lease_id: str) -> None:
+        response = await self.client.post(
+            f"{self.server_url}/api/v1/workers/jobs/{job_id}/release",
+            json={"worker_id": self.worker_id, "lease_id": lease_id},
+        )
+        response.raise_for_status()
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
     async def progress(
         self,
         job_id: str,
