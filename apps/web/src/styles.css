@@ -275,3 +275,62 @@ header span { color: #777; font-size: 13px; }
   flex: 1;
   width: 100%;
 }
+
+
+.upload-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.upload-controls select {
+  border: 1px solid #cbc8c0;
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: white;
+  color: #202124;
+}
+
+.upload-progress {
+  position: relative;
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid #d6d2c9;
+  border-radius: 8px;
+  background: #ebe8e1;
+}
+
+.upload-progress > div {
+  height: 100%;
+  background: #b8b0a4;
+  transition: width 120ms linear;
+}
+
+.upload-progress > span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.asset-group + .asset-group {
+  margin-top: 16px;
+}
+
+.asset-group h3 {
+  margin: 0 0 6px;
+  color: #77736b;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 700px) {
+  .upload-controls {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
