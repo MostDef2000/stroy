@@ -125,8 +125,7 @@ async def login(payload: LoginRequest, request: Request, response: Response, ses
 
 @router.get("/api/v1/auth/me")
 async def me(request: Request, owner: OwnerSession):
-    return {"authenticated": True, "username": request.app.state.settings.auth_username}
-
+    return {\n        "authenticated": True,\n        "username": request.app.state.settings.auth_username,\n        "csrf_token": owner.csrf_token,\n    }\n
 
 @router.post("/api/v1/auth/logout", dependencies=[Depends(require_csrf)])
 async def logout(response: Response, session: DbSession, owner: OwnerSession):
@@ -259,6 +258,25 @@ def job_view(row: JobRow) -> dict[str, Any]:
         "lease_expires_at": row.lease_expires_at,
         "created_at": row.created_at,
     }
+
+
+@router.get("/api/v1/workers", dependencies=[Depends(require_owner)])
+async def workers(request: Request, session: DbSession):
+    result = await session.execute(select(WorkerRow).order_by(WorkerRow.id.asc()))
+    now = datetime.now(timezone.utc)
+    grace = request.app.state.settings.worker_heartbeat_grace_seconds
+    return [
+        {
+            "id": row.id,
+            "display_name": row.display_name,
+            "online": (now - row.last_heartbeat).total_seconds() <= grace,
+            "capabilities": row.capabilities,
+            "models": row.models,
+            "runtimes": row.runtimes,
+            "last_heartbeat": row.last_heartbeat,
+        }
+        for row in result.scalars()
+    ]
 
 
 @router.post("/api/v1/workers/register", dependencies=[Depends(require_worker)])
