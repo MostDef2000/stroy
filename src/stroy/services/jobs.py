@@ -92,8 +92,12 @@ async def claim_job(
 def _require_lease(row: JobRow, worker_id: str, lease_id: str) -> None:
     if row.leased_to != worker_id or row.lease_id != lease_id:
         raise ValueError("stale or invalid job lease")
-    if row.lease_expires_at and row.lease_expires_at < utcnow():
-        raise ValueError("job lease expired")
+    if row.lease_expires_at:
+        expires_at = row.lease_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < utcnow():
+            raise ValueError("job lease expired")
 
 
 async def renew_lease(
