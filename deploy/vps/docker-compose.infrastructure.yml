@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stroy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: stroy
+    volumes:
+      - stroy_postgres:/var/lib/postgresql/data
+    networks: [stroy_private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stroy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - stroy_redis:/data
+    networks: [stroy_private]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - stroy_minio:/data
+    networks: [stroy_private]
+
+networks:
+  stroy_private:
+    internal: true
+
+volumes:
+  stroy_postgres:
+  stroy_redis:
+  stroy_minio:
