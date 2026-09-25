@@ -77,7 +77,7 @@ The home workstation runs a `stroy-worker` process.
 - It authenticates with a dedicated worker service credential separate from the owner's browser session.
 - It registers capabilities/runtime versions and sends heartbeats.
 - It claims leased jobs from the API.
-- It downloads required assets using authenticated or short-lived URLs.
+- It downloads required assets through lease-scoped authenticated STROY URLs; private MinIO addresses and bucket credentials are never exposed.
 - It invokes local Qwen, ComfyUI/FLUX and Blender over loopback/private local endpoints.
 - It uploads output assets/manifests to the VPS and completes/fails the lease.
 - If the worker disappears, the lease expires and the durable job returns to a retryable/blocked state.
@@ -87,9 +87,9 @@ Redis remains an internal implementation detail; the home worker does **not** co
 ## Initial runtime choices
 
 - Python 3.12 + FastAPI/Pydantic for API/control plane.
-- PostgreSQL for projects, revisions, jobs and provenance.
-- S3-compatible storage for uploaded and generated binary assets.
-- Redis for queues, transient locks and job state.
+- PostgreSQL for projects, revisions, durable jobs/attempts and provenance.
+- S3-compatible private storage for uploaded and generated binary assets.
+- Redis for best-effort job wakeups/coordination; it is never the durable job source.
 - Qwen 14B-class model behind an OpenAI-compatible adapter.
 - ComfyUI behind a STROY image-generation adapter.
 - Blender headless for geometry-derived render passes.
