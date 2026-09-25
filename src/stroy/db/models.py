@@ -30,7 +30,7 @@ class SceneRevisionRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    parent_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    parent_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
     command_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     schema_version: Mapped[str] = mapped_column(String(20), default="0.1.0")
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
