@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from stroy.generation import WorkflowManifest
+from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.services.adapters import ComfyUIAdapter
 
 
@@ -91,10 +91,12 @@ class ComfyUIExecutor:
         graph = manifest.materialize(semantic_inputs)
 
         prompt_id = await self.adapter.submit(graph, self.worker_id)
+        generation = GenerationContext.model_validate(payload.get("generation") or {})
         history = await self.adapter.wait(
             prompt_id,
             timeout_seconds=int(payload.get("timeout_seconds", 900)),
         )
+        artifacts = await self.adapter.collect_output_images(history)
         return {
             "prompt_id": prompt_id,
             "history": history,
@@ -105,4 +107,6 @@ class ComfyUIExecutor:
             "model_profile": manifest.model_profile,
             "semantic_outputs": manifest.outputs,
             "adapter_provenance": self.adapter.provenance(),
+            "_artifacts": artifacts,
+            "_generation_context": generation.model_dump(mode="json"),
         }
