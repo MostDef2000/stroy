@@ -84,6 +84,9 @@ async def test_comfy_executor_materializes_manifest_and_records_provenance() -> 
                     }
                 },
             )
+        if request.url.path == "/view":
+            assert request.url.params["filename"] == "output.png"
+            return httpx.Response(200, content=b"png-bytes")
         raise AssertionError(f"unexpected path: {request.url.path}")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -97,6 +100,15 @@ async def test_comfy_executor_materializes_manifest_and_records_provenance() -> 
                     "positive_prompt": "beige sofa",
                     "seed": 99,
                 },
+                "generation": {
+                    "generation_id": "generation-1",
+                    "scene_revision_id": "scene-rev-1",
+                    "design_revision_id": "design-rev-1",
+                    "camera_id": "camera.living.entry",
+                    "seed": 99,
+                    "input_asset_ids": ["asset-depth"],
+                    "structured_conditioning": {"prompt": "beige sofa"},
+                },
             }
         }
     )
@@ -107,6 +119,14 @@ async def test_comfy_executor_materializes_manifest_and_records_provenance() -> 
     assert result["model_profile"] == "flux1-schnell"
     assert result["semantic_outputs"] == ["image"]
     assert result["adapter_provenance"] == {"adapter": "comfyui"}
+    assert result["_artifacts"] == [
+        {
+            "filename": "output.png",
+            "media_type": "image/png",
+            "data": b"png-bytes",
+        }
+    ]
+    assert result["_generation_context"]["generation_id"] == "generation-1"
     await client.aclose()
 
 
@@ -129,6 +149,12 @@ async def test_comfy_executor_rejects_profile_mismatch() -> None:
                     "inputs": {
                         "positive_prompt": "test",
                         "seed": 1,
+                    },
+                    "generation": {
+                        "generation_id": "generation-2",
+                        "scene_revision_id": "scene-rev-1",
+                        "design_revision_id": "design-rev-1",
+                        "camera_id": "camera.living.entry",
                     },
                 }
             }
