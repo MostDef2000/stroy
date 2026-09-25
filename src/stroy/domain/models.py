@@ -72,9 +72,17 @@ class CameraIntrinsics(BaseModel):
     cy: float
 
 
+class CameraObservation(BaseModel):
+    world_mm: tuple[float, float, float]
+    image_px: tuple[float, float]
+    label: str | None = None
+
+
 class CameraCalibration(BaseModel):
     quality: float | None = Field(default=None, ge=0, le=1)
     residual: float | None = Field(default=None, ge=0)
+    method: Literal["manual", "correspondences", "imported"] = "manual"
+    observations: list[CameraObservation] = Field(default_factory=list)
 
 
 class Camera(BaseModel):
@@ -83,6 +91,7 @@ class Camera(BaseModel):
     height_px: int = Field(gt=0)
     intrinsics: CameraIntrinsics
     transform: CameraTransform
+    source_asset_id: str | None = None
     provenance: Provenance | None = None
     calibration: CameraCalibration | None = None
 
