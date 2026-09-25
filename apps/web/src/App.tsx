@@ -3,6 +3,7 @@ import {
   api,
   Asset,
   AssetRole,
+  Generation,
   Job,
   Project,
   RevisionSummary,
@@ -11,6 +12,7 @@ import {
   Worker
 } from "./api";
 import { CameraPanel } from "./CameraPanel";
+import { DesignPanel } from "./DesignPanel";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
 
@@ -140,6 +142,7 @@ export default function App() {
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [generations, setGenerations] = useState<Generation[]>([]);
   const [newProject, setNewProject] = useState("");
   const [instruction, setInstruction] = useState("");
   const [uploadRole, setUploadRole] = useState<AssetRole>("apartment");
@@ -154,16 +157,18 @@ export default function App() {
   }, []);
 
   const refreshProject = useCallback(async (projectId: string) => {
-    const [scene, history, projectAssets, projectJobs] = await Promise.all([
+    const [scene, history, projectAssets, projectJobs, projectGenerations] = await Promise.all([
       api.scene(projectId),
       api.revisions(projectId),
       api.assets(projectId),
-      api.jobs(projectId)
+      api.jobs(projectId),
+      api.generations(projectId)
     ]);
     setRevision(scene);
     setRevisions(history);
     setAssets(projectAssets);
     setJobs(projectJobs);
+    setGenerations(projectGenerations);
   }, []);
 
   useEffect(() => {
@@ -181,6 +186,7 @@ export default function App() {
       setRevisions([]);
       setAssets([]);
       setJobs([]);
+      setGenerations([]);
       return;
     }
     refreshProject(selected).catch((error) => setMessage(String(error)));
@@ -271,6 +277,23 @@ export default function App() {
     if (!selected) return;
     await api.cancelJob(jobId);
     setMessage(`Job ${shortId(jobId)} cancelled`);
+    await refreshProject(selected);
+  }
+
+  async function rerenderRevision(targetRevisionId: string) {
+    if (!selected || !revision) return;
+    const cameraId = revision.scene.cameras[0]?.id;
+    if (!cameraId) {
+      setMessage("Нельзя запустить generation без камеры.");
+      return;
+    }
+    await api.createGeneration(
+      selected,
+      targetRevisionId,
+      cameraId,
+      "re-render selected design revision"
+    );
+    setMessage(`Generation queued for revision ${shortId(targetRevisionId)}`);
     await refreshProject(selected);
   }
 
@@ -458,23 +481,15 @@ export default function App() {
             })}
           </article>
 
-          <article className="panel">
-            <h2>Scene history</h2>
-            {revisions.length === 0 && <p className="muted">ревизий пока нет</p>}
-            {revisions.slice(0, 8).map((item) => (
-              <div className="row history-row" key={item.revision_id}>
-                <span>rev {shortId(item.revision_id)}</span>
-                <small>{item.command_id ? `command ${shortId(item.command_id)}` : "snapshot"}</small>
-                {item.revision_id === revision?.revision_id ? (
-                  <span className="tag">current</span>
-                ) : (
-                  <button className="secondary" onClick={() => void restore(item.revision_id)}>
-                    Restore
-                  </button>
-                )}
-              </div>
-            ))}
-          </article>
+          <DesignPanel
+            revisions={revisions}
+            jobs={jobs}
+            generations={generations}
+            currentRevisionId={revision?.revision_id ?? null}
+            cameraId={revision?.scene.cameras[0]?.id ?? null}
+            onRestore={restore}
+            onRerender={rerenderRevision}
+          />
         </section>
 
         {message && <section className="status-panel">{message}</section>}
