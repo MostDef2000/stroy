@@ -39,6 +39,28 @@ from stroy.services.scenes import (
 router = APIRouter()
 
 
+def _media_type_allowed(media_type: str, configured: str) -> bool:
+    allowed = [item.strip().lower() for item in configured.split(",") if item.strip()]
+    value = media_type.lower()
+    return any(
+        rule == value or (rule.endswith("/*") and value.startswith(rule[:-1]))
+        for rule in allowed
+    )
+
+
+async def _validated_upload(file: UploadFile, request: Request) -> tuple[bytes, str]:
+    settings = request.app.state.settings
+    media_type = (file.content_type or "application/octet-stream").lower()
+    if not _media_type_allowed(media_type, settings.upload_allowed_media_types):
+        raise HTTPException(status_code=415, detail=f"unsupported media type: {media_type}")
+    data = await file.read(settings.max_upload_bytes + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="upload exceeds configured size limit")
+    return data, media_type
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -265,13 +287,12 @@ async def asset_upload(
     owner: OwnerSession,
     file: UploadFile = File(...),
 ):
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="empty upload")
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    data, media_type = await _validated_upload(file, request)
     digest = hashlib.sha256(data).hexdigest()
     suffix = Path(file.filename or "").suffix[:16]
     object_key = f"projects/{project_id}/{uuid4()}{suffix}"
-    media_type = file.content_type or "application/octet-stream"
     await request.app.state.object_store.put_bytes(object_key, data, media_type)
     row = AssetRow(
         project_id=project_id,
@@ -558,13 +579,10 @@ async def worker_output_upload(
         raise HTTPException(status_code=409, detail="stale or invalid job lease")
     if not job.project_id:
         raise HTTPException(status_code=409, detail="job has no project")
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="empty output")
+    data, media_type = await _validated_upload(file, request)
     digest = hashlib.sha256(data).hexdigest()
     suffix = Path(file.filename or "").suffix[:16]
     object_key = f"projects/{job.project_id}/worker/{job.id}/{uuid4()}{suffix}"
-    media_type = file.content_type or "application/octet-stream"
     await request.app.state.object_store.put_bytes(object_key, data, media_type)
     asset = AssetRow(
         project_id=job.project_id,
