@@ -1,0 +1,44 @@
+[
+  {
+    "id": "qwen3-14b",
+    "kind": "llm",
+    "upstream": "Qwen/Qwen3-14B",
+    "runtime": "openai-compatible",
+    "license": {
+      "name": "Apache-2.0",
+      "status": "permissive",
+      "source": "https://huggingface.co/Qwen/Qwen3-14B",
+      "reviewed_on": "2026-09-25"
+    },
+    "approved_uses": ["local-development", "commercial-evaluation"],
+    "notes": "Quantized derivatives must record their own source and quantization method."
+  },
+  {
+    "id": "flux1-schnell",
+    "kind": "image",
+    "upstream": "black-forest-labs/FLUX.1-schnell",
+    "runtime": "comfyui",
+    "license": {
+      "name": "Apache-2.0",
+      "status": "permissive",
+      "source": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
+      "reviewed_on": "2026-09-25"
+    },
+    "approved_uses": ["local-development", "commercial-evaluation"],
+    "notes": "Bootstrap image profile."
+  },
+  {
+    "id": "flux-dev-family",
+    "kind": "image",
+    "upstream": "black-forest-labs/FLUX [dev] family",
+    "runtime": "comfyui",
+    "license": {
+      "name": "FLUX [dev] Non-Commercial License v2.0 / separate commercial terms",
+      "status": "restricted",
+      "source": "https://bfl.ai/legal/non-commercial-license-terms",
+      "reviewed_on": "2026-09-25"
+    },
+    "approved_uses": ["non-commercial-research"],
+    "notes": "Commercial self-hosting requires an applicable commercial license/agreement."
+  }
+]
