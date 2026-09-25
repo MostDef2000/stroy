@@ -286,10 +286,10 @@ class BlenderAdapter:
                     process.communicate(),
                     timeout=self.timeout_seconds,
                 )
-            except TimeoutError:
+            except TimeoutError as exc:
                 process.kill()
                 await process.wait()
-                raise RuntimeError("Blender render timed out")
+                raise RuntimeError("Blender render timed out") from exc
             if process.returncode != 0:
                 detail = stderr.decode("utf-8", errors="replace")[-4000:]
                 raise RuntimeError(f"Blender failed with exit {process.returncode}: {detail}")
