@@ -6,8 +6,9 @@ import os
 from stroy.models import ModelProfileRegistry
 from stroy.rendering import BlenderAdapter
 from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
+from stroy.style import LocalPixelStyleAdapter, OpenAIVisionStyleAdapter
 from stroy.worker.client import WorkerClient
-from stroy.worker.executors import BlenderExecutor, ComfyUIExecutor, FakeStyleExecutor, GeometryQualityExecutor, QwenExecutor
+from stroy.worker.executors import BlenderExecutor, ComfyUIExecutor, GeometryQualityExecutor, QwenExecutor, VisionStyleExecutor
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
 
 
@@ -42,6 +43,17 @@ async def _run() -> None:
             profile_id=llm_profile.id,
         )
         comfy = ComfyUIAdapter(os.getenv("STROY_COMFYUI_URL", "http://127.0.0.1:8188"))
+        vision_base_url = os.getenv("STROY_STYLE_VISION_BASE_URL", "").strip()
+        if vision_base_url:
+            vision_llm = OpenAICompatibleLLM(
+                vision_base_url,
+                os.getenv("STROY_STYLE_VISION_API_KEY", "local"),
+                os.getenv("STROY_STYLE_VISION_MODEL", "local-vision"),
+                profile_id=os.getenv("STROY_STYLE_VISION_PROFILE", "local-vision"),
+            )
+            style_adapter = OpenAIVisionStyleAdapter(vision_llm)
+        else:
+            style_adapter = LocalPixelStyleAdapter()
         blender = BlenderAdapter(
             os.getenv("STROY_BLENDER_BIN", "blender"),
             script_path=os.getenv("STROY_BLENDER_SCRIPT", "blender/stroy_blender.py"),
@@ -49,7 +61,7 @@ async def _run() -> None:
         )
         executors = {
             "llm.complete": QwenExecutor(llm),
-            "style.analyze": QwenExecutor(llm),
+            "style.analyze": VisionStyleExecutor(client, style_adapter),
             "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id),
             "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id),
             "render.blender": BlenderExecutor(blender),
@@ -59,7 +71,7 @@ async def _run() -> None:
     else:
         executors = {
             "llm.complete": QwenExecutor(FakeLLMAdapter()),
-            "style.analyze": FakeStyleExecutor(),
+            "style.analyze": VisionStyleExecutor(client, LocalPixelStyleAdapter()),
             "render.blender": FakeExecutor("fake-blender"),
             "image.generate": FakeExecutor("fake-image"),
             "image.edit": FakeExecutor("fake-image-edit"),
