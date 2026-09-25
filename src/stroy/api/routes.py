@@ -19,13 +19,22 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
+from stroy.db.models import AssetRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
 from stroy.services.cameras import remove_camera, upsert_camera
+from stroy.services.generations import (
+    list_generation_manifests,
+    list_geometry_diagnostics,
+    persist_generation_manifest,
+    persist_geometry_diagnostic,
+    queue_generation_from_render,
+    queue_geometry_diagnostic,
+    queue_render_then_generation,
+)
 from stroy.services.jobs import (
     cancel_job,
     claim_job,
@@ -92,6 +101,11 @@ class ProjectCreate(BaseModel):
 class DesignInstruction(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     idempotency_key: str | None = Field(default=None, max_length=160)
+    auto_generate: bool = False
+    camera_id: str | None = None
+    style_profile_id: str | None = None
+    seed: int = 1
+    workflow_id: str = "flux-redesign-v0"
 
 
 class StyleAnalyzeRequest(BaseModel):
@@ -108,6 +122,27 @@ class CameraUpsertRequest(BaseModel):
 
 class CameraDeleteRequest(BaseModel):
     base_revision_id: str = Field(min_length=1)
+
+
+class GenerationRequest(BaseModel):
+    scene_revision_id: str | None = None
+    camera_id: str = Field(min_length=1)
+    style_profile_id: str = Field(min_length=1)
+    user_text: str = Field(default="", max_length=4000)
+    seed: int = 1
+    workflow_id: str = "flux-redesign-v0"
+    idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class ReplacementRequest(BaseModel):
+    base_revision_id: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    reference_asset_id: str = Field(min_length=1)
+    camera_id: str = Field(min_length=1)
+    style_profile_id: str = Field(min_length=1)
+    user_text: str = Field(default="replace selected furniture from reference", max_length=4000)
+    seed: int = 1
+    workflow_id: str = "flux-redesign-v0"
 
 
 class RenderRequest(BaseModel):
