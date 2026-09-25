@@ -25,3 +25,17 @@ Each manifest records a stable workflow ID, version, approved model profile, req
 Do not commit a graph here merely because it looks structurally valid. A production workflow should be exported from and smoke-tested against the intended ComfyUI version/model installation, then pinned as a versioned manifest.
 
 The current test-only example is intentionally kept under `tests/fixtures/workflow-manifest.json`; it is not a runnable FLUX workflow.
+
+
+## Manifest contract
+
+Each `*.manifest.json` is validated against `schemas/workflow-manifest.schema.json`.
+
+The control plane/job payload supplies:
+
+- `workflow_manifest`: the STROY-owned manifest;
+- `workflow_inputs`: semantic values such as `prompt`, `seed`, `depth_asset_id` or `mask_asset_id`.
+
+Only the home-worker generation adapter resolves semantic bindings to concrete ComfyUI node IDs. API/domain code must never construct or inspect those node IDs.
+
+The manifest records `id`, `version`, `model_profile`, required semantic inputs and declared outputs. The executor returns those identifiers in provenance so a later ComfyUI graph change can coexist as a new manifest version.
