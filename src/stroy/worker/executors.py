@@ -97,6 +97,24 @@ class ComfyUIExecutor:
         semantic_inputs = payload.get("inputs") or {}
         if not isinstance(semantic_inputs, dict):
             raise ValueError("image job payload.inputs must be an object")
+        semantic_inputs = dict(semantic_inputs)
+
+        asset_bindings = payload.get("asset_bindings") or {}
+        if not isinstance(asset_bindings, dict):
+            raise ValueError("image job asset_bindings must be an object")
+        downloaded = job.get("_input_assets") or {}
+        for semantic_name, asset_id in asset_bindings.items():
+            if not isinstance(semantic_name, str) or not isinstance(asset_id, str):
+                raise ValueError("image asset bindings must map strings to Asset IDs")
+            data = downloaded.get(asset_id)
+            if not isinstance(data, bytes):
+                raise ValueError(f"image input asset was not downloaded: {asset_id}")
+            uploaded_name = await self.adapter.upload_input_image(
+                filename=f"{asset_id}.png",
+                data=data,
+            )
+            semantic_inputs[semantic_name] = uploaded_name
+
         graph = manifest.materialize(semantic_inputs)
 
         prompt_id = await self.adapter.submit(graph, self.worker_id)
