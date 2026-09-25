@@ -9,7 +9,7 @@ Blender, Three.js and image-generation workflows represent scenes differently. M
 
 ## Decision
 
-STOY owns a versioned canonical scene model. Blender files, GLB exports, masks and generated images are derived artifacts.
+STROY owns a versioned canonical scene model. Blender files, GLB exports, masks and generated images are derived artifacts.
 
 ## Consequences
 
