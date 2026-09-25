@@ -568,6 +568,34 @@ async def worker_job_complete(job_id: str, payload: JobComplete, session: DbSess
     return job_view(row)
 
 
+@router.get(
+    "/api/v1/workers/jobs/{job_id}/inputs/{asset_id}",
+    dependencies=[Depends(require_worker)],
+)
+async def worker_input_download(
+    job_id: str,
+    asset_id: str,
+    request: Request,
+    session: DbSession,
+    worker_id: str,
+    lease_id: str,
+):
+    job = await _leased_job(session, job_id)
+    if job.leased_to != worker_id or job.lease_id != lease_id:
+        raise HTTPException(status_code=409, detail="stale or invalid job lease")
+    if asset_id not in (job.payload.get("input_asset_ids") or []):
+        raise HTTPException(status_code=403, detail="asset is not an input of this job")
+    asset = await session.get(AssetRow, asset_id)
+    if asset is None or asset.project_id != job.project_id:
+        raise HTTPException(status_code=404, detail="input asset not found")
+    data = await request.app.state.object_store.get_bytes(asset.object_key)
+    return Response(
+        content=data,
+        media_type=asset.media_type,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.post(
     "/api/v1/workers/jobs/{job_id}/outputs",
     status_code=201,
