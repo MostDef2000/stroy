@@ -1,39 +1,59 @@
 # Model and License Policy
 
-Model selection is configuration, not architecture.
+## Current project scope
+
+STROY is a **personal, non-commercial, single-user renovation project**. Qwen and FLUX run locally on the owner's computer and are used for the owner's apartment-design experiments.
+
+Model selection is configuration, not architecture. License metadata is retained mainly so the exact model provenance and permitted scope remain clear if the project changes later.
 
 ## Principles
 
 1. Every model is referenced through a model profile ID.
 2. A profile records model name, source, license note, runtime requirements and intended use.
 3. Workflows record the exact model profile used.
-4. Production/commercial deployment requires explicit license review for non-permissive model dependencies.
+4. The current approved use mode is `personal-non-commercial`.
 5. Model weights are never committed to this repository.
+6. If STROY later becomes commercial, shared with end users, or operated as a service, model terms must be re-reviewed before that change.
 
 ## Initial LLM profile
 
 ### qwen3-14b
 
-- upstream: Qwen/Qwen3-14B
+- upstream: `Qwen/Qwen3-14B`
 - purpose: scene/design agent, structured extraction and tool calling
 - license: Apache-2.0 according to the upstream model card
 - runtime: OpenAI-compatible local server
+- current use: personal non-commercial local use
 
 Quantized derivatives must record source and quantization method.
 
-## Initial image profiles
+## Image profiles
 
 ### flux1-schnell
 
-- upstream: black-forest-labs/FLUX.1-schnell
-- bootstrap/local generation profile
-- upstream model card publishes Apache-2.0
+- upstream: `black-forest-labs/FLUX.1-schnell`
 - runtime: ComfyUI adapter
+- license metadata: Apache-2.0 according to the upstream model card
+- current use: personal non-commercial local use
 
 ### flux-dev-family
 
-Do not treat FLUX [dev] profiles as interchangeable with schnell for licensing. Before commercial production use, confirm the exact checkpoint and applicable license, archive the reviewed license/version, and record the decision in an ADR.
+FLUX `[dev]` is an acceptable STROY target for the current project scope because the project is personal and non-commercial. The current BFL non-commercial terms explicitly include personal study/private entertainment/hobby-project style uses when they are not connected to commercial activity.
 
-## Future manifest
+- runtime: ComfyUI adapter
+- current use: personal non-commercial local use
+- status: allowed for the current project scope, subject to the exact model's applicable BFL terms
 
-A future models/profiles.yaml should record profile ID, upstream source, runtime, license metadata, intended use and approval state.
+This is project configuration documentation, not a substitute for re-checking the applicable license if the project's purpose changes.
+
+## Provenance
+
+Generation manifests should still record:
+
+- exact model profile;
+- workflow version;
+- model/quantization source when relevant;
+- seed when supported;
+- inputs and outputs.
+
+The purpose is reproducibility and future-proofing, not commercial licensing enforcement for v0.1.
