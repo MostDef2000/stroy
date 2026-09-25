@@ -4,7 +4,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from stroy.domain.models import DesignCommand, EntityLocks, Scene, SceneEntity
+from stroy.domain.models import Camera, CameraIntrinsics, CameraTransform, DesignCommand, EntityLocks, Scene, SceneEntity
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +26,18 @@ def test_scene_model_matches_versioned_json_schema() -> None:
                 geometry={"dimensions_mm": [5000, 120, 2800]},
             )
         ],
-        cameras=[],
+        cameras=[
+            Camera(
+                id="camera.living.entry",
+                width_px=1920,
+                height_px=1080,
+                intrinsics=CameraIntrinsics(fx=1450, fy=1450, cx=960, cy=540),
+                transform=CameraTransform(
+                    translation_mm=(0, -6000, 1600),
+                    rotation_deg=(-15, 0, 0),
+                ),
+            )
+        ],
     )
     jsonschema.validate(scene.model_dump(mode="json", exclude_none=True), schema("scene.schema.json"))
 
