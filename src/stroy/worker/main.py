@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from stroy.services.adapters import ComfyUIAdapter, OpenAICompatibleLLM
+from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
 from stroy.worker.client import WorkerClient
 from stroy.worker.executors import ComfyUIExecutor, QwenExecutor
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
@@ -39,7 +39,7 @@ async def _run() -> None:
         ]
     else:
         executors = {
-            "llm.complete": FakeExecutor("fake-llm"),
+            "llm.complete": QwenExecutor(FakeLLMAdapter()),
             "style.analyze": FakeExecutor("fake-style"),
             "render.blender": FakeExecutor("fake-blender"),
             "image.generate": FakeExecutor("fake-image"),
