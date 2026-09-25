@@ -1,0 +1,187 @@
+{
+  "schema_version": "0.1.0",
+  "scene_id": "scene.golden-room",
+  "project_id": "project.golden",
+  "units": "mm",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "Z"
+  },
+  "entities": [
+    {
+      "id": "room.living",
+      "kind": "room",
+      "display_name": "Living room"
+    },
+    {
+      "id": "surface.floor.living",
+      "kind": "floor",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [0, 0, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 4000, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.living",
+      "kind": "ceiling",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [0, 0, 2850],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 4000, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.living.north",
+      "kind": "wall",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [0, 2000, 1400],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 120, 2800]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.living.west",
+      "kind": "wall",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [-2500, 0, 1400],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 4000, 2800]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.window.living.north",
+      "kind": "window",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [900, 1930, 1600],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [1600, 40, 1200]
+      },
+      "material_ref": "material.glass.clear",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": true
+      }
+    },
+    {
+      "id": "opening.door.living.west",
+      "kind": "door",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [-2430, -900, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 900, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "object.sofa.main",
+      "kind": "furniture",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [0, 1100, 450],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [2200, 900, 900]
+      },
+      "material_ref": "material.fabric.gray",
+      "metadata": {
+        "color": "#A59E94"
+      }
+    },
+    {
+      "id": "light.ceiling.main",
+      "kind": "light",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [0, 0, 2600],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "metadata": {
+        "power_w": 800,
+        "size_m": 1.5
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": "camera.living.entry",
+      "width_px": 1600,
+      "height_px": 1000,
+      "intrinsics": {
+        "fx": 1200,
+        "fy": 1210,
+        "cx": 790,
+        "cy": 505
+      },
+      "transform": {
+        "translation_mm": [0, -6200, 1700],
+        "rotation_deg": [78, 0, 0]
+      },
+      "provenance": {
+        "source": "measured",
+        "asset_ids": []
+      },
+      "calibration": {
+        "quality": 1,
+        "residual": 0
+      }
+    }
+  ]
+}
