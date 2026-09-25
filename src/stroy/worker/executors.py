@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 from pathlib import Path
@@ -314,4 +315,37 @@ class GeometryQualityExecutor:
         return {
             "geometry_diagnostic": diagnostic.model_dump(mode="json"),
             "adapter_provenance": {"adapter": "geometry-edge-v0"},
+        }
+
+
+
+class FakeImageExecutor:
+    """Deterministic image executor for full mocked edit/generation E2E."""
+
+    _PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        generation = GenerationContext.model_validate(payload.get("generation") or {})
+        workflow = WorkflowManifest.model_validate(payload.get("workflow_manifest") or {})
+        return {
+            "fake": True,
+            "workflow": {"id": workflow.id, "version": workflow.version},
+            "model_profile": workflow.model_profile,
+            "adapter_provenance": {
+                "adapter": "fake-image",
+                "model_profile": workflow.model_profile,
+            },
+            "_artifacts": [
+                {
+                    "semantic_name": "image",
+                    "filename": f"{generation.generation_id}.png",
+                    "media_type": "image/png",
+                    "data": self._PNG,
+                }
+            ],
+            "_generation_context": generation.model_dump(mode="json"),
         }
