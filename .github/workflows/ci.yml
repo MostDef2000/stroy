@@ -14,11 +14,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Validate JSON contracts
+      - name: Validate JSON syntax
         run: python scripts/check_json.py
 
       - name: Install
         run: python -m pip install -e ".[dev]"
+
+      - name: Validate model profiles
+        run: python scripts/validate_model_profiles.py
 
       - name: Lint
         run: ruff check src tests
