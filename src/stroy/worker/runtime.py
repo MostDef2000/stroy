@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from stroy.generation import GenerationContext, finalize_generation_manifest
 from stroy.services.adapters import AdapterError
 from stroy.worker.client import WorkerClient
 
@@ -97,14 +98,69 @@ class WorkerRunner:
             )
             renew_task = asyncio.create_task(self._renew_lease(job_id, lease_id, stop))
             result = await executor.execute(job)
+
+            raw_artifacts = result.pop("_artifacts", [])
+            if not isinstance(raw_artifacts, list):
+                raise ValueError("executor _artifacts must be a list")
+
+            output_asset_ids: list[str] = []
+            for artifact in raw_artifacts:
+                if not isinstance(artifact, dict):
+                    raise ValueError("executor artifact must be an object")
+                filename = artifact.get("filename")
+                data = artifact.get("data")
+                media_type = artifact.get("media_type", "application/octet-stream")
+                if not isinstance(filename, str) or not isinstance(data, bytes):
+                    raise ValueError("executor artifact requires filename and bytes")
+                uploaded = await self.client.upload_output(
+                    job_id,
+                    lease_id,
+                    filename=filename,
+                    data=data,
+                    media_type=str(media_type),
+                )
+                output_asset_ids.append(uploaded["id"])
+
+            raw_generation = result.pop("_generation_context", None)
+            if raw_generation is not None:
+                generation = GenerationContext.model_validate(raw_generation)
+                workflow = result.get("workflow") or {}
+                workflow_id = workflow.get("id")
+                workflow_version = workflow.get("version")
+                model_profile = result.get("model_profile")
+                if not all(
+                    isinstance(value, str) and value
+                    for value in (workflow_id, workflow_version, model_profile)
+                ):
+                    raise ValueError(
+                        "generation result requires workflow id/version and model profile"
+                    )
+                manifest = finalize_generation_manifest(
+                    context=generation,
+                    workflow_id=workflow_id,
+                    workflow_version=workflow_version,
+                    model_profile=model_profile,
+                    output_asset_ids=output_asset_ids,
+                )
+                result["generation_manifest"] = manifest.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+            result["output_asset_ids"] = output_asset_ids
+
             stop.set()
             if renew_task:
                 await renew_task
+
+            runtime_provenance = {"worker_id": self.client.worker_id}
+            adapter_provenance = result.get("adapter_provenance")
+            if isinstance(adapter_provenance, dict):
+                runtime_provenance.update(adapter_provenance)
             await self.client.complete(
                 job_id,
                 lease_id,
                 result,
-                {"worker_id": self.client.worker_id},
+                runtime_provenance,
             )
         except AdapterError as exc:
             stop.set()
