@@ -1,4 +1,5 @@
 from stroy.agent.tools import (
+    AgentToolError,
     CONTROL_TOOL_NAMES,
     MUTATION_TOOL_NAMES,
     READ_TOOL_NAMES,
@@ -10,6 +11,7 @@ from stroy.agent.tools import (
 )
 
 __all__ = [
+    "AgentToolError",
     "CONTROL_TOOL_NAMES",
     "MUTATION_TOOL_NAMES",
     "READ_TOOL_NAMES",
