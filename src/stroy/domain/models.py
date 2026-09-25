@@ -60,6 +60,11 @@ class SceneEntity(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CameraTransform(BaseModel):
+    translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
 class CameraIntrinsics(BaseModel):
     fx: float = Field(gt=0)
     fy: float = Field(gt=0)
@@ -77,7 +82,7 @@ class Camera(BaseModel):
     width_px: int = Field(gt=0)
     height_px: int = Field(gt=0)
     intrinsics: CameraIntrinsics
-    transform: Transform
+    transform: CameraTransform
     provenance: Provenance | None = None
     calibration: CameraCalibration | None = None
 
