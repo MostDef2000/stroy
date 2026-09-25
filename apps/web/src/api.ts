@@ -176,6 +176,13 @@ export const api = {
     return request<Job[]>(`/api/v1/projects/${projectId}/jobs`);
   },
 
+  designInstruction(projectId: string, text: string) {
+    return request<Job>(`/api/v1/projects/${projectId}/design/instructions`, {
+      method: "POST",
+      body: JSON.stringify({ text })
+    });
+  },
+
   createJob(
     projectId: string,
     jobType: string,
