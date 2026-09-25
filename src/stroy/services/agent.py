@@ -4,10 +4,19 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from stroy.agent import tool_call_to_command
+from stroy.agent import (
+    CONTROL_TOOL_NAMES,
+    MUTATION_TOOL_NAMES,
+    READ_TOOL_NAMES,
+    execute_read_tool,
+    tool_call_to_command,
+    validate_tool_call,
+)
 from stroy.db.models import JobRow
 from stroy.domain.commands import CommandConflict, apply_command
 from stroy.domain.models import Scene
+from stroy.services.dispatch import JobDispatcher
+from stroy.services.jobs import create_job
 from stroy.services.scenes import apply_scene_command, latest_revision
 
 
@@ -15,12 +24,10 @@ async def apply_design_agent_result(
     session: AsyncSession,
     job: JobRow,
     result: dict[str, Any],
+    *,
+    dispatcher: JobDispatcher | None = None,
 ) -> dict[str, Any]:
-    """Validate and apply design tool calls returned by a remote LLM worker.
-
-    The LLM can only propose typed tools. Canonical scene mutation still happens
-    on the control plane through the command engine and geometry locks.
-    """
+    """Validate and execute the constrained tool proposal returned by the LLM."""
     if job.job_type != "llm.complete" or job.payload.get("purpose") != "design_instruction":
         return result
 
@@ -43,31 +50,108 @@ async def apply_design_agent_result(
     if not isinstance(calls, list):
         raise ValueError("LLM result tool_calls must be a list")
 
-    # Validate the complete proposal against an in-memory copy before persisting
-    # any command. This prevents a later invalid call from leaving a partial edit.
     validation_scene = Scene.model_validate(current.scene_json)
     commands = []
-    validation_base = current.id
-    for raw_call in calls:
+    tool_results: list[dict[str, Any]] = []
+    preview_requests: list[dict[str, Any]] = []
+    revision_marker_calls: list[int] = []
+
+    for index, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             raise ValueError("LLM tool call must be an object")
-        command = tool_call_to_command(
-            raw_call,
-            base_revision_id=validation_base,
-            request_text=request_text,
-        )
-        validation_scene = apply_command(validation_scene, command)
-        commands.append(command)
+        name, parsed = validate_tool_call(raw_call)
 
+        if name in READ_TOOL_NAMES:
+            tool_results.append(
+                {
+                    "index": index,
+                    "name": name,
+                    "result": execute_read_tool(validation_scene, raw_call),
+                }
+            )
+            continue
+
+        if name in MUTATION_TOOL_NAMES:
+            command = tool_call_to_command(
+                raw_call,
+                base_revision_id=current.id,
+                request_text=request_text,
+            )
+            validation_scene = apply_command(validation_scene, command)
+            commands.append(command)
+            continue
+
+        if name in CONTROL_TOOL_NAMES:
+            if name == "create_design_revision":
+                revision_marker_calls.append(index)
+                continue
+            if name == "render_preview":
+                preview_requests.append(
+                    {
+                        "index": index,
+                        "camera_id": parsed.model_dump(exclude_none=True).get("camera_id"),
+                    }
+                )
+                continue
+
+        raise ValueError(f"unsupported agent tool: {name}")
+
+    # Persist mutations only after the complete proposal has validated in memory.
     applied_revision_ids: list[str] = []
     actual_base = current.id
     for command in commands:
         command = command.model_copy(update={"base_revision_id": actual_base})
-        revision = await apply_scene_command(session, job.project_id, command)
+        revision = await apply_scene_command(
+            session,
+            job.project_id,
+            command,
+            model_profile=job.payload.get("model_profile"),
+            correlation_id=job.correlation_id,
+        )
         actual_base = revision.id
         applied_revision_ids.append(revision.id)
 
+    for index in revision_marker_calls:
+        tool_results.append(
+            {
+                "index": index,
+                "name": "create_design_revision",
+                "result": {"revision_id": actual_base},
+            }
+        )
+
+    preview_job_ids: list[str] = []
+    for preview in preview_requests:
+        camera_id = preview["camera_id"]
+        preview_job = await create_job(
+            session,
+            project_id=job.project_id,
+            job_type="render.blender",
+            required_capabilities=["blender_render"],
+            idempotency_key=(
+                f"agent-preview:{job.id}:{camera_id or 'default'}:{actual_base}"
+            ),
+            correlation_id=job.correlation_id,
+            payload={
+                "purpose": "agent_preview",
+                "scene_revision_id": actual_base,
+                "camera_id": camera_id,
+                "requested_by_job_id": job.id,
+            },
+            dispatcher=dispatcher,
+        )
+        preview_job_ids.append(preview_job.id)
+        tool_results.append(
+            {
+                "index": preview["index"],
+                "name": "render_preview",
+                "result": {"job_id": preview_job.id},
+            }
+        )
+
     enriched = dict(result)
+    enriched["tool_results"] = sorted(tool_results, key=lambda item: item["index"])
     enriched["applied_revision_ids"] = applied_revision_ids
     enriched["final_revision_id"] = actual_base
+    enriched["preview_job_ids"] = preview_job_ids
     return enriched
