@@ -55,6 +55,23 @@ class WorkerClient:
         )
         response.raise_for_status()
 
+    async def upload_output(
+        self,
+        job_id: str,
+        lease_id: str,
+        *,
+        filename: str,
+        data: bytes,
+        media_type: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        response = await self.client.post(
+            f"{self.server_url}/api/v1/workers/jobs/{job_id}/outputs",
+            data={"worker_id": self.worker_id, "lease_id": lease_id},
+            files={"file": (filename, data, media_type)},
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def complete(self, job_id: str, lease_id: str, result: dict[str, Any]) -> None:
         response = await self.client.post(
             f"{self.server_url}/api/v1/workers/jobs/{job_id}/complete",
