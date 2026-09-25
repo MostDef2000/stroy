@@ -1,0 +1,105 @@
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile.api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STROY_ENV: production
+      STROY_AUTO_CREATE_SCHEMA: "false"
+      STROY_STORAGE_BACKEND: s3
+      STROY_DATABASE_URL: postgresql+asyncpg://stroy:${POSTGRES_PASSWORD}@postgres:5432/stroy
+      STROY_REDIS_URL: redis://redis:6379/0
+      STROY_S3_ENDPOINT: http://minio:9000
+      STROY_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STROY_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    expose:
+      - "8000"
+    networks:
+      - edge
+      - private
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stroy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: stroy
+    volumes:
+      - stroy_postgres:/var/lib/postgresql/data
+    networks:
+      - private
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stroy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - stroy_redis:/data
+    networks:
+      - private
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - stroy_minio:/data
+    networks:
+      - private
+
+networks:
+  edge:
+  private:
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  stroy_postgres:
+  stroy_redis:
+  stroy_minio:
