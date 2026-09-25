@@ -4,36 +4,36 @@
 
 STROY combines deterministic geometry with probabilistic AI. Canonical state is therefore isolated from rendering and generation runtimes.
 
-```text
+\`\`\`text
 Internet / Browser
   |
   v
-stroy.mostdef.ru
+stroy.mostdef.ru (A -> VPS)
   |
   v
-Owner-only Edge Auth
+Caddy / HTTPS
   |
   v
-Outbound Tunnel
+STROY Web/API + owner auth
   |
-  v
-STROY Web/API
-  |
-  +--> Scene Core ----------> PostgreSQL
+  +--> Scene Core ----------> PostgreSQL (VPS-private)
   |      revisions
   |      commands
   |
-  +--> Qwen Agent Adapter
-  |      typed tools only
+  +--> Job Orchestrator ----> Redis (VPS-private)
   |
-  +--> Job Orchestrator ----> Redis
-         |        |
-         v        v
-      Blender   ComfyUI
-         \        /
-          \      /
-        S3-compatible storage
-```
+  +--> Asset Service -------> MinIO (VPS-private)
+  |
+  +--> Worker API
+          ^
+          | outbound HTTPS: claim/heartbeat/upload
+          |
+     Home GPU workstation
+          |
+          +--> Qwen
+          +--> ComfyUI / FLUX
+          +--> Blender
+\`\`\`
 
 ## Bounded contexts
 
@@ -57,22 +57,32 @@ Executes model-specific image workflows behind a stable internal contract. Comfy
 
 Interprets user intent and invokes typed domain tools. It may propose changes but does not write arbitrary scene JSON directly.
 
-## Internet ingress and authentication boundary
+## VPS ingress and authentication boundary
 
-v0.1 is a private, single-user application that is intentionally reachable from the public Internet at `https://stroy.mostdef.ru`.
+`stroy.mostdef.ru` already resolves by A record to the owner's VPS. The VPS is the stable public control plane.
 
-Preferred production path:
+- Caddy terminates HTTPS and proxies only the STROY web/API application.
+- STROY uses one owner account; no public sign-up, teams or RBAC.
+- The password is stored only as a strong Argon2id hash.
+- Browser auth uses an HttpOnly, Secure session cookie with CSRF protection for state-changing requests.
+- Login attempts are throttled and authenticated sessions expire.
+- PostgreSQL, Redis and MinIO are reachable only on the VPS private/container network.
+- Qwen, ComfyUI and Blender are not installed/exposed on the VPS unless explicitly desired later.
 
-- `stroy.mostdef.ru` is protected by an identity-aware edge access layer;
-- only the owner's identity is allowed;
-- the home machine establishes an outbound-only tunnel to the edge provider;
-- the STROY origin is not directly reachable from the Internet;
-- the origin validates the authenticated edge identity/token or uses the tunnel provider's origin-validation feature;
-- there is no public sign-up, organization/team model or RBAC;
-- project assets and generated images require an authenticated request or a short-lived authorized URL;
-- Postgres, Redis, MinIO, Qwen, ComfyUI and Blender remain loopback/private infrastructure and are never published directly.
+## Remote GPU worker boundary
 
-For local development, a separate local-password mode may be used. If a direct public-IP deployment is ever used instead of a tunnel, HTTPS termination, firewalling, origin authentication and rate limiting become mandatory at the reverse-proxy boundary.
+The home workstation runs a `stroy-worker` process.
+
+- It creates outbound HTTPS connections to `stroy.mostdef.ru`; no inbound home port is required.
+- It authenticates with a dedicated worker service credential separate from the owner's browser session.
+- It registers capabilities/runtime versions and sends heartbeats.
+- It claims leased jobs from the API.
+- It downloads required assets using authenticated or short-lived URLs.
+- It invokes local Qwen, ComfyUI/FLUX and Blender over loopback/private local endpoints.
+- It uploads output assets/manifests to the VPS and completes/fails the lease.
+- If the worker disappears, the lease expires and the durable job returns to a retryable/blocked state.
+
+Redis remains an internal implementation detail; the home worker does **not** connect directly to Redis or PostgreSQL.
 
 ## Initial runtime choices
 
