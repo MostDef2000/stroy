@@ -28,7 +28,7 @@ async def initialize_scene(
         parent_revision_id=None,
         command_id=None,
         content_hash=canonical_hash(scene),
-        scene_json=scene.model_dump(mode="json"),
+        scene_json=scene.model_dump(mode="json", exclude_none=True),
     )
     session.add(row)
     await session.commit()
@@ -78,7 +78,7 @@ async def apply_scene_command(
         parent_revision_id=current.id,
         command_id=command.command_id,
         content_hash=canonical_hash(next_scene),
-        scene_json=next_scene.model_dump(mode="json"),
+        scene_json=next_scene.model_dump(mode="json", exclude_none=True),
     )
     session.add(revision)
     await session.commit()
@@ -121,7 +121,7 @@ async def revert_scene(
         parent_revision_id=current.id,
         command_id=None,
         content_hash=canonical_hash(scene),
-        scene_json=scene.model_dump(mode="json"),
+        scene_json=scene.model_dump(mode="json", exclude_none=True),
     )
     session.add(revision)
     await session.commit()
