@@ -1281,13 +1281,22 @@ async def worker_claim(payload: WorkerClaim, request: Request, session: DbSessio
     if row is None:
         return Response(status_code=204)
     downloads: dict[str, str] = {}
+    input_assets: dict[str, dict[str, Any]] = {}
     for asset_id in row.payload.get("input_asset_ids", []):
         asset = await session.get(AssetRow, asset_id)
         if asset and asset.project_id == row.project_id:
-            downloads[asset_id] = (
+            url = (
                 f"/api/v1/workers/jobs/{row.id}/inputs/{asset_id}"
                 f"?worker_id={worker.id}&lease_id={row.lease_id}"
             )
+            downloads[asset_id] = url
+            input_assets[asset_id] = {
+                "url": url,
+                "media_type": asset.media_type,
+                "original_name": asset.original_name,
+                "size_bytes": asset.size_bytes,
+                "sha256": asset.sha256,
+            }
     return {
         "schema_version": "0.1.0",
         "job_id": row.id,
@@ -1298,6 +1307,7 @@ async def worker_claim(payload: WorkerClaim, request: Request, session: DbSessio
         "required_capabilities": row.required_capabilities,
         "input_asset_ids": row.payload.get("input_asset_ids", []),
         "download_urls": downloads,
+        "input_assets": input_assets,
         "upload_targets": {},
         "payload": row.payload,
     }
