@@ -403,3 +403,141 @@ header span { color: #777; font-size: 13px; }
     grid-template-columns: 1fr 1fr;
   }
 }
+
+
+.design-timeline,
+.comparison-panel {
+  grid-column: 1 / -1;
+}
+
+.design-timeline h3 {
+  margin: 18px 0 8px;
+  font-size: 12px;
+  color: #6a675f;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.design-event {
+  display: grid;
+  gap: 7px;
+  padding: 10px 0;
+  border-top: 1px solid #efede8;
+}
+
+.design-event-head,
+.revision-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.design-event-head > span:first-child,
+.revision-line > span:first-child {
+  font-weight: 600;
+}
+
+.design-event-head .tag,
+.revision-line .tag {
+  margin-left: auto;
+}
+
+.command-summary {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #f5f3ee;
+  font-size: 12px;
+}
+
+.command-summary strong {
+  font-weight: 650;
+}
+
+.revision-line {
+  padding: 7px 0;
+  border-top: 1px solid #efede8;
+  font-size: 12px;
+}
+
+.revision-line > span:nth-child(2) {
+  color: #85827b;
+}
+
+.compare-selectors {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.compare-selectors label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: #68655e;
+}
+
+.compare-selectors select {
+  border: 1px solid #cbc8c0;
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: white;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.compare-grid figure {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #dedbd3;
+  border-radius: 10px;
+  background: #efede8;
+}
+
+.compare-grid figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.compare-grid figcaption span {
+  color: #77736b;
+}
+
+.compare-grid img,
+.compare-empty {
+  width: 100%;
+  min-height: 220px;
+  display: block;
+  object-fit: contain;
+  background: #d9d6cf;
+}
+
+.compare-empty {
+  display: grid;
+  place-items: center;
+  color: #85827b;
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .compare-selectors,
+  .compare-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .command-summary {
+    grid-template-columns: 1fr;
+  }
+}
