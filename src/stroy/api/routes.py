@@ -19,7 +19,7 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, StyleProfileRow, WorkerRow
+from stroy.db.models import AssetRow, AuthSessionRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import DesignCommand, Scene
 from stroy.security import random_token, sha256_text, verify_password
@@ -34,6 +34,7 @@ from stroy.services.jobs import (
     renew_lease,
     update_progress,
 )
+from stroy.services.renders import list_render_manifests, persist_render_manifest
 from stroy.services.styles import create_style_profile_from_job, list_style_profiles
 from stroy.services.scenes import (
     apply_scene_command,
@@ -96,6 +97,14 @@ class StyleAnalyzeRequest(BaseModel):
     source_text: str = Field(min_length=1, max_length=4000)
     reference_asset_ids: list[str] = Field(min_length=3, max_length=5)
     overrides: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class RenderRequest(BaseModel):
+    scene_revision_id: str | None = None
+    design_revision_id: str | None = None
+    camera_id: str = Field(min_length=1)
+    renderer_profile: str = "blender-eevee-v0"
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
@@ -437,6 +446,99 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
         media_type=row.media_type,
         headers={"Cache-Control": "private, max-age=60"},
     )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/renders",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def render_create(
+    project_id: str,
+    payload: RenderRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    if payload.scene_revision_id:
+        revision = await session.get(SceneRevisionRow, payload.scene_revision_id)
+        if revision is None or revision.project_id != project_id:
+            raise HTTPException(status_code=404, detail="scene revision not found")
+    else:
+        revision = await latest_revision(session, project_id)
+        if revision is None:
+            raise HTTPException(status_code=409, detail="scene is not initialized")
+
+    scene = Scene.model_validate(revision.scene_json)
+    if not any(camera.id == payload.camera_id for camera in scene.cameras):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "unknown_camera", "camera_id": payload.camera_id},
+        )
+
+    render_id = str(uuid4())
+    row = await create_job(
+        session,
+        project_id=project_id,
+        job_type="render.blender",
+        required_capabilities=["blender_render"],
+        payload={
+            "purpose": "render",
+            "render_id": render_id,
+            "scene_revision_id": revision.id,
+            "design_revision_id": payload.design_revision_id,
+            "camera_id": payload.camera_id,
+            "renderer_profile": payload.renderer_profile,
+            "scene": revision.scene_json,
+        },
+        idempotency_key=payload.idempotency_key,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+    )
+    return job_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/renders",
+    dependencies=[Depends(require_owner)],
+)
+async def render_list(project_id: str, session: DbSession):
+    rows = await list_render_manifests(session, project_id)
+    return [
+        {
+            "id": row.id,
+            "job_id": row.job_id,
+            "scene_revision_id": row.scene_revision_id,
+            "design_revision_id": row.design_revision_id,
+            "camera_id": row.camera_id,
+            "created_at": row.created_at,
+            "manifest": row.manifest_json,
+        }
+        for row in rows
+    ]
+
+
+@router.get(
+    "/api/v1/renders/{render_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def render_get(render_id: str, session: DbSession):
+    row = await session.get(RenderManifestRow, render_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="render not found")
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "project_id": row.project_id,
+        "scene_revision_id": row.scene_revision_id,
+        "design_revision_id": row.design_revision_id,
+        "camera_id": row.camera_id,
+        "created_at": row.created_at,
+        "manifest": row.manifest_json,
+    }
 
 
 @router.post(
@@ -810,6 +912,16 @@ async def worker_job_complete(
                 "style_profile_id": style_row.id,
                 "style_profile": style_row.profile_json,
             }
+        if row.job_type == "render.blender":
+            render_row = await persist_render_manifest(
+                session,
+                row,
+                processed_result,
+            )
+            processed_result = {
+                **processed_result,
+                "render_id": render_row.id,
+            }
     except AgentToolError as exc:
         try:
             row = await fail_job(
@@ -894,6 +1006,7 @@ async def worker_output_upload(
     session: DbSession,
     worker_id: str = Form(...),
     lease_id: str = Form(...),
+    semantic_name: str | None = Form(None),
     file: UploadFile = File(...),
 ):
     job = await _leased_job(session, job_id)
@@ -918,6 +1031,7 @@ async def worker_output_upload(
         metadata_json={
             **extract_asset_metadata(data, media_type),
             "job_id": job.id,
+            **({"semantic_name": semantic_name} if semantic_name else {}),
         },
         source_asset_ids=list(job.payload.get("input_asset_ids") or []),
     )
