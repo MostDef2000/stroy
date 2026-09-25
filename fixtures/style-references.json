@@ -1,0 +1,13 @@
+{
+  "source_text": "warm minimal interior with natural wood",
+  "references": [
+    {"asset_id": "ref-1", "rgb": [232, 224, 214], "size": [64, 64]},
+    {"asset_id": "ref-2", "rgb": [188, 170, 145], "size": [64, 64]},
+    {"asset_id": "ref-3", "rgb": [112, 101, 91], "size": [64, 64]}
+  ],
+  "expected": {
+    "labels": ["minimal"],
+    "material": "natural wood",
+    "temperature_k": 3000
+  }
+}
