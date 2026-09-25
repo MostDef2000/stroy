@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
+from PIL import Image, ImageEnhance, ImageOps
+
 from stroy.domain.models import Scene
 from stroy.generation import GenerationContext, WorkflowManifest
+from stroy.quality import geometry_edge_diagnostic
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
 
@@ -253,4 +257,73 @@ class BlenderExecutor:
                 camera_id=camera_id,
                 renderer_profile=plan.renderer_profile,
             ).model_dump(mode="json", exclude_none=True),
+        }
+
+
+
+class FakeImageExecutor:
+    """Deterministic image executor for application/integration tests."""
+
+    def __init__(self, model_profile_id: str = "flux1-schnell") -> None:
+        self.model_profile_id = model_profile_id
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        generation = GenerationContext.model_validate(payload.get("generation") or {})
+        controls = generation.structured_conditioning.get("control_passes") or {}
+        rgb_asset_id = controls.get("rgb")
+        inputs = job.get("_input_assets") or {}
+        source = inputs.get(rgb_asset_id) if isinstance(rgb_asset_id, str) else None
+
+        if isinstance(source, bytes):
+            try:
+                image = Image.open(BytesIO(source)).convert("RGB")
+            except Exception:
+                image = Image.new("RGB", (128, 96), "#c9c2b8")
+        else:
+            image = Image.new("RGB", (128, 96), "#c9c2b8")
+
+        # Change appearance but preserve structural edges in the mock output.
+        image = ImageEnhance.Color(image).enhance(0.72)
+        overlay = Image.new("RGB", image.size, "#d8c7b2")
+        image = Image.blend(image, overlay, 0.12)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+
+        raw_manifest = payload.get("workflow_manifest") or {}
+        manifest = WorkflowManifest.model_validate(raw_manifest)
+        return {
+            "workflow": {"id": manifest.id, "version": manifest.version},
+            "model_profile": manifest.model_profile,
+            "semantic_outputs": manifest.outputs,
+            "adapter_provenance": {
+                "adapter": "fake-image",
+                "model_profile": manifest.model_profile,
+            },
+            "_artifacts": [
+                {
+                    "semantic_name": "generated",
+                    "filename": "generated.png",
+                    "media_type": "image/png",
+                    "data": buffer.getvalue(),
+                }
+            ],
+            "_generation_context": generation.model_dump(mode="json"),
+        }
+
+
+class GeometryQualityExecutor:
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        inputs = job.get("_input_assets") or {}
+        reference_id = payload.get("reference_asset_id")
+        generated_id = payload.get("generated_asset_id")
+        reference = inputs.get(reference_id)
+        generated = inputs.get(generated_id)
+        if not isinstance(reference, bytes) or not isinstance(generated, bytes):
+            raise ValueError("geometry quality job requires downloaded RGB inputs")
+        diagnostic = geometry_edge_diagnostic(reference, generated)
+        return {
+            "geometry_diagnostic": diagnostic,
+            "adapter_provenance": {"adapter": "edge-preservation-v0"},
         }
