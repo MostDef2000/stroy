@@ -34,6 +34,7 @@ from stroy.services.jobs import (
     complete_job,
     create_job,
     fail_job,
+    release_job,
     renew_lease,
     update_progress,
 )
@@ -1274,6 +1275,8 @@ async def worker_claim(payload: WorkerClaim, request: Request, session: DbSessio
         worker_id=worker.id,
         capabilities=set(worker.capabilities or []),
         lease_seconds=request.app.state.settings.worker_lease_seconds,
+        models=set(worker.models or []),
+        runtimes=worker.runtimes or {},
     )
     if row is None:
         return Response(status_code=204)
@@ -1327,6 +1330,44 @@ async def worker_job_renew(job_id: str, payload: LeaseRequest, request: Request,
         worker.status = "online"
         worker.last_heartbeat = datetime.now(timezone.utc)
         await session.commit()
+    return job_view(row)
+
+
+@router.post(
+    "/api/v1/workers/jobs/{job_id}/lease-status",
+    dependencies=[Depends(require_worker)],
+)
+async def worker_job_lease_status(
+    job_id: str,
+    payload: LeaseRequest,
+    session: DbSession,
+):
+    row = await _leased_job(session, job_id)
+    if row.status == "cancelled":
+        return {"status": "cancelled", "lease_valid": False}
+    lease_valid = row.leased_to == payload.worker_id and row.lease_id == payload.lease_id
+    return {"status": row.status, "lease_valid": lease_valid}
+
+
+@router.post(
+    "/api/v1/workers/jobs/{job_id}/release",
+    dependencies=[Depends(require_worker)],
+)
+async def worker_job_release(
+    job_id: str,
+    payload: LeaseRequest,
+    session: DbSession,
+):
+    row = await _leased_job(session, job_id)
+    try:
+        row = await release_job(
+            session,
+            row,
+            worker_id=payload.worker_id,
+            lease_id=payload.lease_id,
+        )
+    except ValueError as exc:
+        raise _domain_conflict(exc) from exc
     return job_view(row)
 
 
