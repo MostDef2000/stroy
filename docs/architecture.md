@@ -8,6 +8,9 @@ STROY combines deterministic geometry with probabilistic AI. Canonical state is 
 Web UI
   |
   v
+Single-user Auth
+  |
+  v
 API / Project Service
   |
   +--> Scene Core ----------> PostgreSQL
@@ -47,6 +50,21 @@ Executes model-specific image workflows behind a stable internal contract. Comfy
 ### Agent
 
 Interprets user intent and invokes typed domain tools. It may propose changes but does not write arbitrary scene JSON directly.
+
+## Authentication boundary
+
+v0.1 is a private, single-user application.
+
+- no public sign-up;
+- no organizations, teams or RBAC;
+- owner credentials are configured locally;
+- passwords are stored only as a strong password hash (Argon2id preferred);
+- browser authentication uses an HttpOnly session cookie;
+- state-changing requests require CSRF protection when cookie authentication is used;
+- project assets and generated images require an authenticated request or short-lived authorized URL;
+- Postgres, Redis, MinIO, Qwen, ComfyUI and Blender endpoints are infrastructure services and must not be exposed as public application endpoints.
+
+If the UI is reachable beyond localhost, terminate HTTPS at the application/reverse-proxy boundary.
 
 ## Initial runtime choices
 
