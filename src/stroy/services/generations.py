@@ -30,6 +30,8 @@ def ensure_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     completion, so the context must exist before the job is queued. Jobs
     created by :func:`queue_design_generation` already carry a full context
     and are returned unchanged.
+
+    Note: UI "Test generation" provides no prompt field; defaults to "Test generation".
     """
     if isinstance(payload.get("generation"), dict):
         return payload
@@ -53,6 +55,11 @@ def ensure_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         workflow_manifest = load_default_workflow().model_dump(
             mode="json", exclude_none=True
         )
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        inputs = {}
+    inputs.setdefault("prompt", str(payload.get("prompt") or "Test generation"))
+    inputs.setdefault("seed", 0)
     return {
         **payload,
         "generation": {
@@ -63,6 +70,7 @@ def ensure_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "input_asset_ids": input_asset_ids,
         },
         "workflow_manifest": workflow_manifest,
+        "inputs": inputs,
     }
 
 
