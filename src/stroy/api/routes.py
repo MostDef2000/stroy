@@ -27,7 +27,13 @@ from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
 from stroy.services.cameras import remove_camera, upsert_camera
 from stroy.editing import projected_entity_region
-from stroy.services.generations import list_generation_manifests, persist_generation_manifest, queue_design_generation, queue_reference_edit
+from stroy.services.generations import (
+    ensure_generation_payload,
+    list_generation_manifests,
+    persist_generation_manifest,
+    queue_design_generation,
+    queue_reference_edit,
+)
 from stroy.services.jobs import (
     cancel_job,
     claim_job,
@@ -1147,11 +1153,14 @@ async def job_create(
 ):
     if await session.get(ProjectRow, project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
+    payload_data = payload.payload
+    if payload.job_type in {"image.generate", "image.edit"}:
+        payload_data = ensure_generation_payload(payload_data)
     row = await create_job(
         session,
         project_id=project_id,
         job_type=payload.job_type,
-        payload=payload.payload,
+        payload=payload_data,
         required_capabilities=payload.required_capabilities,
         idempotency_key=payload.idempotency_key,
         correlation_id=request.state.request_id,

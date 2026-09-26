@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from stroy.api.app import create_app
 from stroy.config import Settings
-from stroy.db.models import DesignCommandRow
+from stroy.db.models import DesignCommandRow, JobRow
 from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
 
@@ -1872,3 +1872,76 @@ async def test_worker_release_and_reclaim_simulates_restart(settings):
                 },
             )
             assert stale.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_ui_image_job_gets_default_generation_context(settings):
+    """UI-created image jobs must carry a generation context the worker accepts."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project_response = await client.post(
+                "/api/v1/projects", json={"name": "UI gen"}, headers=headers
+            )
+            assert project_response.status_code == 201
+            project_id = project_response.json()["id"]
+
+            job_response = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=headers,
+                json={
+                    "job_type": "image.generate",
+                    "payload": {"scene_revision_id": "rev-ui-1"},
+                    "required_capabilities": ["image_generation"],
+                },
+            )
+            assert job_response.status_code == 201
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.project_id == project_id)
+                    )
+                ).scalar_one()
+                generation = job_row.payload["generation"]
+                assert generation["scene_revision_id"] == "rev-ui-1"
+                assert generation["design_revision_id"] == "rev-ui-1"
+                assert generation["camera_id"] == "default"
+                assert generation["generation_id"]
+                assert (
+                    job_row.payload["workflow_manifest"]["id"] == "flux-redesign-v0"
+                )
+
+            provided = await client.post(
+                f"/api/v1/projects/{project_id}/jobs",
+                headers=headers,
+                json={
+                    "job_type": "image.generate",
+                    "payload": {
+                        "generation": {
+                            "generation_id": "gen-fixed",
+                            "scene_revision_id": "rev-ui-1",
+                            "design_revision_id": "rev-ui-1",
+                            "camera_id": "camera.main",
+                        }
+                    },
+                    "required_capabilities": ["image_generation"],
+                    "idempotency_key": "provided-1",
+                },
+            )
+            assert provided.status_code == 201
+
+            async with app.state.session_factory() as db:
+                row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.idempotency_key == "provided-1")
+                    )
+                ).scalar_one()
+                assert row.payload["generation"]["generation_id"] == "gen-fixed"
+                assert "workflow_manifest" not in row.payload
