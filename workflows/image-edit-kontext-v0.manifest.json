@@ -29,14 +29,14 @@
     "3": {
       "class_type": "UNETLoader",
       "inputs": {
-        "unet_name": "flux1-dev-kontext_fp8.safetensors",
+        "unet_name": "flux1-dev-kontext_fp8_scaled.safetensors",
         "weight_dtype": "default"
       }
     },
     "4": {
       "class_type": "CLIPLoader",
       "inputs": {
-        "clip_name": "t5xxl_fp8.safetensors",
+        "clip_name": "t5xxl_fp8_e4m3fn_scaled.safetensors",
         "clip_name2": "clip_l.safetensors",
         "type": "flux"
       }
