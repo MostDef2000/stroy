@@ -174,12 +174,26 @@ class ComfyUIAdapter:
         return None
 
     async def free_memory(self) -> None:
-        await _request_json(
-            self.client,
-            "POST",
-            f"{self.base_url}/free",
-            json={"unload_models": True, "free_memory": True},
-        )
+        url = f"{self.base_url}/free"
+        try:
+            response = await self.client.request(
+                "POST", url, json={"unload_models": True, "free_memory": True}
+            )
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeout(f"request timed out: {url}") from exc
+        except httpx.RequestError as exc:
+            raise AdapterUnavailable(f"request failed: {url}: {exc}") from exc
+        if response.status_code >= 500:
+            raise AdapterUnavailable(
+                f"runtime returned HTTP {response.status_code}: {url}"
+            )
+        if response.status_code >= 400:
+            raise AdapterProtocolError(f"runtime rejected request with HTTP {response.status_code}: {url}")
+        if response.content:
+            try:
+                response.json()
+            except ValueError as exc:
+                raise AdapterProtocolError(f"runtime returned invalid JSON: {url}") from exc
 
     async def submit(self, workflow: dict[str, Any], client_id: str) -> str:
         data = await _request_json(

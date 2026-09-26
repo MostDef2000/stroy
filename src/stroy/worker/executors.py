@@ -15,7 +15,7 @@ from stroy.domain.models import Scene
 from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
-from stroy.services.adapters import ComfyUIAdapter, AdapterProtocolError
+from stroy.services.adapters import ComfyUIAdapter, AdapterError
 from stroy.style.vision import VisionStyleAdapter, MockVisionStyleAdapter
 from stroy.style.qwen_vision import build_local_vision_adapter
 
@@ -105,7 +105,7 @@ class ComfyUIExecutor:
         if os.getenv("STROY_COMFY_FREE_BEFORE", "1") == "1":
             try:
                 await self.adapter.free_memory()
-            except (httpx.HTTPError, AdapterProtocolError) as exc:
+            except (AdapterError, httpx.HTTPError) as exc:
                 logger.warning(f"failed to free ComfyUI memory before job: {exc}")
 
         semantic_inputs = payload.get("inputs") or {}
