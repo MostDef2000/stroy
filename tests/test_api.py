@@ -1945,3 +1945,17 @@ async def test_ui_image_job_gets_default_generation_context(settings):
                 ).scalar_one()
                 assert row.payload["generation"]["generation_id"] == "gen-fixed"
                 assert "workflow_manifest" not in row.payload
+
+
+def test_style_analyze_request_allows_missing_source_text():
+    """UI fires style analysis without a brief; the API must accept it."""
+    from stroy.api.routes import StyleAnalyzeRequest
+
+    request = StyleAnalyzeRequest.model_validate(
+        {"reference_asset_ids": ["a-1", "a-2", "a-3"]}
+    )
+    assert request.source_text is None
+    request = StyleAnalyzeRequest.model_validate(
+        {"reference_asset_ids": ["a-1", "a-2", "a-3"], "source_text": ""}
+    )
+    assert request.source_text == ""

@@ -150,3 +150,84 @@ def test_factory_unknown_adapter_still_rejected() -> None:
         assert "warp-drive" in str(exc)
     else:
         raise AssertionError("ValueError expected")
+
+
+class RecordingAdapter:
+    """Captures the images an executor passes to the adapter."""
+
+    def __init__(self) -> None:
+        self.seen: list[list[bytes]] = []
+
+    def provenance(self) -> dict[str, Any]:
+        return {"adapter": "recording", "model_profile": "test"}
+
+    async def analyze_style(
+        self,
+        *,
+        images: list[bytes],
+        source_text: str | None = None,
+        input_asset_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.seen.append(images)
+        return {"style_profile": {"labels": ["x"]}, "adapter_provenance": self.provenance()}
+
+
+class StubDownloader:
+    def __init__(self, payloads: dict[str, bytes]) -> None:
+        self.payloads = payloads
+        self.requested: list[str] = []
+
+    async def download_input(self, url: str) -> bytes:
+        self.requested.append(url)
+        return self.payloads[url]
+
+
+async def test_executor_downloads_real_asset_bytes() -> None:
+    adapter = RecordingAdapter()
+    downloader = StubDownloader(
+        {
+            "http://internal/asset-1": _PNG,
+            "http://internal/asset-2": _JPEG,
+        }
+    )
+    executor = VisionStyleExecutor(adapter, downloader)  # type: ignore[arg-type]
+    job = {
+        "job_id": "job-1",
+        "payload": {"input_asset_ids": ["asset-1", "asset-2"]},
+        "download_urls": {"asset-1": "http://internal/asset-1", "asset-2": "http://internal/asset-2"},
+    }
+    await executor.execute(job)
+    assert downloader.requested == ["http://internal/asset-1", "http://internal/asset-2"]
+    assert adapter.seen == [[_PNG, _JPEG]]
+
+
+async def test_executor_download_failure_raises_value_error() -> None:
+    class FailingDownloader:
+        async def download_input(self, url: str) -> bytes:
+            raise RuntimeError("connection reset")
+
+    executor = VisionStyleExecutor(RecordingAdapter(), FailingDownloader())  # type: ignore[arg-type]
+    job = {
+        "job_id": "job-1",
+        "payload": {"input_asset_ids": ["asset-1"]},
+        "download_urls": {"asset-1": "http://internal/asset-1"},
+    }
+    try:
+        await executor.execute(job)
+    except ValueError as exc:
+        assert "style job asset download failed" in str(exc)
+    else:
+        raise AssertionError("ValueError expected")
+
+
+async def test_executor_without_downloader_keeps_deterministic_fallback() -> None:
+    adapter = RecordingAdapter()
+    executor = VisionStyleExecutor(adapter)
+    job = {
+        "job_id": "job-1",
+        "payload": {"input_asset_ids": ["asset-9"]},
+        "download_urls": {"asset-9": "http://internal/asset-9"},
+    }
+    await executor.execute(job)
+    # no download client -> deterministic digest fallback, not a crash
+    assert adapter.seen and len(adapter.seen[0]) == 1

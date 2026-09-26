@@ -139,9 +139,41 @@ class ComfyUIExecutor:
 
 
 
+class AssetDownloader(Protocol):
+    async def download_input(self, url: str) -> bytes: ...
+
+
 class VisionStyleExecutor:
-    def __init__(self, adapter: VisionStyleAdapter) -> None:
+    def __init__(
+        self,
+        adapter: VisionStyleAdapter,
+        download_client: AssetDownloader | None = None,
+    ) -> None:
         self.adapter = adapter
+        self.download_client = download_client
+
+    async def _download_images(
+        self, job: dict[str, Any], asset_ids: list[str]
+    ) -> list[bytes]:
+        """Fetch real image bytes for style jobs when the api provides URLs."""
+        if not asset_ids or self.download_client is None:
+            return []
+        downloads = job.get("download_urls")
+        if not isinstance(downloads, dict):
+            return []
+        urls = [
+            str(downloads[asset_id])
+            for asset_id in asset_ids
+            if isinstance(downloads.get(asset_id), str)
+        ]
+        if not urls:
+            return []
+        try:
+            return [await self.download_client.download_input(url) for url in urls]
+        except Exception as exc:  # noqa: BLE001 - surface as a job failure
+            raise ValueError(
+                f"style job asset download failed: {exc}"
+            ) from exc
 
     async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = job.get("payload", {})
@@ -151,13 +183,14 @@ class VisionStyleExecutor:
             image_bytes = images
         else:
             asset_ids = payload.get("input_asset_ids") or []
-            if not asset_ids:
-                job_id = job.get("job_id", "default")
-                image_bytes = [hashlib.sha256(str(job_id).encode()).digest()]
-            else:
+            image_bytes = await self._download_images(job, asset_ids)
+            if not image_bytes and asset_ids:
                 image_bytes = [
                     hashlib.sha256(aid.encode()).digest() for aid in asset_ids
                 ]
+            elif not image_bytes:
+                job_id = job.get("job_id", "default")
+                image_bytes = [hashlib.sha256(str(job_id).encode()).digest()]
 
         result = await self.adapter.analyze_style(
             images=image_bytes,
@@ -350,13 +383,16 @@ class GeometryQualityExecutor:
 
 
 
-def build_style_analyze_executor(adapter_name: str) -> Any:
+def build_style_analyze_executor(
+    adapter_name: str,
+    download_client: AssetDownloader | None = None,
+) -> Any:
     if adapter_name == "mock":
-        return VisionStyleExecutor(MockVisionStyleAdapter())
+        return VisionStyleExecutor(MockVisionStyleAdapter(), download_client)
     if adapter_name == "fake":
         return FakeStyleExecutor()
     if adapter_name == "local":
-        return VisionStyleExecutor(build_local_vision_adapter())
+        return VisionStyleExecutor(build_local_vision_adapter(), download_client)
     raise ValueError(f"unknown style vision adapter: {adapter_name}")
 
 class FakeImageExecutor:
