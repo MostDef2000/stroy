@@ -96,7 +96,7 @@ async def _run() -> None:
             "render.blender": FakeExecutor("fake-blender"),
             "image.generate": FakeImageExecutor(),
             "image.edit": FakeImageExecutor(),
-            "quality.geometry_check": FakeExecutor("fake-quality"),
+            "quality.geometry_check": GeometryQualityExecutor(client),
         }
         models = ["fake"]
 
