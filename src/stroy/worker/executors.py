@@ -78,6 +78,9 @@ class QwenExecutor:
         return result
 
 
+ASSET_INPUT_ROLES = frozenset({"base_image", "reference_image", "mask_image"})
+
+
 class ComfyUIExecutor:
     def __init__(
         self,
@@ -104,37 +107,62 @@ class ComfyUIExecutor:
                 f"{manifest.model_profile} != {self.model_profile_id}"
             )
 
-        # Resolve reference image if required
-        if "reference_image" in manifest.required_inputs:
+        semantic_inputs = payload.get("inputs") or {}
+        if not isinstance(semantic_inputs, dict):
+            raise ValueError("image job payload.inputs must be an object")
+
+        # Resolve semantic inputs that map to project assets (images). The
+        # payload's asset_roles dict names the asset id for each semantic
+        # input (base_image / reference_image / mask_image). Legacy v0.1.0
+        # edit manifests only require reference_image and carry no
+        # asset_roles - fall back to the first generation input asset.
+        asset_required = [
+            name
+            for name in manifest.required_inputs
+            if name in ASSET_INPUT_ROLES
+        ]
+        if asset_required:
             if self.client is None:
-                raise ValueError("ComfyUIExecutor requires a client for reference image resolution")
-            
+                raise ValueError(
+                    "ComfyUIExecutor requires a client for asset input resolution"
+                )
             downloads = job.get("download_urls")
             if not isinstance(downloads, dict):
-                raise ValueError("image job requires job.download_urls for reference image")
-            
-            generation = GenerationContext.model_validate(payload.get("generation") or {})
-            asset_ids = generation.input_asset_ids
-            if not asset_ids:
-                raise ValueError("image job reference image requires input_asset_ids in generation context")
-            
-            # Use first asset as reference image for the edit
-            reference_asset_id = asset_ids[0]
-            url = downloads.get(reference_asset_id)
-            if not isinstance(url, str) or not url:
-                raise ValueError(f"reference image URL missing for asset {reference_asset_id}")
-            
-            image_bytes = await self.client.download_input(url)
-            uploaded_name = await self.adapter.upload_image(f"ref_{reference_asset_id}.png", image_bytes)
-            
-            semantic_inputs = payload.get("inputs") or {}
-            if not isinstance(semantic_inputs, dict):
-                raise ValueError("image job payload.inputs must be an object")
-            semantic_inputs["reference_image"] = uploaded_name
-        else:
-            semantic_inputs = payload.get("inputs") or {}
-            if not isinstance(semantic_inputs, dict):
-                raise ValueError("image job payload.inputs must be an object")
+                raise ValueError(
+                    "image job requires job.download_urls for asset inputs"
+                )
+            asset_roles = payload.get("asset_roles")
+            if not isinstance(asset_roles, dict):
+                if set(asset_required) != {"reference_image"}:
+                    raise ValueError(
+                        "image job requires payload.asset_roles for asset inputs: "
+                        + ", ".join(asset_required)
+                    )
+                generation = GenerationContext.model_validate(
+                    payload.get("generation") or {}
+                )
+                legacy_ids = generation.input_asset_ids
+                if not legacy_ids:
+                    raise ValueError(
+                        "image job reference image requires input_asset_ids "
+                        "in generation context"
+                    )
+                asset_roles = {"reference_image": legacy_ids[0]}
+            for name in asset_required:
+                asset_id = asset_roles.get(name)
+                if not isinstance(asset_id, str) or not asset_id:
+                    raise ValueError(
+                        f"asset role '{name}' is missing from payload.asset_roles"
+                    )
+                url = downloads.get(asset_id)
+                if not isinstance(url, str) or not url:
+                    raise ValueError(
+                        f"asset input URL missing for {name} ({asset_id})"
+                    )
+                image_bytes = await self.client.download_input(url)
+                semantic_inputs[name] = await self.adapter.upload_image(
+                    f"{name}_{asset_id}.png", image_bytes
+                )
 
         if os.getenv("STROY_COMFY_FREE_BEFORE", "1") == "1":
             try:
@@ -158,10 +186,10 @@ class ComfyUIExecutor:
         finally:
             if isinstance(job_id, str):
                 self.active_prompts.pop(job_id, None)
-        
+
         version = await self.adapter.server_version()
         adapter_provenance = {"adapter": "comfyui", **({"server_version": version} if version else {})}
-        
+
         return {
             "prompt_id": prompt_id,
             "history": history,

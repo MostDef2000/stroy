@@ -7,14 +7,14 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from stroy.db.models import GenerationManifestRow, JobRow
+from stroy.db.models import AssetRow, GenerationManifestRow, JobRow, SceneRevisionRow
 from stroy.generation import GenerationManifest, WorkflowManifest
 from stroy.services.dispatch import JobDispatcher
 from stroy.services.jobs import create_job
 
-
 DEFAULT_WORKFLOW_PATH = Path("workflows/flux-redesign-v0.manifest.json")
 EDIT_WORKFLOW_PATH = Path("workflows/image-edit-kontext-v0.manifest.json")
+
 
 def load_default_workflow(path: Path = DEFAULT_WORKFLOW_PATH) -> WorkflowManifest:
     return WorkflowManifest.model_validate_json(path.read_text(encoding="utf-8"))
@@ -198,6 +198,57 @@ async def list_generation_manifests(
 
 
 
+async def resolve_base_asset_for_edit(
+    session: AsyncSession,
+    project_id: str,
+    camera_id: str,
+    base_revision_id: str,
+) -> AssetRow | None:
+    # Walk SceneRevisionRow.parent_revision_id from base_revision_id up to root
+    ancestors = []
+    curr_id = base_revision_id
+    while curr_id:
+        ancestors.append(curr_id)
+        res = await session.execute(
+            select(SceneRevisionRow.parent_revision_id).where(SceneRevisionRow.id == curr_id)
+        )
+        curr_id = res.scalar_one_or_none()
+
+    # Query GenerationManifestRow WHERE project_id matches AND camera_id matches AND design_revision_id IN ancestors
+    # ORDER BY created_at DESC, id DESC
+    result = await session.execute(
+        select(GenerationManifestRow)
+        .where(
+            GenerationManifestRow.project_id == project_id,
+            GenerationManifestRow.camera_id == camera_id,
+            GenerationManifestRow.design_revision_id.in_(ancestors),
+        )
+        .order_by(
+            GenerationManifestRow.created_at.desc(),
+            GenerationManifestRow.id.desc(),
+        )
+    )
+    manifests = result.scalars().all()
+
+    for manifest in manifests:
+        # Parse manifest_json dict, take output_asset_ids (list), first non-empty row's first asset id
+        output_ids = manifest.manifest_json.get("output_asset_ids")
+        if not isinstance(output_ids, list) or not output_ids:
+            continue
+
+        asset_id = output_ids[0]
+        asset = await session.get(AssetRow, asset_id)
+        if asset is None:
+            continue
+        if asset.project_id != project_id:
+            continue
+        if not asset.media_type.startswith("image/"):
+            continue
+
+        return asset
+
+    return None
+
 async def queue_reference_edit(
     session: AsyncSession,
     *,
@@ -212,6 +263,8 @@ async def queue_reference_edit(
     correlation_id: str | None,
     dispatcher: JobDispatcher | None,
     workflow_path: Path = EDIT_WORKFLOW_PATH,
+    base_asset_id: str | None = None,
+    mask_asset_id: str | None = None,
 ) -> JobRow:
     workflow = load_default_workflow(workflow_path)
     generation_id = str(uuid4())
@@ -224,6 +277,10 @@ async def queue_reference_edit(
         "affected_region": affected_region,
         "request_text": request_text,
     }
+    if base_asset_id and mask_asset_id:
+        structured_conditioning["base_asset_id"] = base_asset_id
+        structured_conditioning["mask_asset_id"] = mask_asset_id
+
     payload = {
         "purpose": "object_replacement",
         "workflow_manifest": workflow.model_dump(mode="json", exclude_none=True),
@@ -252,16 +309,32 @@ async def queue_reference_edit(
             "affected_region": affected_region,
         },
     }
+
+    if base_asset_id and mask_asset_id:
+        payload["replacement"]["base_asset_id"] = base_asset_id
+        payload["replacement"]["mask_asset_id"] = mask_asset_id
+        payload["generation"]["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
+        payload["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
+        payload["asset_roles"] = {
+            "base_image": base_asset_id,
+            "reference_image": reference_asset_id,
+            "mask_image": mask_asset_id,
+        }
+
+    idempotency_key = (
+        f"replacement:{design_revision_id}:{camera_id}:"
+        f"{target_entity_id}:{reference_asset_id}"
+    )
+    if base_asset_id:
+        idempotency_key += f":{base_asset_id}"
+
     return await create_job(
         session,
         project_id=project_id,
         job_type="image.edit",
         required_capabilities=["image_edit"],
         payload=payload,
-        idempotency_key=(
-            f"replacement:{design_revision_id}:{camera_id}:"
-            f"{target_entity_id}:{reference_asset_id}"
-        ),
+        idempotency_key=idempotency_key,
         correlation_id=correlation_id,
         dispatcher=dispatcher,
     )
