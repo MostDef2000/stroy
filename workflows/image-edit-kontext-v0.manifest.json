@@ -1,0 +1,173 @@
+{
+  "id": "image-edit-kontext-v0",
+  "version": "0.1.0",
+  "model_profile": "flux-dev-family",
+  "required_inputs": [
+    "prompt",
+    "seed",
+    "reference_image"
+  ],
+  "outputs": [
+    "image"
+  ],
+  "schema_version": "0.1.0",
+  "bindings": {
+    "prompt": {
+      "node_id": "9",
+      "input_name": "text"
+    },
+    "seed": {
+      "node_id": "13",
+      "input_name": "seed"
+    },
+    "reference_image": {
+      "node_id": "6",
+      "input_name": "image"
+    }
+  },
+  "graph": {
+    "3": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "flux1-dev-kontext_fp8.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "4": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "t5xxl_fp8.safetensors",
+        "clip_name2": "clip_l.safetensors",
+        "type": "flux"
+      }
+    },
+    "5": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "6": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "7": {
+      "class_type": "FluxKontextImageScale",
+      "inputs": {
+        "image": [
+          "6",
+          0
+        ]
+      }
+    },
+    "8": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "7",
+          0
+        ],
+        "vae": [
+          "5",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "4",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "4",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "FluxGuidance",
+      "inputs": {
+        "guidance": 2.5,
+        "conditioning": [
+          "9",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "11",
+          0
+        ],
+        "latent": [
+          "8",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 20,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1.0,
+        "model": [
+          "3",
+          0
+        ],
+        "positive": [
+          "12",
+          0
+        ],
+        "negative": [
+          "10",
+          0
+        ],
+        "latent_image": [
+          "8",
+          0
+        ]
+      }
+    },
+    "14": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "13",
+          0
+        ],
+        "vae": [
+          "5",
+          0
+        ]
+      }
+    },
+    "15": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "stroy-edit",
+        "images": [
+          "14",
+          0
+        ]
+      }
+    }
+  },
+  "notes": "BFL FLUX.1 Kontext [dev] template for real reference-based editing: LoadImage -> FluxKontextImageScale (reference aspect) -> VAEEncode provides the latent to both ReferenceLatent and KSampler; positive conditioning passes through FluxGuidance(2.5) -> ReferenceLatent. Filenames (t5xxl_fp8/clip_l/ae/flux1-dev-kontext_fp8) follow the standard ComfyUI layout and are verified at box deploy."
+}

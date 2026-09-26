@@ -315,6 +315,38 @@ class ComfyUIAdapter:
                 )
         return artifacts
 
+    async def upload_image(self, filename: str, data: bytes) -> str:
+        url = f"{self.base_url}/upload/image"
+        try:
+            response = await self.client.post(
+                url,
+                files={"image": (filename, data)},
+                data={"overwrite": "true"},
+            )
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeout(f"request timed out: {url}") from exc
+        except httpx.RequestError as exc:
+            raise AdapterUnavailable(f"request failed: {url}: {exc}") from exc
+
+        if response.status_code >= 500:
+            raise AdapterUnavailable(
+                f"runtime returned HTTP {response.status_code}: {url}"
+            )
+        if response.status_code >= 400:
+            raise AdapterProtocolError(
+                f"runtime rejected request with HTTP {response.status_code}: {url}"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise AdapterProtocolError(f"runtime returned invalid JSON: {url}") from exc
+
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise AdapterProtocolError("ComfyUI upload response is missing name")
+        return name
+
 
 class FakeLLMAdapter:
     """Deterministic adapter for E2E tests before Qwen is connected."""

@@ -84,10 +84,12 @@ class ComfyUIExecutor:
         adapter: ComfyUIAdapter,
         worker_id: str,
         model_profile_id: str,
+        client: AssetDownloader | None = None,
     ) -> None:
         self.adapter = adapter
         self.worker_id = worker_id
         self.model_profile_id = model_profile_id
+        self.client = client
         self.active_prompts: dict[str, str] = {}
 
     async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -102,15 +104,44 @@ class ComfyUIExecutor:
                 f"{manifest.model_profile} != {self.model_profile_id}"
             )
 
+        # Resolve reference image if required
+        if "reference_image" in manifest.required_inputs:
+            if self.client is None:
+                raise ValueError("ComfyUIExecutor requires a client for reference image resolution")
+            
+            downloads = job.get("download_urls")
+            if not isinstance(downloads, dict):
+                raise ValueError("image job requires job.download_urls for reference image")
+            
+            generation = GenerationContext.model_validate(payload.get("generation") or {})
+            asset_ids = generation.input_asset_ids
+            if not asset_ids:
+                raise ValueError("image job reference image requires input_asset_ids in generation context")
+            
+            # Use first asset as reference image for the edit
+            reference_asset_id = asset_ids[0]
+            url = downloads.get(reference_asset_id)
+            if not isinstance(url, str) or not url:
+                raise ValueError(f"reference image URL missing for asset {reference_asset_id}")
+            
+            image_bytes = await self.client.download_input(url)
+            uploaded_name = await self.adapter.upload_image(f"ref_{reference_asset_id}.png", image_bytes)
+            
+            semantic_inputs = payload.get("inputs") or {}
+            if not isinstance(semantic_inputs, dict):
+                raise ValueError("image job payload.inputs must be an object")
+            semantic_inputs["reference_image"] = uploaded_name
+        else:
+            semantic_inputs = payload.get("inputs") or {}
+            if not isinstance(semantic_inputs, dict):
+                raise ValueError("image job payload.inputs must be an object")
+
         if os.getenv("STROY_COMFY_FREE_BEFORE", "1") == "1":
             try:
                 await self.adapter.free_memory()
             except (AdapterError, httpx.HTTPError) as exc:
                 logger.warning(f"failed to free ComfyUI memory before job: {exc}")
 
-        semantic_inputs = payload.get("inputs") or {}
-        if not isinstance(semantic_inputs, dict):
-            raise ValueError("image job payload.inputs must be an object")
         graph = manifest.materialize(semantic_inputs)
 
         prompt_id = await self.adapter.submit(graph, self.worker_id)
