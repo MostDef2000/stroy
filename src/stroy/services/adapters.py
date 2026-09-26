@@ -151,9 +151,35 @@ class ComfyUIAdapter:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        self._server_version: str | None = None
 
     def provenance(self) -> dict[str, Any]:
         return {"adapter": "comfyui"}
+
+    async def server_version(self) -> str | None:
+        if self._server_version is not None:
+            return self._server_version
+        try:
+            data = await _request_json(
+                self.client,
+                "GET",
+                f"{self.base_url}/system_stats",
+            )
+            version = data.get("system", {}).get("comfyui_version")
+            if isinstance(version, str):
+                self._server_version = version
+                return version
+        except (httpx.HTTPError, AdapterProtocolError, KeyError, TypeError):
+            pass
+        return None
+
+    async def free_memory(self) -> None:
+        await _request_json(
+            self.client,
+            "POST",
+            f"{self.base_url}/free",
+            json={"unload_models": True, "free_memory": True},
+        )
 
     async def submit(self, workflow: dict[str, Any], client_id: str) -> str:
         data = await _request_json(
@@ -214,17 +240,18 @@ class ComfyUIAdapter:
         raise AdapterTimeout(f"ComfyUI prompt timed out: {prompt_id}")
 
     async def cancel(self, prompt_id: str) -> bool:
-        payload = await _request_json(
-            self.client,
-            "POST",
-            f"{self.base_url}/api/jobs/{prompt_id}/cancel",
-        )
-        cancelled = payload.get("cancelled")
-        if not isinstance(cancelled, bool):
-            raise AdapterProtocolError(
-                "ComfyUI cancel response is missing boolean cancelled"
+        try:
+            payload = await _request_json(
+                self.client,
+                "POST",
+                f"{self.base_url}/api/jobs/{prompt_id}/cancel",
             )
-        return cancelled
+            cancelled = payload.get("cancelled")
+            if not isinstance(cancelled, bool):
+                return False
+            return cancelled
+        except (httpx.HTTPError, AdapterProtocolError):
+            return False
 
     async def collect_output_images(
         self,

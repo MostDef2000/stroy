@@ -23,10 +23,10 @@ def test_workflow_materializes_semantic_inputs_without_mutating_manifest() -> No
     workflow = manifest()
     graph = workflow.materialize({"prompt": "warm minimal", "seed": 123})
 
-    assert graph["6"]["inputs"]["text"] == "warm minimal"
-    assert graph["3"]["inputs"]["seed"] == 123
-    assert workflow.graph["6"]["inputs"]["text"] == ""
-    assert workflow.graph["3"]["inputs"]["seed"] == 0
+    assert graph["2"]["inputs"]["text"] == "warm minimal"
+    assert graph["6"]["inputs"]["seed"] == 123
+    assert workflow.graph["2"]["inputs"]["text"] == ""
+    assert workflow.graph["6"]["inputs"]["seed"] == 0
 
 
 def test_workflow_rejects_missing_required_input() -> None:
@@ -47,14 +47,14 @@ def test_generation_manifest_records_exact_workflow_and_assets() -> None:
     finalized = finalize_generation_manifest(
         context=context,
         workflow_id="flux-redesign-v0",
-        workflow_version="0.1.0",
-        model_profile="flux1-schnell",
+        workflow_version="0.2.0",
+        model_profile="flux-dev-family",
         output_asset_ids=["asset-output"],
     )
 
     assert finalized.workflow.id == "flux-redesign-v0"
-    assert finalized.workflow.version == "0.1.0"
-    assert finalized.model_profile == "flux1-schnell"
+    assert finalized.workflow.version == "0.2.0"
+    assert finalized.model_profile == "flux-dev-family"
     assert finalized.input_asset_ids == ["asset-input"]
     assert finalized.output_asset_ids == ["asset-output"]
 
@@ -64,8 +64,8 @@ async def test_comfy_executor_materializes_collects_and_reports_provenance() -> 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/prompt":
             payload = __import__("json").loads(request.content)
-            assert payload["prompt"]["6"]["inputs"]["text"] == "warm minimal"
-            assert payload["prompt"]["3"]["inputs"]["seed"] == 123
+            assert payload["prompt"]["2"]["inputs"]["text"] == "warm minimal"
+            assert payload["prompt"]["6"]["inputs"]["seed"] == 123
             return httpx.Response(200, json={"prompt_id": "prompt-1"})
         if request.url.path == "/history/prompt-1":
             return httpx.Response(
@@ -82,18 +82,23 @@ async def test_comfy_executor_materializes_collects_and_reports_provenance() -> 
                                         "type": "output",
                                     }
                                 ]
-                            }
-                        },
-                    }
+                            },
+                        }
+                    },
                 },
             )
         if request.url.path == "/view":
             return httpx.Response(200, content=b"image-bytes")
+        if request.url.path == "/free":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"system": {"comfyui_version": "1.0.0"}})
         raise AssertionError(f"unexpected request: {request.url}")
+
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     adapter = ComfyUIAdapter("http://comfy", client=client)
-    executor = ComfyUIExecutor(adapter, "worker-1", "flux1-schnell")
+    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family")
 
     result = await executor.execute(
         {
@@ -114,8 +119,8 @@ async def test_comfy_executor_materializes_collects_and_reports_provenance() -> 
         }
     )
 
-    assert result["workflow"] == {"id": "flux-redesign-v0", "version": "0.1.0"}
-    assert result["model_profile"] == "flux1-schnell"
+    assert result["workflow"] == {"id": "flux-redesign-v0", "version": "0.2.0"}
+    assert result["model_profile"] == "flux-dev-family"
     assert result["semantic_outputs"] == ["image"]
     assert result["_artifacts"][0]["filename"] == "render.png"
     assert result["_artifacts"][0]["data"] == b"image-bytes"
@@ -132,7 +137,7 @@ async def test_comfy_executor_rejects_wrong_worker_model_profile() -> None:
             )
         ),
     )
-    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family")
+    executor = ComfyUIExecutor(adapter, "worker-1", "wrong-profile")
     with pytest.raises(ValueError, match="does not match worker image profile"):
         await executor.execute(
             {

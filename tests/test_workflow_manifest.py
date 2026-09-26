@@ -59,7 +59,13 @@ def test_workflow_rejects_missing_bound_node() -> None:
 
 @pytest.mark.asyncio
 async def test_comfy_executor_materializes_manifest_and_records_provenance() -> None:
+    seen: list[str] = []
     async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/free":
+            return httpx.Response(200, json={})
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"system": {"comfyui_version": "0.35.0-test"}})
         if request.url.path == "/prompt":
             body = json.loads(request.content)
             assert body["prompt"]["6"]["inputs"]["text"] == "beige sofa"
@@ -118,7 +124,7 @@ async def test_comfy_executor_materializes_manifest_and_records_provenance() -> 
     }
     assert result["model_profile"] == "flux1-schnell"
     assert result["semantic_outputs"] == ["image"]
-    assert result["adapter_provenance"] == {"adapter": "comfyui"}
+    assert result["adapter_provenance"] == {"adapter": "comfyui", "server_version": "0.35.0-test"}
     assert result["_artifacts"] == [
         {
             "filename": "output.png",
@@ -127,6 +133,8 @@ async def test_comfy_executor_materializes_manifest_and_records_provenance() -> 
         }
     ]
     assert result["_generation_context"]["generation_id"] == "generation-1"
+    assert seen[0] == "/free"
+    assert seen.index("/free") < seen.index("/prompt")
     await client.aclose()
 
 

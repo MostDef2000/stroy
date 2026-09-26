@@ -3,17 +3,24 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol
+
+import httpx
 
 from stroy.domain.models import Scene
 from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
-from stroy.services.adapters import ComfyUIAdapter
+from stroy.services.adapters import ComfyUIAdapter, AdapterProtocolError
 from stroy.style.vision import VisionStyleAdapter, MockVisionStyleAdapter
 from stroy.style.qwen_vision import build_local_vision_adapter
+
+
+logger = logging.getLogger(__name__)
 
 
 class LLMAdapter(Protocol):
@@ -95,6 +102,12 @@ class ComfyUIExecutor:
                 f"{manifest.model_profile} != {self.model_profile_id}"
             )
 
+        if os.getenv("STROY_COMFY_FREE_BEFORE", "1") == "1":
+            try:
+                await self.adapter.free_memory()
+            except (httpx.HTTPError, AdapterProtocolError) as exc:
+                logger.warning(f"failed to free ComfyUI memory before job: {exc}")
+
         semantic_inputs = payload.get("inputs") or {}
         if not isinstance(semantic_inputs, dict):
             raise ValueError("image job payload.inputs must be an object")
@@ -108,12 +121,16 @@ class ComfyUIExecutor:
         try:
             history = await self.adapter.wait(
                 prompt_id,
-                timeout_seconds=int(payload.get("timeout_seconds", 900)),
+                timeout_seconds=int(payload.get("timeout_seconds", os.getenv("STROY_COMFY_TIMEOUT_SECONDS", "1800"))),
             )
             artifacts = await self.adapter.collect_output_images(history)
         finally:
             if isinstance(job_id, str):
                 self.active_prompts.pop(job_id, None)
+        
+        version = await self.adapter.server_version()
+        adapter_provenance = {"adapter": "comfyui", **({"server_version": version} if version else {})}
+        
         return {
             "prompt_id": prompt_id,
             "history": history,
@@ -123,7 +140,7 @@ class ComfyUIExecutor:
             },
             "model_profile": manifest.model_profile,
             "semantic_outputs": manifest.outputs,
-            "adapter_provenance": self.adapter.provenance(),
+            "adapter_provenance": adapter_provenance,
             "_artifacts": artifacts,
             "_generation_context": generation.model_dump(mode="json"),
         }
