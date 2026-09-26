@@ -209,6 +209,19 @@ header span { color: #777; font-size: 13px; }
   font-size: 13px;
 }
 
+.hint {
+  color: #8c8982;
+  font-size: 11px;
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+}
+
+.style-analyze-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
 .history-row {
   grid-template-columns: minmax(0, 1fr) auto;
 }

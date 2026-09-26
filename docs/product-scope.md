@@ -33,7 +33,7 @@ v0.1 proves a single vertical slice for **one room**.
 - trusted/manual room geometry can be represented in the canonical scene;
 - walls, floor, ceiling, doors and windows have stable semantic IDs;
 - at least one calibrated camera can render deterministic control passes;
-- 3-5 style references can be reduced into a structured StyleProfile;
+- 3-5 style references (images with role «reference») can be reduced into a structured StyleProfile;
 - image generation receives geometry control data;
 - locked geometry survives design generation;
 - material/color edit, furniture removal and reference replacement work;

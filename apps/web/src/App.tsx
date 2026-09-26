@@ -315,13 +315,21 @@ export default function App() {
     const references = assets.filter(
       (asset) => asset.role === "reference" && asset.media_type.startsWith("image/")
     );
-    if (references.length === 0) {
-      setMessage("Загрузите reference-изображение, чтобы запустить анализ стиля.");
+    if (references.length < 3) {
+      setMessage(`Для анализа стиля нужно минимум 3 reference-изображения (роль «reference»). Сейчас загружено: ${references.length}.`);
       return;
     }
-    await api.analyzeStyle(selected, references.map((asset) => asset.id));
-    setMessage("Style analysis queued");
-    await refreshProject(selected);
+    if (references.length > 5) {
+      setMessage(`Для анализа стиля можно использовать максимум 5 reference-изображений. Сейчас выбрано: ${references.length}.`);
+      return;
+    }
+    try {
+      await api.analyzeStyle(selected, references.map((asset) => asset.id));
+      setMessage("Style analysis queued");
+      await refreshProject(selected);
+    } catch (err) {
+      setMessage(`Не удалось запустить анализ стиля: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return (
@@ -376,7 +384,12 @@ export default function App() {
             {selected && (
               <>
                 <button onClick={() => void queueFakeGeneration()}>Test generation</button>
-                <button onClick={() => void analyzeStyleFromReferences()}>Анализ стиля</button>
+                <div className="style-analyze-group">
+                  <button onClick={() => void analyzeStyleFromReferences()}>Анализ стиля</button>
+                  <p className="hint" id="style-hint">
+                    Анализ стиля требует 3–5 изображений с ролью «reference». Сейчас: {assets.filter(a => a.role === "reference" && a.media_type.startsWith("image/")).length}.
+                  </p>
+                </div>
                 <div className="upload-controls">
                   <select
                     value={uploadRole}
