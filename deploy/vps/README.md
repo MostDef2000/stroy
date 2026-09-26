@@ -64,6 +64,13 @@ rsync -avz apps/web/dist/ user@stroy.mostdef.ru:/var/www/stroy.mostdef.ru/
 ## Application Deploy
 
 1. **Environment**: Create `.env` in `deploy/vps/` based on `env.example` with production secrets.
+   - **Argon2 hashes and compose interpolation**: Docker Compose v2 interpolates `$` sequences inside `env_file` values, which corrupts argon2 hashes (`$argon2id$...`). Store such values with doubled dollars (`$$argon2id$$...`) in `.env`; verify by comparing the sha256 of the variable inside the container against the original hash.
+   - **MinIO image**: `minio/minio` is no longer pullable from Docker Hub (images removed in 2025; quay.io rejects anonymous pulls). Before a fresh deploy on a clean machine:
+     ```bash
+     docker pull cr.yandex/mirror/minio/minio
+     docker tag cr.yandex/mirror/minio/minio minio/minio:latest
+     ```
+     (On the live VPS this tag already exists locally.)
 2. **Launch**:
    ```bash
    git pull
@@ -73,8 +80,8 @@ rsync -avz apps/web/dist/ user@stroy.mostdef.ru:/var/www/stroy.mostdef.ru/
 
 ## Health Checks
 
-- **Ingress**: Verify `https://stroy.mostdef.ru/health` and `https://stroy.mostdef.ru/ready` return 200 OK.
-- **Containers**: Run `docker compose -f deploy/vps/docker-compose.yml ps` to verify all services are healthy.
+- **Ingress**: Verify `https://stroy.mostdef.ru/health` and `https://stroy.mostdef.ru/ready` return 200 OK. Plain `curl http://127.0.0.1:8000/health` on the host returns 400 by design (`TrustedHostMiddleware`); pass `-H 'Host: stroy.mostdef.ru'` for direct checks.
+- **Containers**: Run `docker compose -f deploy/vps/docker-compose.yml ps` to verify all services are healthy. The api healthcheck sends the `Host` header from `STROY_TRUSTED_HOSTS` for the same reason.
 
 ## Backup and Restore
 
