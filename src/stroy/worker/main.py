@@ -19,6 +19,26 @@ from stroy.worker.executors import (
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
 
 
+# Define capabilities in a way that allows environment override
+DEFAULT_CAPABILITIES = [
+    "llm",
+    "style_analysis",
+    "image_generation",
+    "image_edit",
+    "blender_render",
+    "geometry_quality",
+]
+
+def parse_capabilities(raw_caps: str | None) -> list[str]:
+    if not raw_caps:
+        return DEFAULT_CAPABILITIES
+    capabilities = [c.strip() for c in raw_caps.split(",") if c.strip()]
+    unknown = set(capabilities) - set(DEFAULT_CAPABILITIES)
+    if unknown:
+        print(f"Error: unknown worker capability tokens: {unknown}")
+        raise SystemExit(1)
+    return capabilities
+
 async def _run() -> None:
     server = os.getenv("STROY_SERVER_URL", "http://127.0.0.1:8000")
     worker_id = os.getenv("STROY_WORKER_ID", "local-fake-worker")
@@ -26,6 +46,9 @@ async def _run() -> None:
     poll = float(os.getenv("STROY_WORKER_POLL_SECONDS", "5"))
     heartbeat = float(os.getenv("STROY_WORKER_HEARTBEAT_SECONDS", "20"))
     mode = os.getenv("STROY_WORKER_EXECUTOR_MODE", "fake")
+
+    # Capability parsing
+    capabilities = parse_capabilities(os.getenv("STROY_WORKER_CAPABILITIES"))
 
     client = WorkerClient(server, token, worker_id)
     if mode == "local":
@@ -82,16 +105,9 @@ async def _run() -> None:
             "schema_version": "0.1.0",
             "worker_id": worker_id,
             "display_name": os.getenv("STROY_WORKER_NAME", "Home GPU worker"),
-            "capabilities": [
-                "llm",
-                "style_analysis",
-                "image_generation",
-                "image_edit",
-                "blender_render",
-                "geometry_quality",
-            ],
+            "capabilities": capabilities,
             "models": models,
-            "runtimes": {mode: {"status": "ready", "version": "0.1.0"}},
+            "runtimes": {"comfyui" if mode == "local" else mode: {"status": "ready", "version": "0.1.0"}},
             "hardware": {},
         }
     )
