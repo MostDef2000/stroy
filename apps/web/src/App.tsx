@@ -9,6 +9,7 @@ import {
   RevisionSummary,
   SceneDocument,
   SceneRevision,
+  StyleProfile,
   Worker
 } from "./api";
 import { CameraPanel } from "./CameraPanel";
@@ -144,6 +145,7 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [generations, setGenerations] = useState<Generation[]>([]);
+  const [styleProfiles, setStyleProfiles] = useState<StyleProfile[]>([]);
   const [newProject, setNewProject] = useState("");
   const [instruction, setInstruction] = useState("");
   const [uploadRole, setUploadRole] = useState<AssetRole>("apartment");
@@ -158,18 +160,20 @@ export default function App() {
   }, []);
 
   const refreshProject = useCallback(async (projectId: string) => {
-    const [scene, history, projectAssets, projectJobs, projectGenerations] = await Promise.all([
+    const [scene, history, projectAssets, projectJobs, projectGenerations, projectStyles] = await Promise.all([
       api.scene(projectId),
       api.revisions(projectId),
       api.assets(projectId),
       api.jobs(projectId),
-      api.generations(projectId)
+      api.generations(projectId),
+      api.styleProfiles(projectId)
     ]);
     setRevision(scene);
     setRevisions(history);
     setAssets(projectAssets);
     setJobs(projectJobs);
     setGenerations(projectGenerations);
+    setStyleProfiles(projectStyles);
   }, []);
 
   useEffect(() => {
@@ -188,6 +192,7 @@ export default function App() {
       setAssets([]);
       setJobs([]);
       setGenerations([]);
+      setStyleProfiles([]);
       return;
     }
     refreshProject(selected).catch((error) => setMessage(String(error)));
@@ -305,6 +310,20 @@ export default function App() {
     await refreshProject(selected);
   }
 
+  async function analyzeStyleFromReferences() {
+    if (!selected) return;
+    const references = assets.filter(
+      (asset) => asset.role === "reference" && asset.media_type.startsWith("image/")
+    );
+    if (references.length === 0) {
+      setMessage("Загрузите reference-изображение, чтобы запустить анализ стиля.");
+      return;
+    }
+    await api.analyzeStyle(selected, references.map((asset) => asset.id));
+    setMessage("Style analysis queued");
+    await refreshProject(selected);
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -357,6 +376,7 @@ export default function App() {
             {selected && (
               <>
                 <button onClick={() => void queueFakeGeneration()}>Test generation</button>
+                <button onClick={() => void analyzeStyleFromReferences()}>Анализ стиля</button>
                 <div className="upload-controls">
                   <select
                     value={uploadRole}
@@ -463,6 +483,36 @@ export default function App() {
                 </div>
               );
             })}
+          </article>
+
+          <article className="panel">
+            <h2>Style profiles</h2>
+            {styleProfiles.length === 0 && (
+              <p className="muted">
+                профилей пока нет — запустите анализ стиля по reference-фото
+              </p>
+            )}
+            {styleProfiles.slice(0, 6).map((item) => (
+              <div className="row" key={item.id}>
+                <span>
+                  {item.profile.labels.join(", ") || "без меток"}
+                </span>
+                <span className="palette">
+                  {item.profile.palette.map((entry) => (
+                    <i
+                      key={entry.hex}
+                      title={`${entry.role}: ${entry.hex}`}
+                      style={{ backgroundColor: entry.hex }}
+                    />
+                  ))}
+                </span>
+                <small>
+                  {item.profile.materials.length} materials ·{" "}
+                  {item.profile.lighting?.temperature_k ?? "—"}K ·{" "}
+                  {new Date(item.created_at).toLocaleDateString()}
+                </small>
+              </div>
+            ))}
           </article>
 
           <article className="panel">

@@ -69,8 +69,25 @@ export type Generation = {
   };
 };
 
-export type RevisionSummary = {
-  revision_id: string;
+export type StylePaletteEntry = { hex: string; role: string };
+
+export type StyleProfile = {
+  id: string;
+  project_id: string;
+  model_profile: string | null;
+  correlation_id: string | null;
+  created_at: string;
+  profile: {
+    labels: string[];
+    palette: StylePaletteEntry[];
+    materials: { name: string; finish: string; application: string }[];
+    lighting: { temperature_k: number; intent: string[] } | null;
+    forms: { keywords: string[] } | null;
+    negative_constraints: string[];
+  };
+};
+
+export type RevisionSummary = {  revision_id: string;
   parent_revision_id: string | null;
   command_id: string | null;
   content_hash: string;
@@ -278,6 +295,26 @@ export const api = {
 
   generations(projectId: string) {
     return request<Generation[]>(`/api/v1/projects/${projectId}/generations`);
+  },
+
+  styleProfiles(projectId: string) {
+    return request<StyleProfile[]>(
+      `/api/v1/projects/${projectId}/style-profiles`
+    );
+  },
+
+  analyzeStyle(projectId: string, referenceAssetIds: string[], sourceText = "") {
+    return request<Job>(
+      `/api/v1/projects/${projectId}/style-profiles/analyze`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          reference_asset_ids: referenceAssetIds,
+          source_text: sourceText,
+          overrides: {}
+        })
+      }
+    );
   },
 
   createReplacement(
