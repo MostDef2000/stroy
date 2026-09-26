@@ -694,7 +694,11 @@ async def test_style_profile_analysis_flow(settings):
                             "forms": {"keywords": ["clean lines"]},
                             "negative_constraints": [],
                             "evidence": {"fixture": True},
-                        }
+                        },
+                        "adapter_provenance": {
+                            "adapter": "mock-vision",
+                            "model_profile": "mock-vision-v0",
+                        },
                     },
                 },
             )
@@ -715,6 +719,12 @@ async def test_style_profile_analysis_flow(settings):
             assert listed.status_code == 200
             assert len(listed.json()) == 1
             assert listed.json()[0]["profile"]["style_profile_id"] == result["style_profile_id"]
+            # worker adapter provenance wins over the api payload default
+            assert listed.json()[0]["model_profile"] == "mock-vision-v0"
+            assert (
+                listed.json()[0]["profile"]["metadata"]["adapter_provenance"]["adapter"]
+                == "mock-vision"
+            )
 
 
 

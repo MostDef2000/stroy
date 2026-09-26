@@ -231,3 +231,12 @@ async def test_executor_without_downloader_keeps_deterministic_fallback() -> Non
     await executor.execute(job)
     # no download client -> deterministic digest fallback, not a crash
     assert adapter.seen and len(adapter.seen[0]) == 1
+
+
+async def test_parses_json_when_model_appends_trailing_text() -> None:
+    """Live v4 finding: the model sometimes adds prose after the JSON object."""
+    payload = json.dumps(_VALID_PROPOSAL)
+    adapter, stub = _adapter([f"Here is the analysis:\n{payload}\nHope this helps!"])
+    result = await adapter.analyze_style(images=[_PNG])
+    assert result["style_profile"]["labels"] == ["minimal", "scandinavian"]
+    assert len(stub.calls) == 1  # no retry needed

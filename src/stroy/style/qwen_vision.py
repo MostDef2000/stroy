@@ -11,7 +11,6 @@ import base64
 import binascii
 import json
 import os
-import re
 from typing import Any, Protocol
 
 from stroy.services.adapters import AdapterProtocolError, OpenAICompatibleLLM
@@ -31,7 +30,7 @@ class MultimodalLLMClient(Protocol):
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+_DECODER = json.JSONDecoder()
 
 _PROMPT_TEMPLATE = """You are an interior style analyst. Analyze the attached reference photo(s){source_clause} and reply with a single JSON object and nothing else.
 
@@ -84,10 +83,12 @@ def _build_messages(
 
 
 def _extract_proposal(content: str) -> StyleProfileProposal:
-    match = _JSON_OBJECT.search(content)
-    if not match:
+    # raw_decode instead of a greedy regex+loads: the model sometimes appends
+    # prose after the JSON object ("Extra data" would break json.loads).
+    start = content.find("{")
+    if start == -1:
         raise ValueError("no JSON object found in the model reply")
-    raw = json.loads(match.group(0))
+    raw, _end = _DECODER.raw_decode(content[start:])
     return StyleProfileProposal.model_validate(raw)
 
 
@@ -171,5 +172,6 @@ def build_local_vision_adapter() -> QwenVisionStyleAdapter:
         os.getenv("STROY_LLM_API_KEY", "local"),
         model,
         profile_id=os.getenv("STROY_LLM_MODEL_PROFILE"),
+        timeout_seconds=float(os.getenv("STROY_LLM_TIMEOUT_SECONDS", "120")),
     )
     return QwenVisionStyleAdapter(llm)
