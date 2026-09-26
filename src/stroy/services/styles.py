@@ -26,6 +26,17 @@ async def create_style_profile_from_job(
         raise ValueError("style analysis result requires style_profile object")
     proposal = StyleProfileProposal.model_validate(proposal_raw)
 
+    # The worker-side adapter knows the actual model that produced the
+    # proposal; the api-side payload default (settings.llm_model_profile) is
+    # only a fallback for legacy results without provenance.
+    provenance_raw = result.get("adapter_provenance")
+    provenance = provenance_raw if isinstance(provenance_raw, dict) else {}
+    model_profile = (
+        provenance.get("model_profile")
+        or provenance.get("adapter")
+        or job.payload.get("model_profile")
+    )
+
     overrides_raw = job.payload.get("overrides")
     overrides = (
         StyleOverrides.model_validate(overrides_raw)
@@ -54,7 +65,8 @@ async def create_style_profile_from_job(
         metadata={
             "evidence": merged.evidence,
             "job_id": job.id,
-            "model_profile": job.payload.get("model_profile"),
+            "model_profile": model_profile,
+            "adapter_provenance": provenance,
         },
     )
 
@@ -65,7 +77,7 @@ async def create_style_profile_from_job(
         source_asset_ids=source_asset_ids,
         source_text=profile.source_text,
         profile_json=profile.model_dump(mode="json", exclude_none=True),
-        model_profile=job.payload.get("model_profile"),
+        model_profile=model_profile,
         correlation_id=job.correlation_id,
     )
     session.add(row)
