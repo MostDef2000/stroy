@@ -55,11 +55,21 @@ Host Nginx (Ubuntu 24.04)
 
 ## Web Distribution Deploy
 
-Build the web assets locally or in CI and sync them to the VPS:
+The VPS has Node.js (v22) — build the web assets directly on the server
+(preferred path; `rsync` is **not** installed there):
+
 ```bash
-make web-dist
-rsync -avz apps/web/dist/ user@stroy.mostdef.ru:/var/www/stroy.mostdef.ru/
+cd /opt/stroy && git pull --ff-only
+cd apps/web && npm ci --no-audit --no-fund && npm run build
+cp -a dist/. /var/www/stroy.mostdef.ru/
 ```
+
+`cp -a dist/.` (with the trailing dot) overwrites the hashed assets in place
+and keeps `/var/www/stroy.mostdef.ru/.well-known/acme-challenge/` intact for
+certbot renewals. Once the deploy is confirmed stable, remove hashed assets
+left over from the previous dist. Building locally and syncing
+(`make web-dist` + `rsync -avz apps/web/dist/ …`) also works — install
+`rsync` on the VPS first.
 
 ## Application Deploy
 
