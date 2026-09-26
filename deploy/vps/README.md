@@ -83,6 +83,27 @@ rsync -avz apps/web/dist/ user@stroy.mostdef.ru:/var/www/stroy.mostdef.ru/
 - **Ingress**: Verify `https://stroy.mostdef.ru/health` and `https://stroy.mostdef.ru/ready` return 200 OK. Plain `curl http://127.0.0.1:8000/health` on the host returns 400 by design (`TrustedHostMiddleware`); pass `-H 'Host: stroy.mostdef.ru'` for direct checks.
 - **Containers**: Run `docker compose -f deploy/vps/docker-compose.yml ps` to verify all services are healthy. The api healthcheck sends the `Host` header from `STROY_TRUSTED_HOSTS` for the same reason.
 
+## Troubleshooting
+
+### Worker registration fails with `400 Invalid host header`
+
+`TrustedHostMiddleware` validates the `Host` header of every request. The
+worker inside the compose network reaches the api as `http://api:8000`, so its
+`Host` is `api:8000`. If `STROY_TRUSTED_HOSTS` lists only the public domain,
+the register call is rejected with 400 and the worker loops on restart.
+
+Fix: add the internal hostname to `deploy/vps/.env` and recreate the api only:
+
+```bash
+# .env
+STROY_TRUSTED_HOSTS=stroy.mostdef.ru,api
+
+docker compose -f deploy/vps/docker-compose.yml --env-file deploy/vps/.env up -d api
+```
+
+Starlette strips the port before matching, so `api` matches `Host: api:8000`,
+while the public domain keeps working through nginx.
+
 ## Backup and Restore
 
 ### Database (PostgreSQL)
