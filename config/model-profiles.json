@@ -47,6 +47,6 @@
     "approved_uses": [
       "personal-non-commercial"
     ],
-    "notes": "Allowed for STROY's current personal non-commercial local use; re-review terms if project scope changes."
+    "notes": "Allowed for STROY's current personal non-commercial local use; covers flux1-dev-fp8 (text2img) and flux1-dev-kontext (image editing); re-review terms if project scope changes."
   }
 ]

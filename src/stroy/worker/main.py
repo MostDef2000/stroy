@@ -81,8 +81,8 @@ async def _run() -> None:
         executors = {
             "llm.complete": QwenExecutor(llm),
             "style.analyze": QwenExecutor(llm),
-            "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id),
-            "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id),
+            "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id, client=client),
+            "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id, client=client),
             "render.blender": BlenderExecutor(blender),
             "quality.geometry_check": GeometryQualityExecutor(client),
         }

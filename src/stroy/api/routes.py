@@ -1155,7 +1155,7 @@ async def job_create(
         raise HTTPException(status_code=404, detail="project not found")
     payload_data = payload.payload
     if payload.job_type in {"image.generate", "image.edit"}:
-        payload_data = ensure_generation_payload(payload_data)
+        payload_data = ensure_generation_payload(payload_data, job_type=payload.job_type)
     row = await create_job(
         session,
         project_id=project_id,

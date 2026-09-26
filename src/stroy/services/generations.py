@@ -14,13 +14,13 @@ from stroy.services.jobs import create_job
 
 
 DEFAULT_WORKFLOW_PATH = Path("workflows/flux-redesign-v0.manifest.json")
-
+EDIT_WORKFLOW_PATH = Path("workflows/image-edit-kontext-v0.manifest.json")
 
 def load_default_workflow(path: Path = DEFAULT_WORKFLOW_PATH) -> WorkflowManifest:
     return WorkflowManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def ensure_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def ensure_generation_payload(payload: dict[str, Any], job_type: str | None = None) -> dict[str, Any]:
     """Fill in the default generation context for UI-created image jobs.
 
     The web UI "Test generation" button creates ``image.generate`` jobs with a
@@ -52,7 +52,8 @@ def ensure_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     workflow_manifest = payload.get("workflow_manifest")
     if not isinstance(workflow_manifest, dict):
-        workflow_manifest = load_default_workflow().model_dump(
+        manifest_obj = load_default_workflow(EDIT_WORKFLOW_PATH if job_type == "image.edit" else DEFAULT_WORKFLOW_PATH)
+        workflow_manifest = manifest_obj.model_dump(
             mode="json", exclude_none=True
         )
     inputs = payload.get("inputs")
@@ -210,7 +211,7 @@ async def queue_reference_edit(
     protected_entity_ids: list[str],
     correlation_id: str | None,
     dispatcher: JobDispatcher | None,
-    workflow_path: Path = DEFAULT_WORKFLOW_PATH,
+    workflow_path: Path = EDIT_WORKFLOW_PATH,
 ) -> JobRow:
     workflow = load_default_workflow(workflow_path)
     generation_id = str(uuid4())
