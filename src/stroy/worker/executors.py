@@ -13,6 +13,7 @@ from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
 from stroy.style.vision import VisionStyleAdapter, MockVisionStyleAdapter
+from stroy.style.qwen_vision import build_local_vision_adapter
 
 
 class LLMAdapter(Protocol):
@@ -354,6 +355,8 @@ def build_style_analyze_executor(adapter_name: str) -> Any:
         return VisionStyleExecutor(MockVisionStyleAdapter())
     if adapter_name == "fake":
         return FakeStyleExecutor()
+    if adapter_name == "local":
+        return VisionStyleExecutor(build_local_vision_adapter())
     raise ValueError(f"unknown style vision adapter: {adapter_name}")
 
 class FakeImageExecutor:
