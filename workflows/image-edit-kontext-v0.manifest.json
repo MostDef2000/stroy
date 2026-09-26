@@ -38,7 +38,7 @@
       "inputs": {
         "clip_name": "t5xxl_fp8_e4m3fn_scaled.safetensors",
         "clip_name2": "clip_l.safetensors",
-        "type": "flux"
+        "type": "flux2"
       }
     },
     "5": {
