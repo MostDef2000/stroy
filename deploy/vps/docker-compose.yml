@@ -44,6 +44,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile.api
+    command: ["stroy-worker"]
+    restart: unless-stopped
+    env_file:
+      - .env
+      - path: .worker-env
+        required: false
+    environment:
+      STROY_ENV: production
+      STROY_SERVER_URL: http://api:8000
+      STROY_WORKER_EXECUTOR_MODE: fake
+      STROY_WORKER_ID: stroy-vps-1
+      STROY_WORKER_NAME: VPS CPU worker
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped

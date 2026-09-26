@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.*
+.worker-env
 !.env.example
 
 # Python
