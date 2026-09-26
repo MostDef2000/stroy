@@ -105,7 +105,7 @@ class DesignInstruction(BaseModel):
 
 
 class StyleAnalyzeRequest(BaseModel):
-    source_text: str = Field(min_length=1, max_length=4000)
+    source_text: str | None = Field(default=None, max_length=4000)
     reference_asset_ids: list[str] = Field(min_length=3, max_length=5)
     overrides: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=160)

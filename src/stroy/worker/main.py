@@ -67,7 +67,9 @@ async def _run() -> None:
     else:
         executors = {
             "llm.complete": QwenExecutor(FakeLLMAdapter()),
-            "style.analyze": build_style_analyze_executor(os.getenv("STROY_STYLE_VISION_ADAPTER", "mock")),
+            "style.analyze": build_style_analyze_executor(
+                os.getenv("STROY_STYLE_VISION_ADAPTER", "mock"), client
+            ),
             "render.blender": FakeExecutor("fake-blender"),
             "image.generate": FakeImageExecutor(),
             "image.edit": FakeImageExecutor(),
