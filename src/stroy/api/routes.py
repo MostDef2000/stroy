@@ -27,12 +27,14 @@ from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
 from stroy.services.cameras import remove_camera, upsert_camera
 from stroy.editing import projected_entity_region
+from stroy.editing.mask import render_replacement_mask
 from stroy.services.generations import (
     ensure_generation_payload,
     list_generation_manifests,
     persist_generation_manifest,
     queue_design_generation,
     queue_reference_edit,
+    resolve_base_asset_for_edit,
 )
 from stroy.services.jobs import (
     cancel_job,
@@ -863,6 +865,75 @@ async def replacement_create(
             detail={"code": "replacement_region_unavailable", "detail": str(exc)},
         ) from exc
 
+    base_asset = await resolve_base_asset_for_edit(
+        session, project_id, payload.camera_id, current.id
+    )
+    if base_asset is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "no_base_image_available",
+                "detail": "generate this camera view before replacing objects",
+                "camera_id": payload.camera_id,
+            },
+        )
+    if not base_asset.media_type.startswith("image/"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "no_base_image_available",
+                "detail": f"asset {base_asset.id} is not an image",
+                "camera_id": payload.camera_id,
+            },
+        )
+
+    base_w = base_asset.metadata_json.get("width_px")
+    base_h = base_asset.metadata_json.get("height_px")
+    if base_w is None or base_h is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "unsupported_base_size", "detail": "base asset missing dimensions"},
+        )
+
+    try:
+        mask_bytes = render_replacement_mask(
+            region, camera.width_px, camera.height_px, base_w, base_h
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "mask_degenerate", "detail": str(exc)},
+        ) from exc
+
+    mask_filename = f"replacement-mask-{target.id}.png"
+    object_key = f"projects/{project_id}/{uuid4()}.png"
+    await request.app.state.object_store.put_bytes(
+        object_key, mask_bytes, "image/png"
+    )
+    mask_asset = AssetRow(
+        id=str(uuid4()),
+        project_id=project_id,
+        object_key=object_key,
+        original_name=mask_filename,
+        media_type="image/png",
+        size_bytes=len(mask_bytes),
+        sha256=hashlib.sha256(mask_bytes).hexdigest(),
+        provenance="generated",
+        role="mask",
+        source_asset_ids=[base_asset.id],
+        metadata_json={
+            "width_px": base_w,
+            "height_px": base_h,
+            "target_entity_id": target.id,
+            "bbox_px": region.bbox_px,
+            "feather_px": region.feather_px,
+            "source": "replacement_mask",
+        },
+    )
+    session.add(mask_asset)
+    await session.commit()
+    await session.refresh(mask_asset)
+
     command = DesignCommand(
         command_id=str(uuid4()),
         base_revision_id=current.id,
@@ -908,6 +979,8 @@ async def replacement_create(
         protected_entity_ids=protected_entity_ids,
         correlation_id=request.state.request_id,
         dispatcher=request.app.state.job_dispatcher,
+        base_asset_id=base_asset.id,
+        mask_asset_id=mask_asset.id,
     )
     return {
         "revision_id": revision.id,
@@ -916,6 +989,8 @@ async def replacement_create(
         "command": command.model_dump(mode="json", exclude_none=True),
         "affected_region": region.model_dump(mode="json"),
         "job": job_view(edit_job),
+        "base_asset_id": base_asset.id,
+        "mask_asset_id": mask_asset.id,
     }
 
 

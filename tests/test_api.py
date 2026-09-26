@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from uuid import uuid4
 
 from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
@@ -10,7 +11,7 @@ from sqlalchemy import select
 
 from stroy.api.app import create_app
 from stroy.config import Settings
-from stroy.db.models import DesignCommandRow, JobRow
+from stroy.db.models import DesignCommandRow, GenerationManifestRow, JobRow
 from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
 
@@ -1501,6 +1502,47 @@ async def test_reference_object_replacement_flow(settings):
             reference_id = reference.json()["id"]
             reference_sha = reference.json()["sha256"]
 
+            # Seed a prior generation on camera.main (the base image a real
+            # replacement edits): a 64x48 generated PNG + its manifest row.
+            base_buffer = BytesIO()
+            Image.new("RGB", (64, 48), "lightgray").save(base_buffer, format="PNG")
+            base_bytes = base_buffer.getvalue()
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room-base.png", base_bytes, "image/png")},
+            )
+            assert base_upload.status_code == 201
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {
+                                "id": "flux-redesign-v0",
+                                "version": "0.2.0",
+                            },
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
             replacement = await client.post(
                 f"/api/v1/projects/{project_id}/replacements",
                 headers=headers,
@@ -1512,7 +1554,7 @@ async def test_reference_object_replacement_flow(settings):
                     "prompt": "replace the sofa with the reference furniture",
                 },
             )
-            assert replacement.status_code == 201
+            assert replacement.status_code == 201, replacement.json()
             body = replacement.json()
             replacement_revision_id = body["revision_id"]
             assert replacement_revision_id != base_revision_id
@@ -1521,6 +1563,8 @@ async def test_reference_object_replacement_flow(settings):
             assert body["command"]["reference_asset_ids"] == [reference_id]
             assert body["affected_region"]["type"] == "projected_bbox"
             assert body["affected_region"]["target_entity_id"] == "object.sofa.main"
+            assert body["base_asset_id"] == base_asset_id
+            assert body["mask_asset_id"]
 
             next_scene = body["scene"]
             entities = {item["id"]: item for item in next_scene["entities"]}
@@ -1555,7 +1599,16 @@ async def test_reference_object_replacement_flow(settings):
             assert lease["job_type"] == "image.edit"
             payload = lease["payload"]
             assert payload["design_revision_id"] == replacement_revision_id
-            assert payload["input_asset_ids"] == [reference_id]
+            assert payload["input_asset_ids"] == [
+                base_asset_id,
+                reference_id,
+                body["mask_asset_id"],
+            ]
+            assert payload["asset_roles"] == {
+                "base_image": base_asset_id,
+                "reference_image": reference_id,
+                "mask_image": body["mask_asset_id"],
+            }
             assert payload["replacement"]["target_entity_id"] == "object.sofa.main"
             assert payload["replacement"]["reference_asset_id"] == reference_id
             assert payload["replacement"]["affected_region"] == body["affected_region"]
