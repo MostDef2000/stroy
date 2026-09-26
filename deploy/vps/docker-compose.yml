@@ -50,6 +50,8 @@ services:
       dockerfile: deploy/vps/Dockerfile.api
     command: ["stroy-worker"]
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
       - path: .worker-env
