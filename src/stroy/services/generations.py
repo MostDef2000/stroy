@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -17,6 +18,52 @@ DEFAULT_WORKFLOW_PATH = Path("workflows/flux-redesign-v0.manifest.json")
 
 def load_default_workflow(path: Path = DEFAULT_WORKFLOW_PATH) -> WorkflowManifest:
     return WorkflowManifest.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def ensure_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fill in the default generation context for UI-created image jobs.
+
+    The web UI "Test generation" button creates ``image.generate`` jobs with a
+    bare payload (a ``scene_revision_id`` at best). Workers validate the
+    payload against ``GenerationContext``/``WorkflowManifest`` and the result
+    manifest is cross-checked against ``job.payload["generation"]`` on
+    completion, so the context must exist before the job is queued. Jobs
+    created by :func:`queue_design_generation` already carry a full context
+    and are returned unchanged.
+    """
+    if isinstance(payload.get("generation"), dict):
+        return payload
+    scene_revision_id = payload.get("scene_revision_id")
+    if not isinstance(scene_revision_id, str) or not scene_revision_id:
+        scene_revision_id = "unresolved"
+    design_revision_id = payload.get("design_revision_id")
+    if not isinstance(design_revision_id, str) or not design_revision_id:
+        design_revision_id = scene_revision_id
+    camera_id = payload.get("camera_id")
+    if not isinstance(camera_id, str) or not camera_id:
+        camera_id = "default"
+    raw_asset_ids = payload.get("input_asset_ids")
+    input_asset_ids = (
+        [str(asset_id) for asset_id in raw_asset_ids if isinstance(asset_id, str)]
+        if isinstance(raw_asset_ids, list)
+        else []
+    )
+    workflow_manifest = payload.get("workflow_manifest")
+    if not isinstance(workflow_manifest, dict):
+        workflow_manifest = load_default_workflow().model_dump(
+            mode="json", exclude_none=True
+        )
+    return {
+        **payload,
+        "generation": {
+            "generation_id": str(uuid4()),
+            "scene_revision_id": scene_revision_id,
+            "design_revision_id": design_revision_id,
+            "camera_id": camera_id,
+            "input_asset_ids": input_asset_ids,
+        },
+        "workflow_manifest": workflow_manifest,
+    }
 
 
 async def queue_design_generation(
