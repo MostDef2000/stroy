@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -11,6 +12,7 @@ from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
 from stroy.services.adapters import ComfyUIAdapter
+from stroy.style.vision import VisionStyleAdapter, MockVisionStyleAdapter
 
 
 class LLMAdapter(Protocol):
@@ -134,6 +136,34 @@ class ComfyUIExecutor:
         if prompt_id:
             await self.adapter.cancel(prompt_id)
 
+
+
+class VisionStyleExecutor:
+    def __init__(self, adapter: VisionStyleAdapter) -> None:
+        self.adapter = adapter
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        images = payload.get("images")
+
+        if isinstance(images, list) and images and all(isinstance(img, bytes) for img in images):
+            image_bytes = images
+        else:
+            asset_ids = payload.get("input_asset_ids") or []
+            if not asset_ids:
+                job_id = job.get("job_id", "default")
+                image_bytes = [hashlib.sha256(str(job_id).encode()).digest()]
+            else:
+                image_bytes = [
+                    hashlib.sha256(aid.encode()).digest() for aid in asset_ids
+                ]
+
+        result = await self.adapter.analyze_style(
+            images=image_bytes,
+            source_text=payload.get("source_text"),
+            input_asset_ids=payload.get("input_asset_ids"),
+        )
+        return result
 
 
 class FakeStyleExecutor:
@@ -318,6 +348,13 @@ class GeometryQualityExecutor:
         }
 
 
+
+def build_style_analyze_executor(adapter_name: str) -> Any:
+    if adapter_name == "mock":
+        return VisionStyleExecutor(MockVisionStyleAdapter())
+    if adapter_name == "fake":
+        return FakeStyleExecutor()
+    raise ValueError(f"unknown style vision adapter: {adapter_name}")
 
 class FakeImageExecutor:
     """Deterministic image executor for full mocked edit/generation E2E."""
