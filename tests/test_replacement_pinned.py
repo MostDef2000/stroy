@@ -179,14 +179,13 @@ async def test_replacement_with_pinned_base_asset(settings):
                     "target_entity_id": "object.sofa.main",
                     "reference_asset_id": ids["reference_id"],
                     "camera_id": "camera.main",
-                    "base_asset_id": ids["pinned_asset_id"],
+                    "base_asset_id": ids["base_asset_id"],
                     "prompt": "replace the sofa with the reference furniture",
                 },
             )
             assert replacement.status_code == 201, replacement.json()
             body = replacement.json()
-            assert body["base_asset_id"] == ids["pinned_asset_id"]
-            assert body["base_asset_id"] != ids["base_asset_id"]
+            assert body["base_asset_id"] == ids["base_asset_id"]
 
             async with app.state.session_factory() as db:
                 job_result = await db.execute(
@@ -194,10 +193,45 @@ async def test_replacement_with_pinned_base_asset(settings):
                 )
                 job_row = job_result.scalar_one()
                 payload = job_row.payload
-                assert payload["asset_roles"]["base_image"] == ids["pinned_asset_id"]
+                assert payload["asset_roles"]["base_image"] == ids["base_asset_id"]
                 assert payload["asset_roles"]["reference_image"] == ids["reference_id"]
                 assert payload["asset_roles"]["mask_image"]
                 assert len(payload["input_asset_ids"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_replacement_pinned_base_asset_different_camera(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            ids = await _seed_project(client, headers)
+
+            async with app.state.session_factory() as db:
+                _seed_manifest(
+                    db, ids["project_id"], ids["base_revision_id"], ids["base_asset_id"]
+                )
+                await db.commit()
+
+            replacement = await client.post(
+                f"/api/v1/projects/{ids['project_id']}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": ids["base_revision_id"],
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": ids["reference_id"],
+                    "camera_id": "camera.main",
+                    "base_asset_id": ids["pinned_asset_id"],
+                    "prompt": "replace the sofa with the reference furniture",
+                },
+            )
+            assert replacement.status_code == 422
+            assert replacement.json()["detail"]["code"] == "invalid_base_asset"
+            assert "different camera" in replacement.json()["detail"]["detail"]
 
 
 @pytest.mark.asyncio
