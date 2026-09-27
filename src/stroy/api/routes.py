@@ -892,6 +892,26 @@ async def replacement_create(
                     "detail": "base asset must be an image",
                 },
             )
+        result = await session.execute(
+            select(GenerationManifestRow).where(
+                GenerationManifestRow.project_id == project_id,
+                GenerationManifestRow.camera_id == payload.camera_id,
+            )
+        )
+        manifests = result.scalars().all()
+        same_camera = any(
+            base_asset.id in (m.manifest_json.get("output_asset_ids") or [])
+            for m in manifests
+        )
+        if not same_camera:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_base_asset",
+                    "asset_id": payload.base_asset_id,
+                    "detail": "base asset was rendered from a different camera; pin a base image from the same camera view",
+                },
+            )
     else:
         base_asset = await resolve_base_asset_for_edit(
             session, project_id, payload.camera_id, current.id
