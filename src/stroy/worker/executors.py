@@ -12,6 +12,7 @@ from typing import Any, Protocol
 import httpx
 
 from stroy.domain.models import Scene
+from stroy.editing.mask import crop_image_bytes
 from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
@@ -160,6 +161,10 @@ class ComfyUIExecutor:
                         f"asset input URL missing for {name} ({asset_id})"
                     )
                 image_bytes = await self.client.download_input(url)
+                if name == "reference_image":
+                    bbox = payload.get("reference_subject_bbox")
+                    if bbox:
+                        image_bytes = crop_image_bytes(image_bytes, bbox)
                 semantic_inputs[name] = await self.adapter.upload_image(
                     f"{name}_{asset_id}.png", image_bytes
                 )

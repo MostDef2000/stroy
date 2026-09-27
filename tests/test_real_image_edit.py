@@ -5,10 +5,15 @@ routing, and manifest materialization."""
 from pathlib import Path
 
 import httpx
+import io
 import pytest
 from unittest.mock import MagicMock
+from PIL import Image
 
+from stroy.editing.mask import crop_image_bytes
+from stroy.api.routes import ReplacementRequest
 from stroy.generation import WorkflowManifest
+from pydantic import ValidationError
 from stroy.services.adapters import (
     AdapterProtocolError,
     AdapterUnavailable,
@@ -316,3 +321,132 @@ def test_manifest_materialization():
     assert graph["22"]["inputs"]["mask"] == ["18", 0]
     assert graph["13"]["inputs"]["latent_image"] == ["20", 0]
     assert graph["13"]["inputs"]["denoise"] == 1.0
+
+
+def test_crop_image_bytes_returns_subregion():
+    img = Image.new("RGB", (100, 100), (0, 0, 0))
+    px = img.load()
+    for x in range(10, 30):
+        for y in range(10, 30):
+            px[x, y] = (255, 0, 0)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    cropped = crop_image_bytes(buf.getvalue(), [10, 10, 20, 20])
+    out = Image.open(io.BytesIO(cropped)).convert("RGB")
+    assert out.size == (20, 20)
+    assert out.getpixel((0, 0)) == (255, 0, 0)
+    assert out.getpixel((19, 19)) == (255, 0, 0)
+
+
+def test_crop_image_bytes_clamps_to_bounds():
+    img = Image.new("RGB", (50, 50), (1, 2, 3))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    cropped = crop_image_bytes(buf.getvalue(), [40, 40, 30, 30])
+    out = Image.open(io.BytesIO(cropped)).convert("RGB")
+    assert out.size == (10, 10)
+
+
+def test_crop_image_bytes_rejects_bad_bbox():
+    img = Image.new("RGB", (10, 10), (0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    data = buf.getvalue()
+    for bad in ([1, 2, 3], [0, 0, 0, 5], [0, 0, -1, 5], [100, 100, 5, 5]):
+        with pytest.raises(ValueError):
+            crop_image_bytes(data, bad)
+
+
+class CropStubClient:
+    """Like StubClient but serves a real PNG for the reference so cropping runs."""
+
+    URLS = StubClient.URLS
+
+    async def download_input(self, url: str) -> bytes:
+        if url == StubClient.URLS["asset-ref"]:
+            buf = io.BytesIO()
+            Image.new("RGB", (100, 100), (10, 20, 30)).save(buf, format="PNG")
+            return buf.getvalue()
+        for asset_id, known in self.URLS.items():
+            if url == known:
+                return f"bytes-{asset_id}".encode()
+        raise ValueError(f"unexpected download url: {url}")
+
+
+@pytest.mark.asyncio
+async def test_executor_crops_reference_only():
+    adapter = RecordingAdapter()
+    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family", client=CropStubClient())  # type: ignore[arg-type]
+    job = _v02_job()
+    job["payload"]["reference_subject_bbox"] = [10, 10, 20, 20]
+    await executor.execute(job)
+
+    calls = {name: data for name, data in adapter.upload_calls}
+    # base + mask are NOT cropped
+    assert calls["base_image_asset-base.png"] == b"bytes-asset-base"
+    assert calls["mask_image_asset-mask.png"] == b"bytes-asset-mask"
+    # reference IS cropped to the bbox
+    ref_bytes = calls["reference_image_asset-ref.png"]
+    out = Image.open(io.BytesIO(ref_bytes)).convert("RGB")
+    assert out.size == (20, 20)
+    assert out.getpixel((0, 0)) == (10, 20, 30)
+
+
+@pytest.mark.asyncio
+async def test_executor_no_crop_without_bbox():
+    adapter = RecordingAdapter()
+    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family", client=CropStubClient())  # type: ignore[arg-type]
+    await executor.execute(_v02_job())
+    calls = {name: data for name, data in adapter.upload_calls}
+    out = Image.open(io.BytesIO(calls["reference_image_asset-ref.png"])).convert("RGB")
+    assert out.size == (100, 100)
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_edit_embeds_reference_crop(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+
+    await gens.queue_reference_edit(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        camera_id="default",
+        request_text="swap the sofa",
+        target_entity_id="sofa-1",
+        reference_asset_id="asset-9",
+        affected_region={"x": 0, "y": 0},
+        protected_entity_ids=["wall-1"],
+        correlation_id=None,
+        dispatcher=None,
+        base_asset_id="base-1",
+        mask_asset_id="mask-1",
+        reference_subject_bbox=[10, 20, 30, 40],
+    )
+
+    assert captured["payload"]["reference_subject_bbox"] == [10, 20, 30, 40]
+    assert ":crop-" in captured["idempotency_key"]
+    assert len(captured["idempotency_key"]) <= 160
+
+
+def test_replacement_request_rejects_malformed_bbox():
+    base = dict(
+        base_revision_id="rev-1",
+        target_entity_id="sofa-1",
+        reference_asset_id="asset-9",
+        camera_id="default",
+    )
+    # malformed bboxes are rejected with 422 at the API boundary
+    for bad in ([1, 2, 3], [0, 0, 0, 5], [0, 0, -1, 5], []):
+        with pytest.raises(ValidationError):
+            ReplacementRequest(**base, reference_subject_bbox=bad)
+    # valid bbox and absence are accepted
+    ok = ReplacementRequest(**base, reference_subject_bbox=[10, 20, 30, 40])
+    assert ok.reference_subject_bbox == [10, 20, 30, 40]
+    none = ReplacementRequest(**base)
+    assert none.reference_subject_bbox is None
