@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -140,11 +140,22 @@ class ReplacementRequest(BaseModel):
     reference_asset_id: str = Field(min_length=1)
     camera_id: str = Field(min_length=1)
     base_asset_id: str | None = Field(default=None, min_length=1)
+    reference_subject_bbox: list[int] | None = Field(default=None)
     prompt: str = Field(
         default="replace selected furniture with the reference object",
         min_length=1,
         max_length=4000,
     )
+
+    @model_validator(mode="after")
+    def _validate_reference_subject_bbox(self) -> "ReplacementRequest":
+        bbox = self.reference_subject_bbox
+        if bbox is not None:
+            if len(bbox) != 4 or any(v < 0 for v in bbox) or bbox[2] <= 0 or bbox[3] <= 0:
+                raise ValueError(
+                    "reference_subject_bbox must be [x, y, w, h] with w,h > 0 and x,y >= 0"
+                )
+        return self
 
 
 class GenerationRequest(BaseModel):
@@ -1029,6 +1040,7 @@ async def replacement_create(
         dispatcher=request.app.state.job_dispatcher,
         base_asset_id=base_asset.id,
         mask_asset_id=mask_asset.id,
+        reference_subject_bbox=payload.reference_subject_bbox,
     )
     return {
         "revision_id": revision.id,

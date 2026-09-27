@@ -60,3 +60,36 @@ def render_replacement_mask(
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def crop_image_bytes(data: bytes, bbox: "list[int]") -> bytes:
+    """Crop ``data`` (a decoded image) to ``bbox`` = [x, y, w, h] in pixels.
+
+    Used to crop a full-frame reference asset down to its foreground object
+    before it is handed to the edit executor as conditioning. A full-frame
+    reference gives the model almost no object-level signal (the object is a
+    tiny fraction of the frame), which collapses the inpaint to a mean-gray
+    fill; cropping to the subject restores object transfer. The crop is
+    clamped to image bounds; an empty/negative/out-of-bounds box is rejected.
+    """
+    if len(bbox) != 4:
+        raise ValueError("reference_subject_bbox must have 4 elements [x, y, w, h]")
+    x, y, w, h = bbox
+    if w <= 0 or h <= 0:
+        raise ValueError("reference_subject_bbox width/height must be positive")
+    if x < 0 or y < 0:
+        raise ValueError("reference_subject_bbox x/y must be non-negative")
+
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    iw, ih = img.size
+    x1 = min(x + w, iw)
+    y1 = min(y + h, ih)
+    if x >= iw or y >= ih:
+        raise ValueError("reference_subject_bbox is outside the image bounds")
+    if x1 <= x or y1 <= y:
+        raise ValueError("reference_subject_bbox produces an empty crop")
+
+    cropped = img.crop((x, y, x1, y1))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    return buf.getvalue()

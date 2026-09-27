@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import hashlib
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -265,6 +267,7 @@ async def queue_reference_edit(
     workflow_path: Path = EDIT_WORKFLOW_PATH,
     base_asset_id: str | None = None,
     mask_asset_id: str | None = None,
+    reference_subject_bbox: list[int] | None = None,
 ) -> JobRow:
     workflow = load_default_workflow(workflow_path)
     generation_id = str(uuid4())
@@ -321,12 +324,21 @@ async def queue_reference_edit(
             "mask_image": mask_asset_id,
         }
 
+    if reference_subject_bbox:
+        payload["reference_subject_bbox"] = reference_subject_bbox
+
     idempotency_key = (
         f"replacement:{design_revision_id}:{camera_id}:"
         f"{target_entity_id}:{reference_asset_id}"
     )
     if base_asset_id:
         idempotency_key += f":{base_asset_id}"
+    if reference_subject_bbox:
+        # Compact, length-bounded suffix: a raw list can overflow the
+        # JobRow.idempotency_key String(160) column on Postgres (SQLite does
+        # not enforce VARCHAR length, so the overflow is invisible in tests).
+        bbox_hash = hashlib.sha1(str(reference_subject_bbox).encode()).hexdigest()[:12]
+        idempotency_key += f":crop-{bbox_hash}"
 
     return await create_job(
         session,
