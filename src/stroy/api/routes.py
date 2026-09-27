@@ -146,6 +146,12 @@ class ReplacementRequest(BaseModel):
         min_length=1,
         max_length=4000,
     )
+    ipa_weight: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=2.0,
+        description="IP-Adapter identity strength for FLUX replacement",
+    )
 
     @model_validator(mode="after")
     def _validate_reference_subject_bbox(self) -> "ReplacementRequest":
@@ -1041,6 +1047,7 @@ async def replacement_create(
         base_asset_id=base_asset.id,
         mask_asset_id=mask_asset.id,
         reference_subject_bbox=payload.reference_subject_bbox,
+        ipa_weight=payload.ipa_weight,
     )
     return {
         "revision_id": revision.id,

@@ -1608,6 +1608,9 @@ async def test_reference_object_replacement_flow(settings):
                 "base_image": base_asset_id,
                 "reference_image": reference_id,
                 "mask_image": body["mask_asset_id"],
+                # v0.3.0: the same reference asset feeds the IPAdapterFlux
+                # identity path as the control image
+                "control_image": reference_id,
             }
             assert payload["replacement"]["target_entity_id"] == "object.sofa.main"
             assert payload["replacement"]["reference_asset_id"] == reference_id

@@ -1,13 +1,14 @@
 {
   "id": "image-edit-kontext-v0",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "model_profile": "flux-dev-family",
   "required_inputs": [
     "prompt",
     "seed",
     "base_image",
     "reference_image",
-    "mask_image"
+    "mask_image",
+    "control_image"
   ],
   "outputs": [
     "image"
@@ -32,6 +33,10 @@
     },
     "mask_image": {
       "node_id": "17",
+      "input_name": "image"
+    },
+    "control_image": {
+      "node_id": "25",
       "input_name": "image"
     }
   },
@@ -198,6 +203,46 @@
         "set_cond_area": "default"
       }
     },
+    "23": {
+      "class_type": "CLIPVisionLoader",
+      "inputs": {
+        "clip_vision_name": ""
+      }
+    },
+    "24": {
+      "class_type": "IPAdapterModelLoader",
+      "inputs": {
+        "ipadapter_file": ""
+      }
+    },
+    "25": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "27": {
+      "class_type": "IPAdapterFlux",
+      "inputs": {
+        "model": [
+          "3",
+          0
+        ],
+        "ipadapter": [
+          "24",
+          0
+        ],
+        "clip_vision": [
+          "23",
+          0
+        ],
+        "image": [
+          "25",
+          0
+        ],
+        "weight": 0.85
+      }
+    },
     "13": {
       "class_type": "KSampler",
       "inputs": {
@@ -208,7 +253,7 @@
         "scheduler": "simple",
         "denoise": 1.0,
         "model": [
-          "3",
+          "27",
           0
         ],
         "positive": [
@@ -249,5 +294,5 @@
       }
     }
   },
-  "notes": "Mask-constrained Kontext replacement (v0.2.0). The BASE image (current room state) feeds VAEEncodeForInpaint whose noise mask confines sampling to the affected region - unmasked pixels keep the base exactly. The REFERENCE stays conditioning-only (ReferenceLatent path), so a whole-room reference can no longer collapse the output onto itself. The mask PNG (white=edit region, linear feather ramp baked in server-side) binds through ImageToMask(red). Node inputs verified against the box fork object_info (v9.1): ImageToMask(image,channel), VAEEncodeForInpaint(pixels,vae,mask,grow_mask_by 0..64), ConditioningSetMask(conditioning,mask,strength,set_cond_area); FeatherMask node deliberately not used (no single feather input - feathering is baked into the mask PNG server-side)."
+  "notes": "Mask-constrained Kontext replacement with IP-Adapter identity conditioning (v0.3.0). The BASE image (current room state) feeds VAEEncodeForInpaint whose noise mask confines sampling to the affected region - unmasked pixels keep the base exactly. The REFERENCE stays conditioning-only (ReferenceLatent path, retained as a locality hint) so a whole-room reference can no longer collapse the output onto itself; identity transfer is now carried by the XLabs IPAdapterFlux path: node 25 loads the CROPPED reference (control_image role, same asset as reference_image), node 23 loads the CLIP-Vision encoder, node 24 loads the FLUX IP-Adapter weights, and node 27 patches the UNET before KSampler 13. The mask PNG (white=edit region, linear feather ramp baked in server-side) binds through ImageToMask(red). VERIFY-PHASE1b: IPAdapterFlux/IPAdapterModelLoader/CLIPVisionLoader input names and the need for node 24 are BEST-GUESS (XLabs ComfyUI-IPAdapter-Flux) and must be confirmed against the box fork object_info before deploy; node inputs verified against the box fork object_info (v9.1): ImageToMask(image,channel), VAEEncodeForInpaint(pixels,vae,mask,grow_mask_by 0..64), ConditioningSetMask(conditioning,mask,strength,set_cond_area); FeatherMask node deliberately not used (no single feather input - feathering is baked into the mask PNG server-side)."
 }

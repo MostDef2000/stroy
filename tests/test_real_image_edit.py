@@ -150,21 +150,28 @@ async def test_executor_asset_roles_flow():
 
     await executor.execute(_v02_job())
 
-    # all three role inputs downloaded and uploaded under deterministic names
+    # all role inputs downloaded and uploaded under deterministic names; the
+    # v0.3.0 IP-Adapter control image reuses the reference bytes (same asset)
     assert [name for name, _ in adapter.upload_calls] == [
         "base_image_asset-base.png",
         "reference_image_asset-ref.png",
+        "control_image_asset-ref.png",
         "mask_image_asset-mask.png",
     ]
     graph = adapter.submitted_graph
     assert graph is not None
-    # the REAL v0.2 manifest wiring: base/reference/mask LoadImage nodes bound,
-    # prompt and seed bound, mask feeds inpaint latent + both conditionings
+    # the REAL v0.3 manifest wiring: base/reference/mask/control LoadImage
+    # nodes bound, prompt and seed bound, mask feeds inpaint latent + both
+    # conditionings, IPAdapterFlux (27) patches the UNET into KSampler 13
     assert graph["6"]["inputs"]["image"] == "base_image_asset-base.png"
     assert graph["7"]["inputs"]["image"] == "reference_image_asset-ref.png"
     assert graph["17"]["inputs"]["image"] == "mask_image_asset-mask.png"
+    assert graph["25"]["inputs"]["image"] == "control_image_asset-ref.png"
     assert graph["9"]["inputs"]["text"] == "replace the chair"
     assert graph["13"]["inputs"]["seed"] == 7
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    assert graph["27"]["class_type"] == "IPAdapterFlux"
+    assert graph["27"]["inputs"]["image"] == ["25", 0]
     assert graph["20"]["inputs"]["mask"] == ["18", 0]
     assert graph["13"]["inputs"]["latent_image"] == ["20", 0]
     assert graph["13"]["inputs"]["positive"] == ["21", 0]
@@ -246,7 +253,7 @@ async def test_executor_requires_client_for_assets():
 async def test_ensure_generation_payload_routes_edit_manifest():
     edit = ensure_generation_payload({"prompt": "x"}, job_type="image.edit")
     assert edit["workflow_manifest"]["id"] == "image-edit-kontext-v0"
-    assert edit["workflow_manifest"]["version"] == "0.2.0"
+    assert edit["workflow_manifest"]["version"] == "0.3.0"
     assert edit["workflow_manifest"]["model_profile"] == "flux-dev-family"
 
     generate = ensure_generation_payload({"prompt": "x"}, job_type="image.generate")
@@ -287,6 +294,7 @@ async def test_queue_reference_edit_embeds_edit_manifest(monkeypatch):
         "base_image",
         "reference_image",
         "mask_image",
+        "control_image",
     ]
     assert captured["payload"]["generation"]["input_asset_ids"] == ["asset-9"]
 
@@ -294,7 +302,7 @@ async def test_queue_reference_edit_embeds_edit_manifest(monkeypatch):
 def test_manifest_materialization():
     manifest = _edit_manifest()
     assert manifest.id == "image-edit-kontext-v0"
-    assert manifest.version == "0.2.0"
+    assert manifest.version == "0.3.0"
     assert manifest.schema_version == "0.1.0"
     assert manifest.model_profile == "flux-dev-family"
 
@@ -305,11 +313,13 @@ def test_manifest_materialization():
             "base_image": "base.png",
             "reference_image": "ref.png",
             "mask_image": "mask.png",
+            "control_image": "control.png",
         }
     )
     assert graph["6"]["inputs"]["image"] == "base.png"
     assert graph["7"]["inputs"]["image"] == "ref.png"
     assert graph["17"]["inputs"]["image"] == "mask.png"
+    assert graph["25"]["inputs"]["image"] == "control.png"
     assert graph["9"]["inputs"]["text"] == "a blue chair"
     assert graph["13"]["inputs"]["seed"] == 12345
     # mask-constrained wiring sanity: reference latent is conditioning-only,
@@ -321,6 +331,17 @@ def test_manifest_materialization():
     assert graph["22"]["inputs"]["mask"] == ["18", 0]
     assert graph["13"]["inputs"]["latent_image"] == ["20", 0]
     assert graph["13"]["inputs"]["denoise"] == 1.0
+    # v0.3.0 IP-Adapter identity path: node 27 patches the UNET, node 12
+    # ReferenceLatent retained as locality hint
+    assert graph["27"]["class_type"] == "IPAdapterFlux"
+    assert graph["27"]["inputs"]["model"] == ["3", 0]
+    assert graph["27"]["inputs"]["ipadapter"] == ["24", 0]
+    assert graph["27"]["inputs"]["clip_vision"] == ["23", 0]
+    assert graph["27"]["inputs"]["image"] == ["25", 0]
+    assert graph["27"]["inputs"]["weight"] == 0.85
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    assert graph["12"]["inputs"]["conditioning"] == ["11", 0]
+    assert graph["21"]["inputs"]["conditioning"] == ["12", 0]
 
 
 def test_crop_image_bytes_returns_subregion():

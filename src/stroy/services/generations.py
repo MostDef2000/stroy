@@ -268,6 +268,7 @@ async def queue_reference_edit(
     base_asset_id: str | None = None,
     mask_asset_id: str | None = None,
     reference_subject_bbox: list[int] | None = None,
+    ipa_weight: float = 0.85,
 ) -> JobRow:
     workflow = load_default_workflow(workflow_path)
     generation_id = str(uuid4())
@@ -318,14 +319,19 @@ async def queue_reference_edit(
         payload["replacement"]["mask_asset_id"] = mask_asset_id
         payload["generation"]["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
         payload["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
+        # The cropped reference asset feeds BOTH the ReferenceLatent path
+        # (reference_image) and the IPAdapterFlux identity path (control_image,
+        # v0.3.0) - same asset id, so it is already in input_asset_ids.
         payload["asset_roles"] = {
             "base_image": base_asset_id,
             "reference_image": reference_asset_id,
             "mask_image": mask_asset_id,
+            "control_image": reference_asset_id,
         }
 
     if reference_subject_bbox:
         payload["reference_subject_bbox"] = reference_subject_bbox
+    payload["ipa_weight"] = ipa_weight
 
     idempotency_key = (
         f"replacement:{design_revision_id}:{camera_id}:"
@@ -339,6 +345,7 @@ async def queue_reference_edit(
         # not enforce VARCHAR length, so the overflow is invisible in tests).
         bbox_hash = hashlib.sha1(str(reference_subject_bbox).encode()).hexdigest()[:12]
         idempotency_key += f":crop-{bbox_hash}"
+    idempotency_key += f":ipa{ipa_weight}"
 
     return await create_job(
         session,
