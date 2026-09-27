@@ -139,6 +139,7 @@ class ReplacementRequest(BaseModel):
     target_entity_id: str = Field(min_length=1)
     reference_asset_id: str = Field(min_length=1)
     camera_id: str = Field(min_length=1)
+    base_asset_id: str | None = Field(default=None, min_length=1)
     prompt: str = Field(
         default="replace selected furniture with the reference object",
         min_length=1,
@@ -865,27 +866,54 @@ async def replacement_create(
             detail={"code": "replacement_region_unavailable", "detail": str(exc)},
         ) from exc
 
-    base_asset = await resolve_base_asset_for_edit(
-        session, project_id, payload.camera_id, current.id
-    )
-    if base_asset is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "no_base_image_available",
-                "detail": "generate this camera view before replacing objects",
-                "camera_id": payload.camera_id,
-            },
+    # If base_asset_id is provided, pin to that asset; otherwise resolve from lineage
+    if payload.base_asset_id:
+        base_asset = await session.get(AssetRow, payload.base_asset_id)
+        if base_asset is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_base_asset", "asset_id": payload.base_asset_id},
+            )
+        if base_asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_base_asset",
+                    "asset_id": payload.base_asset_id,
+                    "detail": "base asset belongs to another project",
+                },
+            )
+        if not base_asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_base_asset",
+                    "asset_id": payload.base_asset_id,
+                    "detail": "base asset must be an image",
+                },
+            )
+    else:
+        base_asset = await resolve_base_asset_for_edit(
+            session, project_id, payload.camera_id, current.id
         )
-    if not base_asset.media_type.startswith("image/"):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "no_base_image_available",
-                "detail": f"asset {base_asset.id} is not an image",
-                "camera_id": payload.camera_id,
-            },
-        )
+        if base_asset is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_base_image_available",
+                    "detail": "generate this camera view before replacing objects",
+                    "camera_id": payload.camera_id,
+                },
+            )
+        if not base_asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_base_image_available",
+                    "detail": f"asset {base_asset.id} is not an image",
+                    "camera_id": payload.camera_id,
+                },
+            )
 
     base_w = base_asset.metadata_json.get("width_px")
     base_h = base_asset.metadata_json.get("height_px")
