@@ -95,3 +95,29 @@ def projected_entity_region(
         bbox_px=(x0, y0, x1, y1),
         feather_px=feather,
     )
+
+
+def resolve_replacement_region(
+    entity: SceneEntity,
+    camera: Camera,
+    mask_region: list[int] | None = None,
+) -> ReplacementRegion:
+    """Return the replacement region.
+
+    When ``mask_region`` is provided it is a [x1, y1, x2, y2] box in the
+    BASE-IMAGE (target) pixel space and is used verbatim (client override),
+    bypassing the unreliable calibrated-camera projection. Otherwise the
+    projected entity region is returned.
+    """
+    if mask_region is None:
+        return projected_entity_region(entity, camera)
+    x0, y0, x1, y1 = mask_region
+    feather = max(8, round(min(x1 - x0, y1 - y0) * 0.08))
+    return ReplacementRegion(
+        type="client_override",
+        target_entity_id=entity.id,
+        camera_id=camera.id,
+        bbox_px=(x0, y0, x1, y1),
+        feather_px=feather,
+        source="client_mask_region",
+    )

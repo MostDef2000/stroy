@@ -2,9 +2,10 @@
 
 Covers: ReplacementRequest.ipa_weight acceptance, ipa_weight flowing into the
 queued edit job payload (asset_roles["control_image"], idempotency suffix),
-v0.3.0 manifest materialization with the IPAdapterFlux nodes, and the
-executor's control_image handling (same cropped reference bytes, v0.2
-payload compatibility, adapter provenance).
+v0.3.0 manifest materialization with the IPAdapterFlux nodes, the executor's
+control_image handling (same cropped reference bytes, v0.2 payload
+compatibility, adapter provenance), and the client-supplied mask_region
+override (base-image pixel box bypassing the calibrated-camera projection).
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from PIL import Image
 from pydantic import ValidationError
 
 from stroy.api.routes import ReplacementRequest
+from stroy.domain.models import Camera, SceneEntity
+from stroy.editing import resolve_replacement_region
 from stroy.generation import WorkflowManifest
 from stroy.services import generations as gens
 from stroy.worker.executors import ComfyUIExecutor
@@ -61,6 +64,79 @@ def test_replacement_request_ipa_weight_default_and_bounds():
     for bad in (-0.1, 2.1, 5.0):
         with pytest.raises(ValidationError):
             ReplacementRequest(**_request_kwargs(), ipa_weight=bad)
+
+
+# ---------------------------------------------------------------------------
+# ReplacementRequest.mask_region + region resolution
+# ---------------------------------------------------------------------------
+
+
+def _camera() -> Camera:
+    # mirrors the fixture in tests/test_reference_replacement.py
+    return Camera.model_validate(
+        {
+            "id": "camera.main",
+            "width_px": 1000,
+            "height_px": 800,
+            "intrinsics": {"fx": 800, "fy": 800, "cx": 500, "cy": 400},
+            "transform": {
+                "translation_mm": [0, -5000, 1500],
+                "rotation_deg": [90, 0, 0],
+            },
+        }
+    )
+
+
+def _entity() -> SceneEntity:
+    return SceneEntity.model_validate(
+        {
+            "id": "object.sofa.main",
+            "kind": "furniture",
+            "transform": {
+                "translation_mm": [0, 0, 900],
+                "rotation_deg": [0, 0, 0],
+                "scale": [1, 1, 1],
+            },
+            "geometry": {"dimensions_mm": [2200, 900, 900]},
+        }
+    )
+
+
+def test_replacement_request_accepts_mask_region():
+    request = ReplacementRequest(**_request_kwargs(), mask_region=[334, 578, 654, 884])
+    assert request.mask_region == [334, 578, 654, 884]
+    assert ReplacementRequest(**_request_kwargs()).mask_region is None
+
+
+def test_replacement_request_rejects_malformed_mask_region():
+    bad_regions = [
+        [1, 2, 3],  # len != 4
+        [10, 10, 5, 20],  # x1 >= x2
+        [-1, 0, 10, 10],  # negative value
+        [10, 10, 10, 20],  # degenerate (x1 == x2)
+    ]
+    for bad in bad_regions:
+        with pytest.raises(ValidationError, match="mask_region"):
+            ReplacementRequest(**_request_kwargs(), mask_region=bad)
+
+
+def test_resolve_replacement_region_client_override():
+    region = resolve_replacement_region(_entity(), _camera(), [334, 578, 654, 884])
+    assert region.type == "client_override"
+    assert region.bbox_px == (334, 578, 654, 884)
+    assert region.feather_px > 0
+    assert region.target_entity_id == _entity().id
+    assert region.camera_id == _camera().id
+
+
+def test_resolve_replacement_region_none_uses_projection():
+    region = resolve_replacement_region(_entity(), _camera(), None)
+    assert region.type == "projected_bbox"
+    x0, y0, x1, y1 = region.bbox_px
+    camera = _camera()
+    assert 0 <= x0 < x1 <= camera.width_px
+    assert 0 <= y0 < y1 <= camera.height_px
+    assert region.feather_px >= 8
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +273,7 @@ async def test_ipa_weight_zero_produces_valid_payload(monkeypatch):
 
 def test_manifest_v030_materializes_with_control_image():
     manifest = _edit_manifest()
-    assert manifest.version == "0.3.0"
+    assert manifest.version == "0.3.1"
     assert manifest.required_inputs == [
         "prompt",
         "seed",
@@ -239,9 +315,12 @@ def test_manifest_v030_materializes_with_control_image():
     assert graph["27"]["inputs"]["end_percent"] == 1.0
     # KSampler consumes the IP-Adapter-patched model
     assert graph["13"]["inputs"]["model"] == ["27", 0]
-    # ReferenceLatent retained as locality hint: 9 -> 11 -> 12 -> 21
+    # ReferenceLatent retained as locality hint: 9 -> 11 -> 12 -> 21; the
+    # step-3 rewire sources the latent from node 20 (VAEEncodeForInpaint of
+    # the base scene) instead of node 8 (stretched reference crop)
     assert graph["12"]["class_type"] == "ReferenceLatent"
     assert graph["12"]["inputs"]["conditioning"] == ["11", 0]
+    assert graph["12"]["inputs"]["latent"] == ["20", 0]
     assert graph["21"]["inputs"]["conditioning"] == ["12", 0]
 
 

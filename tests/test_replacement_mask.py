@@ -92,3 +92,27 @@ def test_render_replacement_mask_interior_fully_feathered():
     assert column == [36, 72, 109, 145, 182, 218, 255, 255, 218, 182, 145, 109, 72, 36]
     assert max(img.getdata()) == 255
     assert img.getpixel((10, 32)) == 0  # background stays black
+
+
+def test_render_replacement_mask_client_override_identity_rescale():
+    """A client_override region arrives in BASE-IMAGE pixel space; routes.py
+    renders it with identity rescale (camera dims == target dims), so the
+    box maps 1:1 onto the 1024x1024 base image."""
+    region = ReplacementRegion(
+        type="client_override",
+        target_entity_id="entity1",
+        camera_id="cam1",
+        bbox_px=(334, 578, 654, 884),
+        feather_px=24,
+        source="client_mask_region",
+    )
+    mask_bytes = render_replacement_mask(region, 1024, 1024, 1024, 1024)
+    img = Image.open(io.BytesIO(mask_bytes))
+    assert img.size == (1024, 1024)
+    assert img.mode == "L"
+    # white interior covers exactly the box (inset by the 24px feather ramp)
+    assert img.getpixel((494, 731)) == 255  # box center
+    assert img.getpixel((100, 100)) == 0  # clearly outside the box
+    # identity rescale: sx=sy=1.0, so box edges land exactly where supplied
+    assert img.getpixel((333, 731)) == 0  # one px left of the box
+    assert img.getpixel((358, 731)) == 255  # first core column (334 + feather)

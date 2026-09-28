@@ -319,9 +319,10 @@ async def queue_reference_edit(
         payload["replacement"]["mask_asset_id"] = mask_asset_id
         payload["generation"]["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
         payload["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
-        # The cropped reference asset feeds BOTH the ReferenceLatent path
-        # (reference_image) and the IPAdapterFlux identity path (control_image,
-        # v0.3.0) - same asset id, so it is already in input_asset_ids.
+        # The cropped reference asset feeds ONLY the IPAdapterFlux identity
+        # path (control_image, node 25). The ReferenceLatent path (node 12)
+        # conditions on the base-scene latent (node 20, VAEEncodeForInpaint),
+        # not the reference.
         payload["asset_roles"] = {
             "base_image": base_asset_id,
             "reference_image": reference_asset_id,

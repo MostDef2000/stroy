@@ -26,7 +26,7 @@ from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
 from stroy.services.cameras import remove_camera, upsert_camera
-from stroy.editing import projected_entity_region
+from stroy.editing import resolve_replacement_region
 from stroy.editing.mask import render_replacement_mask
 from stroy.services.generations import (
     ensure_generation_payload,
@@ -152,6 +152,10 @@ class ReplacementRequest(BaseModel):
         le=2.0,
         description="IP-Adapter identity strength for FLUX replacement",
     )
+    mask_region: list[int] | None = Field(
+        default=None,
+        description="Optional [x1, y1, x2, y2] mask box in base-image pixels; overrides the server-projected region.",
+    )
 
     @model_validator(mode="after")
     def _validate_reference_subject_bbox(self) -> "ReplacementRequest":
@@ -160,6 +164,17 @@ class ReplacementRequest(BaseModel):
             if len(bbox) != 4 or any(v < 0 for v in bbox) or bbox[2] <= 0 or bbox[3] <= 0:
                 raise ValueError(
                     "reference_subject_bbox must be [x, y, w, h] with w,h > 0 and x,y >= 0"
+                )
+        region = self.mask_region
+        if region is not None:
+            if (
+                len(region) != 4
+                or any(v < 0 for v in region)
+                or region[0] >= region[2]
+                or region[1] >= region[3]
+            ):
+                raise ValueError(
+                    "mask_region must be [x1, y1, x2, y2] with x1<x2, y1<y2, all >= 0"
                 )
         return self
 
@@ -876,7 +891,7 @@ async def replacement_create(
         )
 
     try:
-        region = projected_entity_region(target, camera)
+        region = resolve_replacement_region(target, camera, payload.mask_region)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -961,9 +976,13 @@ async def replacement_create(
         )
 
     try:
-        mask_bytes = render_replacement_mask(
-            region, camera.width_px, camera.height_px, base_w, base_h
-        )
+        if region.type == "client_override":
+            # mask_region is already in base-image pixel space; identity rescale
+            mask_bytes = render_replacement_mask(region, base_w, base_h, base_w, base_h)
+        else:
+            mask_bytes = render_replacement_mask(
+                region, camera.width_px, camera.height_px, base_w, base_h
+            )
     except ValueError as exc:
         raise HTTPException(
             status_code=422,

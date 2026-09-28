@@ -253,7 +253,7 @@ async def test_executor_requires_client_for_assets():
 async def test_ensure_generation_payload_routes_edit_manifest():
     edit = ensure_generation_payload({"prompt": "x"}, job_type="image.edit")
     assert edit["workflow_manifest"]["id"] == "image-edit-kontext-v0"
-    assert edit["workflow_manifest"]["version"] == "0.3.0"
+    assert edit["workflow_manifest"]["version"] == "0.3.1"
     assert edit["workflow_manifest"]["model_profile"] == "flux-dev-family"
 
     generate = ensure_generation_payload({"prompt": "x"}, job_type="image.generate")
@@ -302,7 +302,7 @@ async def test_queue_reference_edit_embeds_edit_manifest(monkeypatch):
 def test_manifest_materialization():
     manifest = _edit_manifest()
     assert manifest.id == "image-edit-kontext-v0"
-    assert manifest.version == "0.3.0"
+    assert manifest.version == "0.3.1"
     assert manifest.schema_version == "0.1.0"
     assert manifest.model_profile == "flux-dev-family"
 
@@ -322,9 +322,11 @@ def test_manifest_materialization():
     assert graph["25"]["inputs"]["image"] == "control.png"
     assert graph["9"]["inputs"]["text"] == "a blue chair"
     assert graph["13"]["inputs"]["seed"] == 12345
-    # mask-constrained wiring sanity: reference latent is conditioning-only,
-    # the inpaint latent (with mask) drives sampling
-    assert graph["12"]["inputs"]["latent"] == ["8", 0]
+    # mask-constrained wiring sanity: node 12 (ReferenceLatent) conditions on
+    # the base-scene latent (node 20, VAEEncodeForInpaint) so the locality hint
+    # comes from the base frame, not the stretched reference crop; the inpaint
+    # latent (with mask) drives sampling
+    assert graph["12"]["inputs"]["latent"] == ["20", 0]
     assert graph["20"]["inputs"]["pixels"] == ["6", 0]
     assert graph["20"]["inputs"]["mask"] == ["18", 0]
     assert graph["21"]["inputs"]["mask"] == ["18", 0]

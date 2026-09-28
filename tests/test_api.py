@@ -1696,6 +1696,151 @@ async def test_reference_object_replacement_flow(settings):
             assert reference_row["provenance"] == "user"
 
 
+@pytest.mark.asyncio
+async def test_reference_object_replacement_with_mask_region(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Replacement mask region"},
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.replacement",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.wall.main",
+                            "kind": "wall",
+                            "transform": {
+                                "translation_mm": [0, 2000, 1400],
+                                "rotation_deg": [0, 0, 0],
+                                "scale": [1, 1, 1],
+                            },
+                            "geometry": {"dimensions_mm": [5000, 120, 2800]},
+                            "locks": {"geometry": True, "transform": True},
+                        },
+                        {
+                            "id": "object.sofa.main",
+                            "kind": "furniture",
+                            "transform": {
+                                "translation_mm": [0, 0, 900],
+                                "rotation_deg": [0, 0, 0],
+                                "scale": [1, 1, 1],
+                            },
+                            "geometry": {"dimensions_mm": [2200, 900, 900]},
+                            "locks": {},
+                        },
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 1000,
+                            "height_px": 800,
+                            "intrinsics": {
+                                "fx": 800,
+                                "fy": 800,
+                                "cx": 500,
+                                "cy": 400,
+                            },
+                            "transform": {
+                                "translation_mm": [0, -5000, 1500],
+                                "rotation_deg": [90, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            base_revision_id = scene.json()["revision_id"]
+
+            reference = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("chair-reference.png", png_bytes(), "image/png")},
+            )
+            assert reference.status_code == 201
+            reference_id = reference.json()["id"]
+
+            # Seed a prior generation on camera.main. The base PNG is
+            # 1024x1024 so its metadata carries width_px/height_px large
+            # enough for the client mask_region (in base-image pixels) to
+            # be rendered verbatim.
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_bytes = base_buffer.getvalue()
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room-base.png", base_bytes, "image/png")},
+            )
+            assert base_upload.status_code == 201
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {
+                                "id": "flux-redesign-v0",
+                                "version": "0.2.0",
+                            },
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            replacement = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                    "mask_region": [334, 578, 654, 884],
+                },
+            )
+            assert replacement.status_code == 201, replacement.json()
+            body = replacement.json()
+            # mask_region bypasses the camera projection: the client box is
+            # used verbatim in base-image pixel space (client_override branch).
+            assert body["affected_region"]["type"] == "client_override"
+            assert body["affected_region"]["bbox_px"] == [334, 578, 654, 884]
+            assert body["mask_asset_id"]
+
+
 
 @pytest.mark.asyncio
 async def test_worker_token_rotation_and_runtime_compatibility(tmp_path):
