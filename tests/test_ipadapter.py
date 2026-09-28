@@ -179,16 +179,24 @@ def test_manifest_v030_materializes_with_control_image():
             "control_image": "control.png",
         }
     )
-    # VERIFY-PHASE1b wiring (input names are best-guess until box object_info)
-    assert graph["23"]["class_type"] == "CLIPVisionLoader"
-    assert graph["24"]["class_type"] == "IPAdapterModelLoader"
+    # Real Shakker-Labs comfyui-ipadapter-flux node wiring (box object_info):
+    # no separate CLIPVisionLoader node - the loader takes clip_vision as a
+    # directory-name string.
+    assert "23" not in graph
+    assert graph["24"]["class_type"] == "IPAdapterFluxLoader"
+    assert graph["24"]["inputs"]["ipadapter"] == "ip-adapter.bin"
+    assert graph["24"]["inputs"]["clip_vision"] == "google/siglip-so400m-patch14-384"
+    assert graph["24"]["inputs"]["provider"] == "cuda"
     assert graph["25"]["class_type"] == "LoadImage"
-    assert graph["27"]["class_type"] == "IPAdapterFlux"
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
     assert graph["27"]["inputs"]["model"] == ["3", 0]
-    assert graph["27"]["inputs"]["ipadapter"] == ["24", 0]
-    assert graph["27"]["inputs"]["clip_vision"] == ["23", 0]
+    assert graph["27"]["inputs"]["ipadapter_flux"] == ["24", 0]
     assert graph["27"]["inputs"]["image"] == ["25", 0]
+    # materialize leaves the manifest literal; the executor overrides weight
+    # from ipa_weight at execution time
     assert graph["27"]["inputs"]["weight"] == 0.85
+    assert graph["27"]["inputs"]["start_percent"] == 0.0
+    assert graph["27"]["inputs"]["end_percent"] == 1.0
     # KSampler consumes the IP-Adapter-patched model
     assert graph["13"]["inputs"]["model"] == ["27", 0]
     # ReferenceLatent retained as locality hint: 9 -> 11 -> 12 -> 21
@@ -313,13 +321,16 @@ async def test_executor_uploads_control_image_with_reference_bytes():
     assert graph["25"]["inputs"]["image"] == "control_image_asset-ref.png"
     assert graph["7"]["inputs"]["image"] == "reference_image_asset-ref.png"
     assert graph["13"]["inputs"]["model"] == ["27", 0]
-    # provenance records the IP-Adapter identity path (VERIFY-PHASE1b names)
-    assert result["adapter_provenance"]["ipadapter_model"] == (
-        "ip-adapter-flux.safetensors"
-    )
+    # submitted graph uses the real Shakker-Labs nodes and the executor's
+    # ipa_weight override reaches the ApplyIPAdapterFlux weight input
+    assert graph["24"]["class_type"] == "IPAdapterFluxLoader"
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
+    assert graph["27"]["inputs"]["weight"] == 1.25
+    # provenance records the IP-Adapter identity path (real node values)
+    assert result["adapter_provenance"]["ipadapter_model"] == "ip-adapter.bin"
     assert result["adapter_provenance"]["ipadapter_weight"] == 1.25
     assert result["adapter_provenance"]["ipadapter_clip"] == (
-        "CLIP-ViT-H-14-laion2b-s32b-b4k.safetensors"
+        "google/siglip-so400m-patch14-384"
     )
 
 

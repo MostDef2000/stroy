@@ -162,7 +162,7 @@ async def test_executor_asset_roles_flow():
     assert graph is not None
     # the REAL v0.3 manifest wiring: base/reference/mask/control LoadImage
     # nodes bound, prompt and seed bound, mask feeds inpaint latent + both
-    # conditionings, IPAdapterFlux (27) patches the UNET into KSampler 13
+    # conditionings, ApplyIPAdapterFlux (27) patches the UNET into KSampler 13
     assert graph["6"]["inputs"]["image"] == "base_image_asset-base.png"
     assert graph["7"]["inputs"]["image"] == "reference_image_asset-ref.png"
     assert graph["17"]["inputs"]["image"] == "mask_image_asset-mask.png"
@@ -170,7 +170,7 @@ async def test_executor_asset_roles_flow():
     assert graph["9"]["inputs"]["text"] == "replace the chair"
     assert graph["13"]["inputs"]["seed"] == 7
     assert graph["13"]["inputs"]["model"] == ["27", 0]
-    assert graph["27"]["class_type"] == "IPAdapterFlux"
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
     assert graph["27"]["inputs"]["image"] == ["25", 0]
     assert graph["20"]["inputs"]["mask"] == ["18", 0]
     assert graph["13"]["inputs"]["latent_image"] == ["20", 0]
@@ -333,10 +333,9 @@ def test_manifest_materialization():
     assert graph["13"]["inputs"]["denoise"] == 1.0
     # v0.3.0 IP-Adapter identity path: node 27 patches the UNET, node 12
     # ReferenceLatent retained as locality hint
-    assert graph["27"]["class_type"] == "IPAdapterFlux"
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
     assert graph["27"]["inputs"]["model"] == ["3", 0]
-    assert graph["27"]["inputs"]["ipadapter"] == ["24", 0]
-    assert graph["27"]["inputs"]["clip_vision"] == ["23", 0]
+    assert graph["27"]["inputs"]["ipadapter_flux"] == ["24", 0]
     assert graph["27"]["inputs"]["image"] == ["25", 0]
     assert graph["27"]["inputs"]["weight"] == 0.85
     assert graph["13"]["inputs"]["model"] == ["27", 0]

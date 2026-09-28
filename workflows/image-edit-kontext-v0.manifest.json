@@ -203,16 +203,12 @@
         "set_cond_area": "default"
       }
     },
-    "23": {
-      "class_type": "CLIPVisionLoader",
-      "inputs": {
-        "clip_vision_name": ""
-      }
-    },
     "24": {
-      "class_type": "IPAdapterModelLoader",
+      "class_type": "IPAdapterFluxLoader",
       "inputs": {
-        "ipadapter_file": ""
+        "ipadapter": "ip-adapter.bin",
+        "clip_vision": "google/siglip-so400m-patch14-384",
+        "provider": "cuda"
       }
     },
     "25": {
@@ -222,25 +218,23 @@
       }
     },
     "27": {
-      "class_type": "IPAdapterFlux",
+      "class_type": "ApplyIPAdapterFlux",
       "inputs": {
         "model": [
           "3",
           0
         ],
-        "ipadapter": [
+        "ipadapter_flux": [
           "24",
-          0
-        ],
-        "clip_vision": [
-          "23",
           0
         ],
         "image": [
           "25",
           0
         ],
-        "weight": 0.85
+        "weight": 0.85,
+        "start_percent": 0.0,
+        "end_percent": 1.0
       }
     },
     "13": {
@@ -294,5 +288,5 @@
       }
     }
   },
-  "notes": "Mask-constrained Kontext replacement with IP-Adapter identity conditioning (v0.3.0). The BASE image (current room state) feeds VAEEncodeForInpaint whose noise mask confines sampling to the affected region - unmasked pixels keep the base exactly. The REFERENCE stays conditioning-only (ReferenceLatent path, retained as a locality hint) so a whole-room reference can no longer collapse the output onto itself; identity transfer is now carried by the XLabs IPAdapterFlux path: node 25 loads the CROPPED reference (control_image role, same asset as reference_image), node 23 loads the CLIP-Vision encoder, node 24 loads the FLUX IP-Adapter weights, and node 27 patches the UNET before KSampler 13. The mask PNG (white=edit region, linear feather ramp baked in server-side) binds through ImageToMask(red). VERIFY-PHASE1b: IPAdapterFlux/IPAdapterModelLoader/CLIPVisionLoader input names and the need for node 24 are BEST-GUESS (XLabs ComfyUI-IPAdapter-Flux) and must be confirmed against the box fork object_info before deploy; node inputs verified against the box fork object_info (v9.1): ImageToMask(image,channel), VAEEncodeForInpaint(pixels,vae,mask,grow_mask_by 0..64), ConditioningSetMask(conditioning,mask,strength,set_cond_area); FeatherMask node deliberately not used (no single feather input - feathering is baked into the mask PNG server-side)."
+  "notes": "Mask-constrained Kontext replacement with IP-Adapter identity conditioning (v0.3.0). The BASE image (current room state) feeds VAEEncodeForInpaint whose noise mask confines sampling to the affected region - unmasked pixels keep the base exactly. The REFERENCE stays conditioning-only (ReferenceLatent path, node 12 retained as a locality hint) so a whole-room reference can no longer collapse the output onto itself; identity transfer is carried by the Shakker-Labs comfyui-ipadapter-flux nodes: node 25 loads the CROPPED reference (control_image role, same asset as reference_image), node 24 IPAdapterFluxLoader loads ip-adapter.bin plus the google/siglip-so400m-patch14-384 CLIP-Vision encoder (provider cuda) and outputs IP_ADAPTER_FLUX_INSTANTX, and node 27 ApplyIPAdapterFlux patches the UNET (model from node 3) with that adapter and the cropped reference image before KSampler 13; node 27's weight input is driven by ipa_weight at execution time. The mask PNG (white=edit region, linear feather ramp baked in server-side) binds through ImageToMask(red). Node inputs verified against the box fork object_info (v9.1): ImageToMask(image,channel), VAEEncodeForInpaint(pixels,vae,mask,grow_mask_by 0..64), ConditioningSetMask(conditioning,mask,strength,set_cond_area); FeatherMask node deliberately not used (no single feather input - feathering is baked into the mask PNG server-side)."
 }

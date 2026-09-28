@@ -195,6 +195,20 @@ class ComfyUIExecutor:
 
         graph = manifest.materialize(semantic_inputs)
 
+        # IP-Adapter identity path (Shakker-Labs comfyui-ipadapter-flux):
+        # ipa_weight must drive the ApplyIPAdapterFlux node's weight input at
+        # execution time (the manifest literal is only a default). Guarded so
+        # manifests without that node are untouched.
+        ipa_weight = float(payload.get("ipa_weight", 0.85))
+        for node in graph.values():
+            if (
+                isinstance(node, dict)
+                and node.get("class_type") == "ApplyIPAdapterFlux"
+            ):
+                node_inputs = node.setdefault("inputs", {})
+                if isinstance(node_inputs, dict):
+                    node_inputs["weight"] = ipa_weight
+
         prompt_id = await self.adapter.submit(graph, self.worker_id)
         job_id = job.get("job_id")
         if isinstance(job_id, str):
@@ -216,12 +230,12 @@ class ComfyUIExecutor:
             **({"server_version": version} if version else {}),
         }
         if "control_image" in manifest.required_inputs:
-            # VERIFY-PHASE1b: IP-Adapter identity path (XLabs IPAdapterFlux).
+            # IP-Adapter identity path (Shakker-Labs comfyui-ipadapter-flux).
             adapter_provenance.update(
                 {
-                    "ipadapter_model": "ip-adapter-flux.safetensors",
+                    "ipadapter_model": "ip-adapter.bin",
                     "ipadapter_weight": float(payload.get("ipa_weight", 0.85)),
-                    "ipadapter_clip": "CLIP-ViT-H-14-laion2b-s32b-b4k.safetensors",
+                    "ipadapter_clip": "google/siglip-so400m-patch14-384",
                 }
             )
 
