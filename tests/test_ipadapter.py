@@ -68,7 +68,16 @@ def test_replacement_request_ipa_weight_default_and_bounds():
 # ---------------------------------------------------------------------------
 
 
-async def _queue_edit(monkeypatch, ipa_weight: float) -> dict:
+async def _queue_edit(
+    monkeypatch,
+    ipa_weight: float,
+    *,
+    design_revision_id: str = "rev-2",
+    camera_id: str = "default",
+    target_entity_id: str = "sofa-1",
+    reference_asset_id: str = "asset-9",
+    base_asset_id: str = "base-1",
+) -> dict:
     captured: dict = {}
 
     async def fake_create_job(session, **kwargs):
@@ -79,16 +88,16 @@ async def _queue_edit(monkeypatch, ipa_weight: float) -> dict:
     await gens.queue_reference_edit(
         MagicMock(),
         project_id="p1",
-        design_revision_id="rev-2",
-        camera_id="default",
+        design_revision_id=design_revision_id,
+        camera_id=camera_id,
         request_text="swap the sofa",
-        target_entity_id="sofa-1",
-        reference_asset_id="asset-9",
+        target_entity_id=target_entity_id,
+        reference_asset_id=reference_asset_id,
         affected_region={"x": 0, "y": 0},
         protected_entity_ids=["wall-1"],
         correlation_id=None,
         dispatcher=None,
-        base_asset_id="base-1",
+        base_asset_id=base_asset_id,
         mask_asset_id="mask-1",
         ipa_weight=ipa_weight,
     )
@@ -119,6 +128,37 @@ async def test_ipa_weight_distinguishes_idempotency_keys(monkeypatch):
     assert key_default.endswith(":ipa0.85")
     assert key_zero.endswith(":ipa0.0")
     assert key_full.endswith(":ipa1.0")
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_fits_db_column_with_real_uuids(monkeypatch):
+    """Full 36-char UUIDs overflowed the JobRow.idempotency_key String(160)
+    column on Postgres (SQLite does not enforce VARCHAR length, so tests with
+    short fake ids never caught it). The key must fit and still vary per
+    ipa_weight so identical resubmissions dedupe."""
+    uuid = "f6664367-1a2b-3c4d-5e6f-0123456789ab"
+    captured = await _queue_edit(
+        monkeypatch,
+        0.85,
+        design_revision_id=uuid,
+        reference_asset_id=uuid,
+        base_asset_id=uuid,
+        target_entity_id="chair-1",
+        camera_id="default",
+    )
+    key = captured["idempotency_key"]
+    assert len(key) <= 160, key
+    # still unique per ipa_weight
+    other = await _queue_edit(
+        monkeypatch,
+        1.2,
+        design_revision_id=uuid,
+        reference_asset_id=uuid,
+        base_asset_id=uuid,
+        target_entity_id="chair-1",
+        camera_id="default",
+    )
+    assert other["idempotency_key"] != key
 
 
 @pytest.mark.asyncio

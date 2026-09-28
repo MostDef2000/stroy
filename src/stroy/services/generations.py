@@ -333,16 +333,17 @@ async def queue_reference_edit(
         payload["reference_subject_bbox"] = reference_subject_bbox
     payload["ipa_weight"] = ipa_weight
 
+    # UUID components are truncated to 12 chars so the key fits the
+    # JobRow.idempotency_key String(160) column on Postgres (SQLite does
+    # not enforce VARCHAR length, so the overflow is invisible in tests).
     idempotency_key = (
-        f"replacement:{design_revision_id}:{camera_id}:"
-        f"{target_entity_id}:{reference_asset_id}"
+        f"replacement:{design_revision_id[:12]}:{camera_id}:"
+        f"{target_entity_id}:{reference_asset_id[:12]}"
     )
     if base_asset_id:
-        idempotency_key += f":{base_asset_id}"
+        idempotency_key += f":{base_asset_id[:12]}"
     if reference_subject_bbox:
-        # Compact, length-bounded suffix: a raw list can overflow the
-        # JobRow.idempotency_key String(160) column on Postgres (SQLite does
-        # not enforce VARCHAR length, so the overflow is invisible in tests).
+        # Compact, length-bounded suffix: a raw list can overflow the column.
         bbox_hash = hashlib.sha1(str(reference_subject_bbox).encode()).hexdigest()[:12]
         idempotency_key += f":crop-{bbox_hash}"
     idempotency_key += f":ipa{ipa_weight}"
