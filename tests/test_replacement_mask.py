@@ -1,9 +1,10 @@
 """Server-side replacement mask rasterization (feather baked into the PNG)."""
 
 import io
+import types
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from stroy.editing import segmentation
 from stroy.editing.mask import render_replacement_mask
@@ -214,9 +215,16 @@ class _FakeRemBg:
 
 
 def _opaque_center(crop):
+    # Centered rectangle spans all four bands AND all four strips, so the
+    # bidirectional partial-silhouette guard accepts it; these tests target
+    # placement/dilation, not shape.
     out = Image.new("RGBA", crop.size, (255, 0, 0, 0))
     w, h = crop.size
-    ImageDraw.Draw(out).rectangle([w // 4, h // 4, w - 1 - w // 4, h - 1 - h // 4], fill=(255, 0, 0, 255))
+    mx = max(1, w * 15 // 100)
+    my = max(1, h * 5 // 100)
+    ImageDraw.Draw(out).rectangle(
+        [mx, my, w - 1 - mx, h - 1 - my], fill=(255, 0, 0, 255)
+    )
     return out
 
 
@@ -269,7 +277,7 @@ def test_segment_subject_dilates_and_softens(monkeypatch):
 
     def small(crop):
         out = Image.new("RGBA", crop.size, (0, 0, 0, 0))
-        ImageDraw.Draw(out).rectangle([40, 40, 59, 59], fill=(255, 0, 0, 255))
+        ImageDraw.Draw(out).rectangle([15, 15, 84, 84], fill=(255, 0, 0, 255))
         return out
 
     fake = _FakeRemBg(small)
@@ -352,3 +360,322 @@ def test_render_replacement_mask_silhouette_size_mismatch_falls_back(monkeypatch
     )
     assert got == expected
     assert called["count"] == 0  # guard trips before segmentation
+
+
+# ---------------------------------------------------------------------------
+# UPGRADE 1: GrabCut refinement (fake cv2 + numpy; no real OpenCV/network)
+# ---------------------------------------------------------------------------
+
+
+class _FakeArray:
+    """Minimal ndarray lookalike for the grabCut helper tests."""
+
+    def __init__(self, data):
+        self.data = data
+
+    @classmethod
+    def from_image(cls, image):
+        width, height = image.size
+        if image.mode == "RGB":
+            return cls(
+                [[[*image.getpixel((x, y))] for x in range(width)] for y in range(height)]
+            )
+        return cls([[image.getpixel((x, y)) for x in range(width)] for y in range(height)])
+
+    @classmethod
+    def zeros(cls, shape):
+        height, width = shape
+        return cls([[0] * width for _ in range(height)])
+
+    @property
+    def height(self):
+        return len(self.data)
+
+    @property
+    def width(self):
+        return len(self.data[0])
+
+    def __getitem__(self, key):
+        if (
+            isinstance(key, tuple)
+            and len(key) == 3
+            and isinstance(key[2], slice)
+            and key[2].step == -1
+        ):
+            return _FakeArray(
+                [[list(reversed(pixel)) for pixel in row] for row in self.data]
+            )
+        if isinstance(key, tuple) and len(key) == 2:
+            if isinstance(key[0], slice) and isinstance(key[1], slice):
+                rows = range(*key[0].indices(self.height))
+                cols = range(*key[1].indices(self.width))
+                return _FakeArray([[self.data[y][x] for x in cols] for y in rows])
+            return self.data[key[0]][key[1]]
+        raise TypeError(key)
+
+    def __setitem__(self, key, value):
+        if isinstance(key, tuple) and len(key) == 2:
+            self.data[key[0]][key[1]] = value
+            return
+        raise TypeError(key)
+
+    def _map(self, fn, other=None):
+        out = []
+        for y, row in enumerate(self.data):
+            other_row = other.data[y] if isinstance(other, _FakeArray) else other
+            out.append(
+                [
+                    fn(value, other_row[x] if isinstance(other_row, list) else other_row)
+                    for x, value in enumerate(row)
+                ]
+            )
+        return _FakeArray(out)
+
+    def __eq__(self, other):
+        return self._map(lambda a, b: a == b, other)
+
+    def __or__(self, other):
+        return self._map(lambda a, b: bool(a) or bool(b), other)
+
+    def __mul__(self, other):
+        return self._map(lambda a, b: a * b, other)
+
+    def astype(self, dtype):
+        return self
+
+    def copy(self):
+        return _FakeArray([list(row) for row in self.data])
+
+
+class _FakeNumpy:
+    uint8 = "uint8"
+    float64 = "float64"
+
+    @staticmethod
+    def array(image):
+        return _FakeArray.from_image(image)
+
+    @staticmethod
+    def asarray(image):
+        return _FakeArray.from_image(image)
+
+    @staticmethod
+    def zeros(shape, dtype=None):
+        return _FakeArray.zeros(shape)
+
+
+def _fake_cv2(captured):
+    def grabcut(img, mat, rect, bgd, fgd, iterations, mode):
+        captured["img"] = img
+        captured["mat"] = mat
+        captured["iterations"] = iterations
+        captured["mode"] = mode
+        for y in range(mat.height):
+            for x in range(mat.width):
+                if mat[y, x] == 2 and sum(img[y, x]) < 300:  # PR_BGD + dark pixel
+                    mat[y, x] = 3  # PR_FGD
+
+    return types.SimpleNamespace(
+        GC_BGD=0,
+        GC_FGD=1,
+        GC_PR_BGD=2,
+        GC_PR_FGD=3,
+        GC_INIT_WITH_MASK=1,
+        grabCut=grabcut,
+    )
+
+
+def test_refine_with_grabcut_seeds_and_strips_pad(monkeypatch):
+    crop = Image.new("RGB", (60, 60), "white")
+    ImageDraw.Draw(crop).rectangle([5, 5, 14, 14], fill=(0, 0, 0))
+    crop.putpixel((45, 45), (10, 20, 30))  # distinct channels for the BGR check
+    alpha = Image.new("L", (60, 60), 0)
+    ImageDraw.Draw(alpha).rectangle([30, 30, 39, 39], fill=255)
+
+    captured: dict = {}
+    monkeypatch.setattr(segmentation, "_cv2", lambda: _fake_cv2(captured))
+    monkeypatch.setattr(segmentation, "_numpy", lambda: _FakeNumpy())
+
+    def fake_fromarray(arr, mode=None):
+        data = bytes(value for row in arr.data for value in row)
+        return Image.frombytes(mode or "L", (arr.width, arr.height), data)
+
+    monkeypatch.setattr(segmentation.Image, "fromarray", fake_fromarray)
+
+    pad = 16
+    refined = segmentation._refine_with_grabcut(crop, alpha, pad)
+    assert refined is not None
+    assert refined.size == (60, 60)
+    assert refined.mode == "L"
+
+    mat = captured["mat"]
+    assert captured["mode"] == 1
+    assert captured["iterations"] == 5
+    # sure-foreground seeded from alpha > 200 at the pad offset
+    assert mat[pad + 35, pad + 35] == 1
+    # sure-background ring occupies the outer border
+    assert mat[0, 0] == 0
+    assert mat[7, 7] == 0
+    # an untouched white crop pixel stays probable background
+    assert mat[pad + 50, pad + 50] == 2
+    # the fake grabCut promoted the dark region to probable foreground
+    assert mat[pad + 10, pad + 10] == 3
+
+    # pad border stripped; seeded/promoted kept, background dropped
+    assert refined.getpixel((35, 35)) == 255
+    assert refined.getpixel((10, 10)) == 255
+    assert refined.getpixel((50, 50)) == 0
+    # BGR conversion reached cv2: RGB (10, 20, 30) -> BGR (30, 20, 10)
+    assert captured["img"][pad + 45, pad + 45] == [30, 20, 10]
+    assert captured["img"][pad + 10, pad + 10] == [0, 0, 0]
+
+
+def test_refine_with_grabcut_returns_none_without_opencv():
+    crop = Image.new("RGB", (30, 30), "white")
+    alpha = Image.new("L", (30, 30), 0)
+    # no fake injected: real cv2 is absent in the test venv
+    assert segmentation._refine_with_grabcut(crop, alpha, 16) is None
+
+
+# ---------------------------------------------------------------------------
+# UPGRADE 2: band guard
+# ---------------------------------------------------------------------------
+
+
+def test_is_partial_silhouette_full_chair_not_partial():
+    alpha = Image.new("L", (100, 200), 0)
+    ImageDraw.Draw(alpha).ellipse([2, 2, 97, 197], fill=255)
+    assert segmentation.is_partial_silhouette(alpha, (0, 0, 100, 200)) is False
+
+
+def test_is_partial_silhouette_half_chair_is_partial():
+    # v20 failure shape: bottom-heavy blob, top band empty
+    alpha = Image.new("L", (100, 200), 0)
+    ImageDraw.Draw(alpha).ellipse([10, 100, 90, 195], fill=255)
+    assert segmentation.is_partial_silhouette(alpha, (0, 0, 100, 200)) is True
+
+
+def test_is_partial_silhouette_height_sliver_is_partial():
+    alpha = Image.new("L", (100, 40), 0)
+    ImageDraw.Draw(alpha).rectangle([10, 0, 90, 4], fill=255)  # top band only
+    assert segmentation.is_partial_silhouette(alpha, (0, 0, 100, 40)) is True
+
+
+def test_is_partial_silhouette_threshold_boundary():
+    # 100x100 with only the top band thinned: 25 rows * 100 cols = 2500 px.
+    pass_alpha = Image.new("L", (100, 100), 255)
+    ImageDraw.Draw(pass_alpha).rectangle([15, 0, 99, 24], fill=0)  # 15 cols left = 15%
+    assert segmentation.is_partial_silhouette(pass_alpha, (0, 0, 100, 100)) is False
+
+    fail_alpha = Image.new("L", (100, 100), 255)
+    ImageDraw.Draw(fail_alpha).rectangle([14, 0, 99, 24], fill=0)  # 14 cols left = 14%
+    assert segmentation.is_partial_silhouette(fail_alpha, (0, 0, 100, 100)) is True
+
+
+# ---------------------------------------------------------------------------
+# UPGRADE 1+2 pipeline
+# ---------------------------------------------------------------------------
+
+
+def _full_chair_rembg(crop):
+    # Centered rectangle spans every band and strip (convex, ~75% coverage).
+    out = Image.new("RGBA", crop.size, (255, 0, 0, 0))
+    w, h = crop.size
+    mx = max(2, w * 12 // 100)
+    my = max(2, h * 12 // 100)
+    ImageDraw.Draw(out).rectangle(
+        [mx, my, w - 1 - mx, h - 1 - my], fill=(255, 0, 0, 255)
+    )
+    return out
+
+
+def _half_chair_rembg(crop):
+    out = Image.new("RGBA", crop.size, (255, 0, 0, 0))
+    ImageDraw.Draw(out).ellipse(
+        [crop.width // 5, crop.height // 2, crop.width * 4 // 5, crop.height - 3],
+        fill=(255, 0, 0, 255),
+    )
+    return out
+
+
+def test_segment_subject_full_chair_passes_through(monkeypatch):
+    base = Image.new("RGB", (120, 120), "white")
+    _patch_segmenter(monkeypatch, _FakeRemBg(_full_chair_rembg))
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
+
+    feather = 12
+    out = segmentation.segment_subject(base, (0, 0, 120, 120), feather=feather)
+    assert out is not None
+    raw = _full_chair_rembg(base).getchannel("A")
+    expected = raw.filter(ImageFilter.MaxFilter(2 * max(8, feather // 2) + 1)).filter(
+        ImageFilter.GaussianBlur(radius=feather / 2)
+    )
+    assert list(out.getdata()) == list(expected.getdata())
+
+
+def test_segment_subject_half_chair_returns_none(monkeypatch):
+    # Refinement unavailable (so the guard applies even when skipped): the
+    # bottom-heavy half mask must still be rejected.
+    base = Image.new("RGB", (120, 120), "white")
+    _patch_segmenter(monkeypatch, _FakeRemBg(_half_chair_rembg))
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
+    assert segmentation.segment_subject(base, (0, 0, 120, 120), feather=8) is None
+
+
+def test_segment_subject_horizontal_half_chair_returns_none(monkeypatch):
+    # Left half only: all horizontal bands are ~50%, but the right-most
+    # vertical strip is empty -> the bidirectional guard rejects it.
+    base = Image.new("RGB", (120, 120), "white")
+
+    def left_half(crop):
+        out = Image.new("RGBA", crop.size, (255, 0, 0, 0))
+        ImageDraw.Draw(out).rectangle(
+            [0, 0, crop.width // 2, crop.height - 1], fill=(255, 0, 0, 255)
+        )
+        return out
+
+    _patch_segmenter(monkeypatch, _FakeRemBg(left_half))
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
+    assert segmentation.segment_subject(base, (0, 0, 120, 120), feather=8) is None
+
+
+def test_refinement_recovers_partial_raw_mask(monkeypatch):
+    # Raw rembg output is a half chair, but the refined mask is a full chair:
+    # the band guard must judge the REFINED mask, so it passes here.
+    base = Image.new("RGB", (120, 120), "white")
+    _patch_segmenter(monkeypatch, _FakeRemBg(_half_chair_rembg))
+    refined = _full_chair_rembg(base).getchannel("A")
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: refined)
+
+    out = segmentation.segment_subject(base, (0, 0, 120, 120), feather=8)
+    assert out is not None
+    expected = refined.filter(ImageFilter.MaxFilter(17)).filter(
+        ImageFilter.GaussianBlur(radius=4)
+    )
+    assert list(out.getdata()) == list(expected.getdata())
+
+
+def test_refinement_raising_uses_raw_alpha(monkeypatch):
+    base = Image.new("RGB", (120, 120), "white")
+    _patch_segmenter(monkeypatch, _FakeRemBg(_full_chair_rembg))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("cv2 exploded")
+
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", boom)
+    out = segmentation.segment_subject(base, (0, 0, 120, 120), feather=8)
+    assert out is not None
+    assert out.getpixel((60, 60)) == 255
+
+
+def test_render_falls_back_when_half_chair(monkeypatch):
+    region = _region((0, 0, 120, 120), feather=8)
+    _patch_segmenter(monkeypatch, _FakeRemBg(_half_chair_rembg))
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
+
+    base = Image.new("RGB", (120, 120), "white")
+    expected = render_replacement_mask(region, 120, 120, 120, 120)
+    got = render_replacement_mask(
+        region, 120, 120, 120, 120, shape="silhouette", base_image=base
+    )
+    assert got == expected
