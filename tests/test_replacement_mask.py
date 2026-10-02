@@ -3,8 +3,9 @@
 import io
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
+from stroy.editing import segmentation
 from stroy.editing.mask import render_replacement_mask
 from stroy.editing.replacement import ReplacementRegion
 
@@ -116,3 +117,238 @@ def test_render_replacement_mask_client_override_identity_rescale():
     # identity rescale: sx=sy=1.0, so box edges land exactly where supplied
     assert img.getpixel((333, 731)) == 0  # one px left of the box
     assert img.getpixel((358, 731)) == 255  # first core column (334 + feather)
+
+
+# ---------------------------------------------------------------------------
+# Silhouette shape (segmentation is stubbed; no rembg model/network needed)
+# ---------------------------------------------------------------------------
+
+
+def _stub_alpha(size=(256, 256)):
+    alpha = Image.new("L", size, 0)
+    ImageDraw.Draw(alpha).ellipse([120, 120, 180, 180], fill=255)
+    return alpha
+
+
+def test_render_replacement_mask_silhouette_uses_segmentation(monkeypatch):
+    region = _region((100, 100, 200, 200), feather=8)
+    stub = _stub_alpha()
+    calls: dict = {}
+
+    def fake_segment(image, bbox, model=None, *, feather=0):
+        calls["bbox"] = bbox
+        calls["feather"] = feather
+        return stub
+
+    monkeypatch.setattr(segmentation, "segment_subject", fake_segment)
+    base = Image.new("RGB", (256, 256), "white")
+    mask_bytes = render_replacement_mask(
+        region, 256, 256, 256, 256, shape="silhouette", base_image=base
+    )
+    img = Image.open(io.BytesIO(mask_bytes))
+    assert img.size == (256, 256)
+    assert img.mode == "L"
+    # the segmenter output is used verbatim (it already carries the feather)
+    assert img.tobytes() == stub.tobytes()
+    # zeros outside the bbox survive
+    assert img.getpixel((0, 0)) == 0
+    assert img.getpixel((250, 250)) == 0
+    # the region bbox (target space) and clamped feather reach the segmenter
+    assert calls["bbox"] == (100, 100, 200, 200)
+    assert calls["feather"] == 8
+
+
+def test_render_replacement_mask_silhouette_falls_back_to_rectangle(monkeypatch):
+    region = _region((100, 100, 200, 200), feather=8)
+    monkeypatch.setattr(segmentation, "segment_subject", lambda *a, **k: None)
+    base = Image.new("RGB", (256, 256), "white")
+
+    expected = render_replacement_mask(region, 256, 256, 256, 256)
+    got = render_replacement_mask(
+        region, 256, 256, 256, 256, shape="silhouette", base_image=base
+    )
+    assert got == expected
+
+
+def test_render_replacement_mask_silhouette_without_image_falls_back():
+    region = _region((100, 100, 200, 200), feather=8)
+    expected = render_replacement_mask(region, 256, 256, 256, 256)
+    got = render_replacement_mask(region, 256, 256, 256, 256, shape="silhouette")
+    assert got == expected
+
+
+def test_is_degenerate_alpha_guard():
+    # <2% coverage: a single lit pixel in a 100x100 box
+    empty = Image.new("L", (100, 100), 0)
+    empty.putpixel((0, 0), 255)
+    assert segmentation.is_degenerate_alpha(empty) is True
+
+    # >98% coverage: almost the whole box is subject
+    full = Image.new("L", (100, 100), 255)
+    assert segmentation.is_degenerate_alpha(full) is True
+
+    # a plausible silhouette (~25%) is accepted
+    ok = Image.new("L", (100, 100), 0)
+    ImageDraw.Draw(ok).rectangle([10, 10, 59, 59], fill=255)
+    assert segmentation.is_degenerate_alpha(ok) is False
+
+
+# ---------------------------------------------------------------------------
+# segment_subject: real algorithm unit tests with a fake rembg module
+# ---------------------------------------------------------------------------
+
+
+class _FakeRemBg:
+    """Stands in for the lazily-imported rembg module."""
+
+    def __init__(self, cutout_fn):
+        self.cutout_fn = cutout_fn
+        self.crops: list = []
+
+    def new_session(self, model):
+        return {"model": model}
+
+    def remove(self, crop, session=None):
+        self.crops.append(crop.copy())
+        return self.cutout_fn(crop)
+
+
+def _opaque_center(crop):
+    out = Image.new("RGBA", crop.size, (255, 0, 0, 0))
+    w, h = crop.size
+    ImageDraw.Draw(out).rectangle([w // 4, h // 4, w - 1 - w // 4, h - 1 - h // 4], fill=(255, 0, 0, 255))
+    return out
+
+
+def _patch_segmenter(monkeypatch, fake):
+    monkeypatch.setattr(segmentation, "_rembg", lambda: fake)
+    monkeypatch.setattr(segmentation, "_session", lambda model: object())
+
+
+def test_segment_subject_crops_and_places_full_size(monkeypatch):
+    base = Image.new("RGB", (200, 150), "white")
+    base.putpixel((50, 40), (255, 0, 0))  # marker at the bbox origin
+    fake = _FakeRemBg(_opaque_center)
+    _patch_segmenter(monkeypatch, fake)
+
+    alpha = segmentation.segment_subject(base, (50, 40, 120, 110), feather=0)
+    assert alpha is not None
+    assert alpha.size == (200, 150)
+    assert alpha.mode == "L"
+
+    # the fake received exactly the bbox crop
+    assert fake.crops[0].size == (70, 70)
+    assert fake.crops[0].getpixel((0, 0)) == (255, 0, 0)
+
+    # silhouette placed at the bbox, zeros outside
+    assert alpha.getpixel((0, 0)) == 0
+    assert alpha.getpixel((130, 40)) == 0  # just right of bbox
+    assert alpha.getpixel((50, 20)) == 0  # just above bbox
+    assert alpha.getpixel((85, 75)) == 255  # dilated center
+
+
+def test_segment_subject_clips_bbox_to_image_edges(monkeypatch):
+    base = Image.new("RGB", (200, 150), "white")
+    fake = _FakeRemBg(_opaque_center)
+    _patch_segmenter(monkeypatch, fake)
+
+    alpha = segmentation.segment_subject(base, (-20, -10, 60, 50), feather=0)
+    assert alpha is not None
+    assert alpha.size == (200, 150)
+    # crop clipped to the in-image region (0,0)-(60,50)
+    assert fake.crops[0].size == (60, 50)
+    assert alpha.getpixel((30, 25)) > 0
+    # nothing leaks past the clipped bbox
+    assert alpha.getpixel((100, 100)) == 0
+    assert alpha.getpixel((60, 25)) == 0
+    assert alpha.getpixel((30, 50)) == 0
+
+
+def test_segment_subject_dilates_and_softens(monkeypatch):
+    base = Image.new("RGB", (100, 100), "white")
+
+    def small(crop):
+        out = Image.new("RGBA", crop.size, (0, 0, 0, 0))
+        ImageDraw.Draw(out).rectangle([40, 40, 59, 59], fill=(255, 0, 0, 255))
+        return out
+
+    fake = _FakeRemBg(small)
+    _patch_segmenter(monkeypatch, fake)
+    raw = small(base).getchannel("A")
+
+    alpha = segmentation.segment_subject(base, (0, 0, 100, 100), feather=20)
+    assert alpha is not None
+    assert segmentation.alpha_coverage(alpha) > segmentation.alpha_coverage(raw)
+    assert any(0 < value < 255 for value in alpha.getdata())  # blurred edge
+
+
+def test_segment_subject_degenerate_returns_none(monkeypatch):
+    base = Image.new("RGB", (100, 100), "white")
+
+    empty = _FakeRemBg(lambda crop: Image.new("RGBA", crop.size, (0, 0, 0, 0)))
+    _patch_segmenter(monkeypatch, empty)
+    assert segmentation.segment_subject(base, (0, 0, 100, 100), feather=8) is None
+
+    full = _FakeRemBg(lambda crop: Image.new("RGBA", crop.size, (255, 0, 0, 255)))
+    _patch_segmenter(monkeypatch, full)
+    assert segmentation.segment_subject(base, (0, 0, 100, 100), feather=8) is None
+
+
+def test_segment_subject_swallows_errors(monkeypatch):
+    base = Image.new("RGB", (100, 100), "white")
+
+    def boom(crop):
+        raise RuntimeError("onnx exploded")
+
+    _patch_segmenter(monkeypatch, _FakeRemBg(boom))
+    assert segmentation.segment_subject(base, (0, 0, 50, 50), feather=8) is None
+
+
+def test_segment_subject_empty_bbox_returns_none(monkeypatch):
+    base = Image.new("RGB", (100, 100), "white")
+    fake = _FakeRemBg(_opaque_center)
+    _patch_segmenter(monkeypatch, fake)
+
+    assert segmentation.segment_subject(base, (500, 500, 600, 600), feather=8) is None
+    assert fake.crops == []  # rembg must not even be invoked
+
+
+def test_segment_session_cache_is_per_model(monkeypatch):
+    calls: list = []
+
+    class Fake:
+        def new_session(self, model):
+            calls.append(model)
+            return {"model": model}
+
+    monkeypatch.setattr(segmentation, "_rembg", lambda: Fake())
+    monkeypatch.setattr(segmentation, "_SESSIONS", {})
+
+    first = segmentation._session("u2net")
+    second = segmentation._session("u2net")
+    assert first is second
+    assert calls == ["u2net"]
+
+
+# ---------------------------------------------------------------------------
+# FIX 3: declared-size mismatch must fall back rather than resize/distort
+# ---------------------------------------------------------------------------
+
+
+def test_render_replacement_mask_silhouette_size_mismatch_falls_back(monkeypatch):
+    region = _region((100, 100, 200, 200), feather=8)
+    called = {"count": 0}
+
+    def fake_segment(*args, **kwargs):
+        called["count"] += 1
+        return _stub_alpha((256, 256))
+
+    monkeypatch.setattr(segmentation, "segment_subject", fake_segment)
+    base = Image.new("RGB", (200, 200), "white")  # decoded size != target 256x256
+
+    expected = render_replacement_mask(region, 256, 256, 256, 256)
+    got = render_replacement_mask(
+        region, 256, 256, 256, 256, shape="silhouette", base_image=base
+    )
+    assert got == expected
+    assert called["count"] == 0  # guard trips before segmentation

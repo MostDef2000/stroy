@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
@@ -155,6 +156,14 @@ class ReplacementRequest(BaseModel):
     mask_region: list[int] | None = Field(
         default=None,
         description="Optional [x1, y1, x2, y2] mask box in base-image pixels; overrides the server-projected region.",
+    )
+    shape: Literal["rectangle", "silhouette"] = Field(
+        default="rectangle",
+        description=(
+            "Mask shape. 'rectangle' (default) keeps the feathered bbox mask; "
+            "'silhouette' derives a subject silhouette from the base image, "
+            "falling back to the rectangle when segmentation is unavailable."
+        ),
     )
 
     @model_validator(mode="after")
@@ -975,13 +984,42 @@ async def replacement_create(
             detail={"code": "unsupported_base_size", "detail": "base asset missing dimensions"},
         )
 
+    base_image_bytes: bytes | None = None
+    if payload.shape == "silhouette":
+        # Only the silhouette path needs pixel access; the rectangle mask is
+        # geometry-only. A missing/unreadable base asset degrades to fallback.
+        try:
+            base_image_bytes = await request.app.state.object_store.get_bytes(
+                base_asset.object_key
+            )
+        except Exception:  # noqa: BLE001 - fall back to the rectangle mask
+            base_image_bytes = None
+
     try:
         if region.type == "client_override":
-            # mask_region is already in base-image pixel space; identity rescale
-            mask_bytes = render_replacement_mask(region, base_w, base_h, base_w, base_h)
+            # mask_region is already in base-image pixel space; identity rescale.
+            # Offload to a thread: silhouette rendering runs rembg/U2Net CPU
+            # inference and must not block the event loop.
+            mask_bytes = await asyncio.to_thread(
+                render_replacement_mask,
+                region,
+                base_w,
+                base_h,
+                base_w,
+                base_h,
+                shape=payload.shape,
+                base_image=base_image_bytes,
+            )
         else:
-            mask_bytes = render_replacement_mask(
-                region, camera.width_px, camera.height_px, base_w, base_h
+            mask_bytes = await asyncio.to_thread(
+                render_replacement_mask,
+                region,
+                camera.width_px,
+                camera.height_px,
+                base_w,
+                base_h,
+                shape=payload.shape,
+                base_image=base_image_bytes,
             )
     except ValueError as exc:
         raise HTTPException(

@@ -12,6 +12,8 @@ from sqlalchemy import select
 from stroy.api.app import create_app
 from stroy.config import Settings
 from stroy.db.models import DesignCommandRow, GenerationManifestRow, JobRow
+from stroy.editing.mask import render_replacement_mask
+from stroy.editing.replacement import ReplacementRegion
 from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
 
@@ -1697,7 +1699,11 @@ async def test_reference_object_replacement_flow(settings):
 
 
 @pytest.mark.asyncio
-async def test_reference_object_replacement_with_mask_region(settings):
+async def test_reference_object_replacement_with_mask_region(settings, monkeypatch):
+    # Never touch the real rembg model/network: force the graceful fallback.
+    from stroy.editing import segmentation
+
+    monkeypatch.setattr(segmentation, "segment_subject", lambda *a, **k: None)
     app = create_app(settings=settings, object_store=MemoryObjectStore())
     async with app.router.lifespan_context(app):
         async with AsyncClient(
@@ -1839,6 +1845,68 @@ async def test_reference_object_replacement_with_mask_region(settings):
             assert body["affected_region"]["type"] == "client_override"
             assert body["affected_region"]["bbox_px"] == [334, 578, 654, 884]
             assert body["mask_asset_id"]
+
+            # An explicit silhouette shape is accepted by the API. rembg is not
+            # installed in the test env, so the mask must gracefully fall back
+            # to the rectangle rendering and still return 201.
+            silhouette = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": body["revision_id"],
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                    "mask_region": [334, 578, 654, 884],
+                    "shape": "silhouette",
+                },
+            )
+            assert silhouette.status_code == 201, silhouette.json()
+            assert silhouette.json()["mask_asset_id"]
+
+            # A failing object store on the base-image fetch must still return
+            # 201 with the rectangle mask (graceful degradation).
+            original_get = app.state.object_store.get_bytes
+            calls = {"count": 0}
+
+            async def flaky_get(key):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise RuntimeError("simulated object store outage")
+                return await original_get(key)
+
+            monkeypatch.setattr(app.state.object_store, "get_bytes", flaky_get)
+            store_down = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": silhouette.json()["revision_id"],
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                    "mask_region": [334, 578, 654, 884],
+                    "shape": "silhouette",
+                },
+            )
+            assert store_down.status_code == 201, store_down.json()
+            mask_id = store_down.json()["mask_asset_id"]
+
+            expected_region = ReplacementRegion(
+                type="client_override",
+                target_entity_id="object.sofa.main",
+                camera_id="camera.main",
+                bbox_px=(334, 578, 654, 884),
+                feather_px=24,
+                source="client_mask_region",
+            )
+            expected_mask = render_replacement_mask(expected_region, 1024, 1024, 1024, 1024)
+            downloaded = await client.get(
+                f"/api/v1/assets/{mask_id}", headers=headers
+            )
+            assert downloaded.status_code == 200
+            assert downloaded.content == expected_mask
 
 
 

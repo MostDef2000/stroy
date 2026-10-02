@@ -108,6 +108,16 @@ def test_replacement_request_accepts_mask_region():
     assert ReplacementRequest(**_request_kwargs()).mask_region is None
 
 
+def test_replacement_request_mask_shape_defaults_and_validates():
+    # backward compat: an absent shape is the rectangle mask
+    assert ReplacementRequest(**_request_kwargs()).shape == "rectangle"
+    assert ReplacementRequest(**_request_kwargs(), shape="rectangle").shape == "rectangle"
+    silhouette = ReplacementRequest(**_request_kwargs(), shape="silhouette")
+    assert silhouette.shape == "silhouette"
+    with pytest.raises(ValidationError):
+        ReplacementRequest(**_request_kwargs(), shape="triangle")  # type: ignore[arg-type]
+
+
 def test_replacement_request_rejects_malformed_mask_region():
     bad_regions = [
         [1, 2, 3],  # len != 4
