@@ -249,3 +249,51 @@ def test_build_plan_analyze_executor_wiring() -> None:
     assert isinstance(build_plan_analyze_executor("fake"), PlanAnalyzeExecutor)
     with pytest.raises(ValueError, match="unknown plan analyze adapter"):
         build_plan_analyze_executor("warp-drive")
+
+
+def _big_png(width: int = 3200, height: int = 2400) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    # Gaussian noise keeps the PNG far above the 1.5MB downscale threshold
+    # (a flat-color plan drawing would compress below it and skip the guard).
+    img = Image.effect_noise((width, height), 40).convert("RGB")
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _decode_data_url(url: str) -> tuple[str, bytes]:
+    header, encoded = url.split(",", 1)
+    return header, base64.b64decode(encoded)
+
+
+def test_data_url_downscales_large_plan_images() -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    from stroy.plan.qwen_plan import _data_url
+
+    header, payload = _decode_data_url(_data_url(_big_png()))
+    assert header == "data:image/jpeg;base64"
+    with Image.open(BytesIO(payload)) as img:
+        assert max(img.size) <= 2000
+
+
+def test_data_url_keeps_small_images_untouched() -> None:
+    from stroy.plan.qwen_plan import _data_url
+
+    image = _big_png(400, 300)
+    header, payload = _decode_data_url(_data_url(image))
+    assert header == "data:image/png;base64"
+    assert payload == image
+
+
+def test_downscaled_jpeg_shrinks_payload_far_below_original() -> None:
+    from stroy.plan.qwen_plan import _data_url
+
+    original = _big_png()
+    _, payload = _decode_data_url(_data_url(original))
+    assert len(payload) < len(original) // 5

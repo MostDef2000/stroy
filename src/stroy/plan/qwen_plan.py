@@ -87,6 +87,7 @@ Rules:
 
 
 def _data_url(image: bytes) -> str:
+    image = _downscale(image)
     if image.startswith(b"\x89PNG"):
         media_type = "image/png"
     elif image.startswith(b"\xff\xd8"):
@@ -95,6 +96,37 @@ def _data_url(image: bytes) -> str:
         raise AdapterProtocolError("plan adapter supports only PNG and JPEG images")
     encoded = base64.b64encode(image).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+PLAN_IMAGE_MAX_PIXELS = 2000
+"""Longest side fed to the vision model.
+
+Ollama vision encoding cost scales with image resolution; photos of plans are
+routinely 4000+ px while floor-plan parsing does not benefit beyond ~2MP.
+Downscaling here keeps adapter_timeout (300-900s) reachable on the home GPU
+box (see #23 acceptance, 26.09 vision-encoding timings)."""
+
+_DOWNSCALE_JPEG_QUALITY = 90
+
+
+def _downscale(image: bytes) -> bytes:
+    if len(image) <= 1_500_000:
+        return image  # small assets go through untouched
+    from io import BytesIO
+
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(BytesIO(image)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img.thumbnail((PLAN_IMAGE_MAX_PIXELS, PLAN_IMAGE_MAX_PIXELS))
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=_DOWNSCALE_JPEG_QUALITY)
+            return buffer.getvalue()
+    except Exception as exc:  # pragma: no cover - corrupt assets fail later anyway
+        raise AdapterProtocolError(f"plan image could not be prepared: {exc}") from exc
 
 
 def _build_messages(
