@@ -1,6 +1,7 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useState } from "react";
 import { PerspectiveCamera } from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { SceneCamera, SceneDocument, SceneEntity } from "./api";
 import {
   canonicalDimensionsToThree,
@@ -151,10 +152,12 @@ function EntityMesh({
 
 function CameraController({
   calibrated,
-  overview
+  overview,
+  resetKey
 }: {
   calibrated: SceneCamera | null;
   overview: { x: number; z: number; span: number } | null;
+  resetKey: number;
 }) {
   const { camera } = useThree();
 
@@ -216,7 +219,37 @@ function CameraController({
       0
     );
     camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-  }, [calibrated, camera, overview]);
+  }, [calibrated, camera, overview, resetKey]);
+
+  return null;
+}
+
+function OverviewOrbitControls({
+  enabled,
+  overview,
+  resetKey
+}: {
+  enabled: boolean;
+  overview: { x: number; z: number; span: number } | null;
+  resetKey: number;
+}) {
+  const { camera, gl } = useThree();
+
+  useEffect(() => {
+    if (!enabled || !(camera instanceof PerspectiveCamera)) return;
+
+    const controls = new OrbitControls(camera, gl.domElement);
+    controls.enableDamping = false;
+    controls.enablePan = true;
+    controls.screenSpacePanning = true;
+    controls.minDistance = Math.max(1.5, (overview?.span ?? 6) * 0.15);
+    controls.maxDistance = Math.max(30, (overview?.span ?? 6) * 4);
+    controls.maxPolarAngle = Math.PI / 2 - 0.03;
+    controls.target.set(overview?.x ?? 0, overview ? 1.1 : 0.8, overview?.z ?? 0);
+    controls.update();
+
+    return () => controls.dispose();
+  }, [camera, enabled, gl, overview, resetKey]);
 
   return null;
 }
@@ -225,6 +258,7 @@ export function SceneViewer({ scene }: { scene: SceneDocument | null }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cameraId, setCameraId] = useState<string>("overview");
   const [debugLocks, setDebugLocks] = useState(false);
+  const [viewResetKey, setViewResetKey] = useState(0);
   const entities = useMemo(() => scene?.entities ?? [], [scene]);
   const renderableEntities = useMemo(
     () => entities.filter((entity) => !isPlanSemanticOnly(entity)),
@@ -265,6 +299,15 @@ export function SceneViewer({ scene }: { scene: SceneDocument | null }) {
           </button>
         ))}
         <button
+          type="button"
+          className="secondary"
+          onClick={() => setViewResetKey((value) => value + 1)}
+          disabled={cameraId !== "overview"}
+          title={cameraId === "overview" ? "Reset overview camera" : "Switch to Overview to reset view"}
+        >
+          Reset view
+        </button>
+        <button
           className={debugLocks ? "secondary active" : "secondary"}
           onClick={() => setDebugLocks((value) => !value)}
         >
@@ -281,7 +324,12 @@ export function SceneViewer({ scene }: { scene: SceneDocument | null }) {
         }
       >
         <Canvas camera={{ position: [6, 5, 6], fov: 45 }}>
-          <CameraController calibrated={calibrated} overview={overview} />
+          <CameraController calibrated={calibrated} overview={overview} resetKey={viewResetKey} />
+          <OverviewOrbitControls
+            enabled={cameraId === "overview"}
+            overview={overview}
+            resetKey={viewResetKey}
+          />
           <ambientLight intensity={1.4} />
           <directionalLight position={[4, 8, 4]} intensity={2} />
           <gridHelper args={[12, 24]} />
@@ -318,7 +366,7 @@ export function SceneViewer({ scene }: { scene: SceneDocument | null }) {
               </span>
             </>
           ) : (
-            "click an entity to inspect its semantic ID"
+            "drag to orbit · wheel to zoom · right-drag to pan · click an entity to inspect"
           )}
         </div>
       </div>
