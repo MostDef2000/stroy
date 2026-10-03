@@ -206,6 +206,85 @@ export type RedesignResponse = {
   reference_asset_id: string;
 };
 
+export type PlanScaleSource = "plan_label" | "manual" | "unknown";
+
+export type PlanScale = {
+  source: PlanScaleSource;
+  mm_per_px: number | null;
+};
+
+export type PlanOpeningKind = "door" | "window" | "arch";
+
+export type PlanOpening = {
+  id: string;
+  kind: PlanOpeningKind;
+  t: number;
+  width_mm: number;
+  height_mm: number;
+  sill_mm: number | null;
+};
+
+export type PlanWall = {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  thickness_mm: number;
+  openings: PlanOpening[];
+};
+
+export type PlanRoom = {
+  id: string;
+  name: string;
+  wall_ids: string[];
+  floor_finish: string | null;
+};
+
+export type PlanFloor = {
+  name: string;
+  level_mm: number;
+  walls: PlanWall[];
+  rooms: PlanRoom[];
+};
+
+export type PlanDraft = {
+  version: string;
+  units: "mm";
+  scale: PlanScale;
+  floors: PlanFloor[];
+};
+
+export type PlanAnalyzeHints = {
+  known_wall_length_mm?: number;
+  wall_asset_index?: number;
+  length_mm?: number;
+};
+
+export type PlanAnalyzeResponse = Job & { job_id: string; draft_id: string | null };
+
+export type PlanDraftResponse = {
+  draft_id: string;
+  project_id: string;
+  version: number;
+  status: string;
+  job_id: string | null;
+  created_at: string;
+  draft: PlanDraft;
+};
+
+export type PlanDraftSaveResponse = {
+  draft_id: string;
+  project_id: string;
+  version: number;
+  status: string;
+};
+
+export type PlanCommitResponse = {
+  revision_id: string;
+  content_hash: string;
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
 
@@ -440,6 +519,35 @@ export const api = {
 
   assetUrl(assetId: string) {
     return apiPath(`/api/v1/assets/${assetId}`);
+  },
+
+  analyzePlan(projectId: string, assetIds: string[], hints: PlanAnalyzeHints = {}) {
+    return request<PlanAnalyzeResponse>(`/api/v1/projects/${projectId}/plan/analyze`, {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds, hints })
+    });
+  },
+
+  async getPlanDraft(projectId: string): Promise<PlanDraftResponse | null> {
+    const response = await fetch(apiPath(`/api/v1/projects/${projectId}/plan/draft`), {
+      credentials: "include"
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+    return response.json();
+  },
+
+  savePlanDraft(projectId: string, draft: PlanDraft) {
+    return request<PlanDraftSaveResponse>(`/api/v1/projects/${projectId}/plan/draft`, {
+      method: "PUT",
+      body: JSON.stringify({ draft })
+    });
+  },
+
+  commitPlanDraft(projectId: string) {
+    return request<PlanCommitResponse>(`/api/v1/projects/${projectId}/plan/draft/commit`, {
+      method: "POST"
+    });
   },
 
   cancelJob(jobId: string) {

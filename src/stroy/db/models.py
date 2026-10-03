@@ -88,6 +88,21 @@ class StyleProfileRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PlanDraftRow(Base):
+    __tablename__ = "plan_drafts"
+    __table_args__ = (
+        Index("ix_plan_drafts_project_version", "project_id", "version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    draft_json: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GenerationManifestRow(Base):
     __tablename__ = "generation_manifests"
 

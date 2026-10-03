@@ -131,7 +131,7 @@ async def test_comfy_provenance():
 
 def test_capability_parsing():
     # Default
-    assert parse_capabilities(None) == ["llm", "style_analysis", "image_generation", "image_edit", "blender_render", "geometry_quality"]
+    assert parse_capabilities(None) == ["llm", "style_analysis", "plan_analyze", "image_generation", "image_edit", "blender_render", "geometry_quality"]
     
     # Custom valid
     assert parse_capabilities("style_analysis, image_generation") == ["style_analysis", "image_generation"]

@@ -15,6 +15,7 @@ import {
 import { CameraPanel } from "./CameraPanel";
 import { DesignPanel } from "./DesignPanel";
 import { PhotoEditPanel } from "./PhotoEditPanel";
+import { PlanEditor } from "./PlanEditor";
 import { ReplacementPanel } from "./ReplacementPanel";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
@@ -450,6 +451,15 @@ export default function App() {
         )}
 
         {preparingScene && <section className="status-panel muted">Preparing workspace…</section>}
+
+        {selected && (
+          <PlanEditor
+            projectId={selected}
+            assets={assets}
+            jobs={jobs}
+            onChanged={() => refreshProject(selected)}
+          />
+        )}
 
         {selected && revision && (
           <PhotoEditPanel
