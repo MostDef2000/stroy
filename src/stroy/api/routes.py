@@ -30,11 +30,13 @@ from stroy.services.cameras import remove_camera, upsert_camera
 from stroy.editing import resolve_replacement_region
 from stroy.editing.mask import render_replacement_mask
 from stroy.services.generations import (
+    create_black_reference_asset,
     ensure_generation_payload,
     list_generation_manifests,
     persist_generation_manifest,
     queue_design_generation,
     queue_reference_edit,
+    queue_reference_redesign,
     resolve_base_asset_for_edit,
 )
 from stroy.services.jobs import (
@@ -52,6 +54,7 @@ from stroy.services.renders import list_render_manifests, persist_render_manifes
 from stroy.services.styles import create_style_profile_from_job, list_style_profiles
 from stroy.services.scenes import (
     apply_scene_command,
+    create_noop_revision,
     create_project,
     initialize_scene,
     latest_revision,
@@ -137,9 +140,12 @@ class GeometryDiagnosticRequest(BaseModel):
 
 class ReplacementRequest(BaseModel):
     base_revision_id: str = Field(min_length=1)
-    target_entity_id: str = Field(min_length=1)
-    reference_asset_id: str = Field(min_length=1)
-    camera_id: str = Field(min_length=1)
+    # Photo-first replacement: a client mask_region fully describes the edit,
+    # so the canonical scene entity/camera are optional. When mask_region is
+    # absent BOTH remain required (the server projects the entity region).
+    target_entity_id: str | None = Field(default=None, min_length=1)
+    reference_asset_id: str | None = Field(default=None, min_length=1)
+    camera_id: str | None = Field(default=None, min_length=1)
     base_asset_id: str | None = Field(default=None, min_length=1)
     reference_subject_bbox: list[int] | None = Field(default=None)
     prompt: str = Field(
@@ -185,7 +191,36 @@ class ReplacementRequest(BaseModel):
                 raise ValueError(
                     "mask_region must be [x1, y1, x2, y2] with x1<x2, y1<y2, all >= 0"
                 )
+        else:
+            # No client mask_region -> the server must project the canonical
+            # entity region, which requires both the target entity and camera.
+            missing = [
+                name
+                for name, value in (
+                    ("target_entity_id", self.target_entity_id),
+                    ("camera_id", self.camera_id),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(
+                    "target_entity_id and camera_id are required when "
+                    "mask_region is absent (missing: " + ", ".join(missing) + ")"
+                )
         return self
+
+
+class RedesignRequest(BaseModel):
+    base_revision_id: str = Field(min_length=1)
+    base_asset_id: str | None = Field(default=None, min_length=1)
+    reference_asset_id: str | None = Field(default=None, min_length=1)
+    prompt: str = Field(min_length=1, max_length=4000)
+    negative_prompt: str = Field(
+        default="blurry, distorted, low quality, watermark, text",
+        max_length=4000,
+    )
+    strength: float = Field(default=0.6, ge=0.2, le=0.95)
+    seed: int | None = None
 
 
 class GenerationRequest(BaseModel):
@@ -852,52 +887,65 @@ async def replacement_create(
             },
         )
 
-    reference = await session.get(AssetRow, payload.reference_asset_id)
-    if reference is None or reference.project_id != project_id:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "invalid_reference_asset",
-                "asset_id": payload.reference_asset_id,
-            },
-        )
-    if reference.role != "reference" or not reference.media_type.startswith("image/"):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "invalid_reference_asset",
-                "detail": "replacement reference must be an image asset with role=reference",
-            },
-        )
+    # A reference image is optional: Remove/Restyle photo-first actions carry
+    # no reference. When absent the server binds the workflow's reference slot
+    # to a synthetic 1x1 black asset (created below, once the base is known)
+    # and the IP-Adapter weight is forced to 0.0.
+    has_reference = payload.reference_asset_id is not None
+    reference: AssetRow | None = None
+    if has_reference:
+        reference = await session.get(AssetRow, payload.reference_asset_id)
+        if reference is None or reference.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_reference_asset",
+                    "asset_id": payload.reference_asset_id,
+                },
+            )
+        if reference.role != "reference" or not reference.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_reference_asset",
+                    "detail": "replacement reference must be an image asset with role=reference",
+                },
+            )
 
     scene = Scene.model_validate(current.scene_json)
-    target = next(
-        (entity for entity in scene.entities if entity.id == payload.target_entity_id),
-        None,
-    )
-    if target is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "unknown_entity", "entity_id": payload.target_entity_id},
+    # Photo-first (mask_region-only) requests skip canonical scene resolution
+    # entirely: no entity/camera lookup, so missing scene objects cannot 422.
+    target = None
+    if payload.target_entity_id is not None:
+        target = next(
+            (entity for entity in scene.entities if entity.id == payload.target_entity_id),
+            None,
         )
-    if target.kind.value != "furniture":
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "invalid_replacement_target",
-                "detail": "replacement target must be furniture",
-            },
-        )
+        if target is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "unknown_entity", "entity_id": payload.target_entity_id},
+            )
+        if target.kind.value != "furniture":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_replacement_target",
+                    "detail": "replacement target must be furniture",
+                },
+            )
 
-    camera = next(
-        (item for item in scene.cameras if item.id == payload.camera_id),
-        None,
-    )
-    if camera is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "unknown_camera", "camera_id": payload.camera_id},
+    camera = None
+    if payload.camera_id is not None:
+        camera = next(
+            (item for item in scene.cameras if item.id == payload.camera_id),
+            None,
         )
+        if camera is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "unknown_camera", "camera_id": payload.camera_id},
+            )
 
     try:
         region = resolve_replacement_region(target, camera, payload.mask_region)
@@ -933,26 +981,30 @@ async def replacement_create(
                     "detail": "base asset must be an image",
                 },
             )
-        result = await session.execute(
-            select(GenerationManifestRow).where(
-                GenerationManifestRow.project_id == project_id,
-                GenerationManifestRow.camera_id == payload.camera_id,
+        if payload.camera_id is not None:
+            # Legacy full requests still guard against pinning a base image
+            # from another camera. Photo-first requests carry no camera, so
+            # there is no camera identity to verify against.
+            result = await session.execute(
+                select(GenerationManifestRow).where(
+                    GenerationManifestRow.project_id == project_id,
+                    GenerationManifestRow.camera_id == payload.camera_id,
+                )
             )
-        )
-        manifests = result.scalars().all()
-        same_camera = any(
-            base_asset.id in (m.manifest_json.get("output_asset_ids") or [])
-            for m in manifests
-        )
-        if not same_camera:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "invalid_base_asset",
-                    "asset_id": payload.base_asset_id,
-                    "detail": "base asset was rendered from a different camera; pin a base image from the same camera view",
-                },
+            manifests = result.scalars().all()
+            same_camera = any(
+                base_asset.id in (m.manifest_json.get("output_asset_ids") or [])
+                for m in manifests
             )
+            if not same_camera:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "invalid_base_asset",
+                        "asset_id": payload.base_asset_id,
+                        "detail": "base asset was rendered from a different camera; pin a base image from the same camera view",
+                    },
+                )
     else:
         base_asset = await resolve_base_asset_for_edit(
             session, project_id, payload.camera_id, current.id
@@ -1014,8 +1066,8 @@ async def replacement_create(
             mask_bytes = await asyncio.to_thread(
                 render_replacement_mask,
                 region,
-                camera.width_px,
-                camera.height_px,
+                camera.width_px if camera is not None else base_w,
+                camera.height_px if camera is not None else base_h,
                 base_w,
                 base_h,
                 shape=payload.shape,
@@ -1027,7 +1079,7 @@ async def replacement_create(
             detail={"code": "mask_degenerate", "detail": str(exc)},
         ) from exc
 
-    mask_filename = f"replacement-mask-{target.id}.png"
+    mask_filename = f"replacement-mask-{target.id if target is not None else 'region'}.png"
     object_key = f"projects/{project_id}/{uuid4()}.png"
     await request.app.state.object_store.put_bytes(
         object_key, mask_bytes, "image/png"
@@ -1046,7 +1098,7 @@ async def replacement_create(
         metadata_json={
             "width_px": base_w,
             "height_px": base_h,
-            "target_entity_id": target.id,
+            "target_entity_id": target.id if target is not None else None,
             "bbox_px": region.bbox_px,
             "feather_px": region.feather_px,
             "source": "replacement_mask",
@@ -1056,29 +1108,70 @@ async def replacement_create(
     await session.commit()
     await session.refresh(mask_asset)
 
-    command = DesignCommand(
-        command_id=str(uuid4()),
-        base_revision_id=current.id,
-        operation="replace_object_from_reference",
-        target_id=target.id,
-        parameters={},
-        reference_asset_ids=[reference.id],
-        origin="user",
-        request_text=payload.prompt,
-    )
-    try:
-        revision = await apply_scene_command(
+    if not has_reference:
+        # Bind the workflow's reference slot to the same synthetic 1x1 black
+        # asset the redesign path uses; the IP-Adapter weight is forced to 0.0
+        # in queue_reference_edit, so the placeholder contributes nothing.
+        reference = await create_black_reference_asset(
             session,
-            project_id,
-            command,
-            correlation_id=request.state.request_id,
+            object_store=request.app.state.object_store,
+            project_id=project_id,
+            base_asset_id=base_asset.id,
+            source="replacement_black_reference",
+            original_name="replacement-black-reference.png",
         )
-    except (ValueError, CommandRejected) as exc:
-        raise _domain_conflict(exc) from exc
 
-    next_scene = Scene.model_validate(revision.scene_json)
-    next_target = next(entity for entity in next_scene.entities if entity.id == target.id)
-    next_camera = next(camera for camera in next_scene.cameras if camera.id == payload.camera_id)
+    if target is not None:
+        # Canonical-scene replacement: mutate the scene and record the command.
+        command = DesignCommand(
+            command_id=str(uuid4()),
+            base_revision_id=current.id,
+            operation="replace_object_from_reference",
+            target_id=target.id,
+            parameters={},
+            reference_asset_ids=[reference.id],
+            origin="user",
+            request_text=payload.prompt,
+        )
+        try:
+            revision = await apply_scene_command(
+                session,
+                project_id,
+                command,
+                correlation_id=request.state.request_id,
+            )
+        except (ValueError, CommandRejected) as exc:
+            raise _domain_conflict(exc) from exc
+
+        next_scene = Scene.model_validate(revision.scene_json)
+        next_target = next(
+            entity for entity in next_scene.entities if entity.id == target.id
+        )
+        next_camera = next(
+            camera for camera in next_scene.cameras if camera.id == payload.camera_id
+        )
+        command_view: dict[str, Any] | None = command.model_dump(
+            mode="json", exclude_none=True
+        )
+        queue_target_entity_id: str | None = next_target.id
+        queue_camera_id: str | None = next_camera.id
+    else:
+        # Photo-first replacement: there is no canonical entity/camera to
+        # mutate. Record lineage with a no-op revision (no DesignCommandRow)
+        # and queue a client-mask edit against the pinned base image.
+        try:
+            revision = await create_noop_revision(
+                session,
+                project_id,
+                parent_revision_id=current.id,
+                scene=scene,
+            )
+        except (ValueError, CommandRejected) as exc:
+            raise _domain_conflict(exc) from exc
+        next_scene = scene
+        command_view = None
+        queue_target_entity_id = None
+        queue_camera_id = None
 
     protected_entity_ids = [
         entity.id
@@ -1093,9 +1186,9 @@ async def replacement_create(
         session,
         project_id=project_id,
         design_revision_id=revision.id,
-        camera_id=next_camera.id,
+        camera_id=queue_camera_id,
         request_text=payload.prompt,
-        target_entity_id=next_target.id,
+        target_entity_id=queue_target_entity_id,
         reference_asset_id=reference.id,
         affected_region=region.model_dump(mode="json"),
         protected_entity_ids=protected_entity_ids,
@@ -1105,16 +1198,158 @@ async def replacement_create(
         mask_asset_id=mask_asset.id,
         reference_subject_bbox=payload.reference_subject_bbox,
         ipa_weight=payload.ipa_weight,
+        has_reference=has_reference,
     )
     return {
         "revision_id": revision.id,
         "content_hash": revision.content_hash,
         "scene": revision.scene_json,
-        "command": command.model_dump(mode="json", exclude_none=True),
+        "command": command_view,
         "affected_region": region.model_dump(mode="json"),
         "job": job_view(edit_job),
         "base_asset_id": base_asset.id,
         "mask_asset_id": mask_asset.id,
+        "reference_asset_id": reference.id,
+        # When no reference was supplied the IP-Adapter weight is forced to
+        # 0.0 server-side; surface the effective value for the client.
+        "ipa_weight": payload.ipa_weight if has_reference else 0.0,
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/redesigns",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def redesign_create(
+    project_id: str,
+    payload: RedesignRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    current = await latest_revision(session, project_id)
+    if current is None:
+        raise HTTPException(status_code=409, detail="scene is not initialized")
+    if current.id != payload.base_revision_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "revision_conflict",
+                "detail": (
+                    f"stale base revision: expected {current.id}, "
+                    f"got {payload.base_revision_id}"
+                ),
+            },
+        )
+
+    # Resolve the base photo: an explicit base_asset_id pins the uploaded
+    # photo; otherwise fall back to the lineage walk (no camera filter:
+    # photo-first).
+    if payload.base_asset_id is not None:
+        base_asset = await session.get(AssetRow, payload.base_asset_id)
+        if base_asset is None or base_asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_base_asset",
+                    "asset_id": payload.base_asset_id,
+                },
+            )
+        if not base_asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_base_asset",
+                    "asset_id": payload.base_asset_id,
+                    "detail": "base asset must be an image",
+                },
+            )
+    else:
+        base_asset = await resolve_base_asset_for_edit(
+            session, project_id, None, current.id
+        )
+        if base_asset is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_base_image_available",
+                    "detail": "upload or generate a room photo before redesigning",
+                },
+            )
+        if not base_asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_base_image_available",
+                    "detail": f"asset {base_asset.id} is not an image",
+                },
+            )
+
+    reference_asset: AssetRow | None = None
+    if payload.reference_asset_id is not None:
+        reference_asset = await session.get(AssetRow, payload.reference_asset_id)
+        if reference_asset is None or reference_asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_reference_asset",
+                    "asset_id": payload.reference_asset_id,
+                },
+            )
+        if reference_asset.role != "reference" or not reference_asset.media_type.startswith(
+            "image/"
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_reference_asset",
+                    "detail": "redesign reference must be an image asset with role=reference",
+                },
+            )
+    else:
+        # Prompt-only restyle: store a synthetic 1x1 black reference so the
+        # graph's reference_image slot stays bound; ipa weight is forced 0.0.
+        reference_asset = await create_black_reference_asset(
+            session,
+            object_store=request.app.state.object_store,
+            project_id=project_id,
+            base_asset_id=base_asset.id,
+            source="redesign_black_reference",
+            original_name="redesign-black-reference.png",
+        )
+
+    scene = Scene.model_validate(current.scene_json)
+    try:
+        revision = await create_noop_revision(
+            session,
+            project_id,
+            parent_revision_id=current.id,
+            scene=scene,
+        )
+    except (ValueError, CommandRejected) as exc:
+        raise _domain_conflict(exc) from exc
+
+    redesign_job = await queue_reference_redesign(
+        session,
+        project_id=project_id,
+        design_revision_id=revision.id,
+        request_text=payload.prompt,
+        base_asset_id=base_asset.id,
+        reference_asset_id=reference_asset.id,
+        strength=payload.strength,
+        negative_prompt=payload.negative_prompt,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+        seed=payload.seed,
+        has_reference=payload.reference_asset_id is not None,
+    )
+    return {
+        "revision_id": revision.id,
+        "content_hash": revision.content_hash,
+        "job": job_view(redesign_job),
+        "base_asset_id": base_asset.id,
+        "reference_asset_id": reference_asset.id,
     }
 
 

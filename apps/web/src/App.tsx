@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   Asset,
@@ -14,9 +14,15 @@ import {
 } from "./api";
 import { CameraPanel } from "./CameraPanel";
 import { DesignPanel } from "./DesignPanel";
+import { PhotoEditPanel } from "./PhotoEditPanel";
 import { ReplacementPanel } from "./ReplacementPanel";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
+
+// Post-MVP "twin" machinery (canonical 3D scene, camera calibration, geometry
+// diagnostics, style analysis) is hidden behind this flag. The photo-first
+// flow above is the primary surface; flip to true to bring the old panels back.
+const SHOW_ADVANCED_PANELS = false;
 
 function goldenRoom(projectId: string): SceneDocument {
   return {
@@ -151,6 +157,9 @@ export default function App() {
   const [uploadRole, setUploadRole] = useState<AssetRole>("apartment");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [message, setMessage] = useState("");
+  const [sceneReadyFor, setSceneReadyFor] = useState<string | null>(null);
+  const [preparingScene, setPreparingScene] = useState(false);
+  const sceneInitAttempted = useRef<Set<string>>(new Set());
 
   const refreshProjectsAndWorkers = useCallback(async () => {
     const [projectList, workerList] = await Promise.all([api.projects(), api.workers()]);
@@ -174,6 +183,7 @@ export default function App() {
     setJobs(projectJobs);
     setGenerations(projectGenerations);
     setStyleProfiles(projectStyles);
+    setSceneReadyFor(projectId);
   }, []);
 
   useEffect(() => {
@@ -193,10 +203,28 @@ export default function App() {
       setJobs([]);
       setGenerations([]);
       setStyleProfiles([]);
+      setSceneReadyFor(null);
+      setPreparingScene(false);
       return;
     }
     refreshProject(selected).catch((error) => setMessage(String(error)));
   }, [selected, refreshProject]);
+
+  // Photo-first flow needs a scene revision as its lineage anchor. When a
+  // project genuinely has no scene (only known after the first scene fetch),
+  // initialize the same golden-room scene the manual button creates. Once per
+  // project; idempotent, and a no-op when a scene already exists.
+  useEffect(() => {
+    if (!authenticated || !selected || sceneReadyFor !== selected) return;
+    if (revision || sceneInitAttempted.current.has(selected)) return;
+    sceneInitAttempted.current.add(selected);
+    setPreparingScene(true);
+    api
+      .createScene(selected, goldenRoom(selected))
+      .then(() => refreshProject(selected))
+      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
+      .finally(() => setPreparingScene(false));
+  }, [authenticated, selected, sceneReadyFor, revision, refreshProject]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -384,12 +412,14 @@ export default function App() {
             {selected && (
               <>
                 <button onClick={() => void queueFakeGeneration()}>Test generation</button>
-                <div className="style-analyze-group">
-                  <button onClick={() => void analyzeStyleFromReferences()}>Анализ стиля</button>
-                  <p className="hint" id="style-hint">
-                    Анализ стиля требует 3–5 изображений с ролью «reference». Сейчас: {assets.filter(a => a.role === "reference" && a.media_type.startsWith("image/")).length}.
-                  </p>
-                </div>
+                {SHOW_ADVANCED_PANELS && (
+                  <div className="style-analyze-group">
+                    <button onClick={() => void analyzeStyleFromReferences()}>Анализ стиля</button>
+                    <p className="hint" id="style-hint">
+                      Анализ стиля требует 3–5 изображений с ролью «reference». Сейчас: {assets.filter(a => a.role === "reference" && a.media_type.startsWith("image/")).length}.
+                    </p>
+                  </div>
+                )}
                 <div className="upload-controls">
                   <select
                     value={uploadRole}
@@ -419,9 +449,24 @@ export default function App() {
           </div>
         )}
 
-        <section className="canvas-panel">
-          <SceneViewer scene={revision?.scene ?? null} />
-        </section>
+        {preparingScene && <section className="status-panel muted">Preparing workspace…</section>}
+
+        {selected && revision && (
+          <PhotoEditPanel
+            projectId={selected}
+            revision={revision}
+            assets={assets}
+            jobs={jobs}
+            generations={generations}
+            onChanged={() => refreshProject(selected)}
+          />
+        )}
+
+        {SHOW_ADVANCED_PANELS && (
+          <section className="canvas-panel">
+            <SceneViewer scene={revision?.scene ?? null} />
+          </section>
+        )}
 
         <form className="instruction-bar" onSubmit={submitInstruction}>
           <input
@@ -434,7 +479,7 @@ export default function App() {
         </form>
 
         <section className="dashboard-grid">
-          {selected && revision && (
+          {SHOW_ADVANCED_PANELS && selected && revision && (
             <CameraPanel
               projectId={selected}
               revision={revision}

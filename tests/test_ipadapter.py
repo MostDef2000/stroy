@@ -18,7 +18,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from stroy.api.routes import ReplacementRequest
+from stroy.api.routes import RedesignRequest, ReplacementRequest
 from stroy.domain.models import Camera, SceneEntity
 from stroy.editing import resolve_replacement_region
 from stroy.generation import WorkflowManifest
@@ -26,6 +26,7 @@ from stroy.services import generations as gens
 from stroy.worker.executors import ComfyUIExecutor
 
 REPO_MANIFEST = Path("workflows/image-edit-kontext-v0.manifest.json")
+REDESIGN_MANIFEST = Path("workflows/image-redesign-reference-v1.manifest.json")
 
 
 def _edit_manifest() -> WorkflowManifest:
@@ -508,3 +509,269 @@ async def test_executor_derives_control_image_from_v02_payload():
     graph = adapter.submitted_graph
     assert graph is not None
     assert graph["25"]["inputs"]["image"] == "control_image_asset-ref.png"
+
+
+# ---------------------------------------------------------------------------
+# Photo-first replacement: mask_region-only requests need no entity/camera
+# ---------------------------------------------------------------------------
+
+
+def test_replacement_request_mask_only_needs_no_entity_or_camera():
+    request = ReplacementRequest(
+        base_revision_id="rev-1",
+        reference_asset_id="asset-9",
+        mask_region=[10, 10, 100, 100],
+    )
+    assert request.target_entity_id is None
+    assert request.camera_id is None
+    assert request.mask_region == [10, 10, 100, 100]
+
+
+def test_replacement_request_without_mask_requires_entity_and_camera():
+    with pytest.raises(ValidationError, match="target_entity_id"):
+        ReplacementRequest(
+            base_revision_id="rev-1",
+            reference_asset_id="asset-9",
+        )
+    with pytest.raises(ValidationError, match="camera_id"):
+        ReplacementRequest(
+            base_revision_id="rev-1",
+            reference_asset_id="asset-9",
+            target_entity_id="sofa-1",
+        )
+    # old full shape still accepted
+    full = ReplacementRequest(**_request_kwargs())
+    assert full.target_entity_id == "sofa-1"
+    assert full.camera_id == "default"
+
+
+def test_resolve_replacement_region_mask_only_without_scene():
+    region = resolve_replacement_region(None, None, [334, 578, 654, 884])
+    assert region.type == "client_override"
+    assert region.target_entity_id is None
+    assert region.camera_id is None
+    assert region.bbox_px == (334, 578, 654, 884)
+    # projected branch is unreachable without entity/camera
+    with pytest.raises(ValueError):
+        resolve_replacement_region(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_edit_mask_only_payload(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_edit(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        camera_id=None,
+        request_text="remove the sofa",
+        target_entity_id=None,
+        reference_asset_id="asset-9",
+        affected_region={"type": "client_override"},
+        protected_entity_ids=[],
+        correlation_id=None,
+        dispatcher=None,
+        base_asset_id="base-1",
+        mask_asset_id="mask-1",
+    )
+    payload = captured["payload"]
+    assert payload["replacement"]["target_entity_id"] is None
+    assert payload["affected_entity_ids"] == []
+    assert payload["generation"]["camera_id"] == "default"
+    assert payload["generation"]["structured_conditioning"]["affected_entity_ids"] == []
+    assert ":region:" in captured["idempotency_key"]
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_edit_without_reference_forces_zero_weight(monkeypatch):
+    """has_reference=False mirrors queue_reference_redesign: the requested
+    ipa_weight is forced to 0.0, the payload reports no real reference, the
+    synthetic black asset stays bound to the reference slot, and the
+    idempotency key carries a 'noreference' marker."""
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_edit(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        camera_id=None,
+        request_text="remove the sofa",
+        target_entity_id=None,
+        reference_asset_id="black-1",
+        affected_region={"type": "client_override"},
+        protected_entity_ids=[],
+        correlation_id=None,
+        dispatcher=None,
+        base_asset_id="base-1",
+        mask_asset_id="mask-1",
+        ipa_weight=1.5,
+        has_reference=False,
+    )
+    payload = captured["payload"]
+    assert payload["ipa_weight"] == 0.0
+    assert payload["replacement"]["reference_asset_id"] is None
+    assert (
+        payload["generation"]["structured_conditioning"][
+            "replacement_reference_asset_id"
+        ]
+        is None
+    )
+    # the synthetic black asset is still bound to reference/control slots
+    assert payload["asset_roles"]["reference_image"] == "black-1"
+    assert payload["asset_roles"]["control_image"] == "black-1"
+    assert "black-1" in payload["input_asset_ids"]
+    assert ":noreference" in captured["idempotency_key"]
+    assert captured["idempotency_key"].endswith(":ipa0.0")
+
+
+# ---------------------------------------------------------------------------
+# Reference-based room redesign (image-redesign-reference-v1)
+# ---------------------------------------------------------------------------
+
+
+def _redesign_manifest() -> WorkflowManifest:
+    return WorkflowManifest.model_validate_json(REDESIGN_MANIFEST.read_text())
+
+
+def test_redesign_manifest_validates_and_node_subset():
+    manifest = _redesign_manifest()
+    assert manifest.id == "image-redesign-reference-v1"
+    assert manifest.model_profile == "flux-dev-family"
+    assert manifest.required_inputs == [
+        "prompt",
+        "negative_prompt",
+        "seed",
+        "strength",
+        "base_image",
+        "reference_image",
+    ]
+    edit_classes = {
+        node["class_type"] for node in _edit_manifest().graph.values()
+    }
+    redesign_classes = {
+        node["class_type"] for node in manifest.graph.values()
+    }
+    assert redesign_classes <= (edit_classes | {"VAEEncode"})
+    assert "VAEEncodeForInpaint" not in redesign_classes
+    assert "EmptySD3LatentImage" not in redesign_classes
+
+
+def test_redesign_manifest_materializes_strength_and_img2img():
+    manifest = _redesign_manifest()
+    graph = manifest.materialize(
+        {
+            "prompt": "warm scandinavian living room",
+            "negative_prompt": "blurry",
+            "seed": 42,
+            "strength": 0.7,
+            "base_image": "base.png",
+            "reference_image": "ref.png",
+        }
+    )
+    assert graph["6"]["inputs"]["image"] == "base.png"
+    assert graph["25"]["inputs"]["image"] == "ref.png"
+    assert graph["9"]["inputs"]["text"] == "warm scandinavian living room"
+    assert graph["10"]["inputs"]["text"] == "blurry"
+    assert graph["13"]["inputs"]["seed"] == 42
+    # strength drives KSampler.denoise; base latent is plain VAEEncode (img2img)
+    assert graph["13"]["inputs"]["denoise"] == 0.7
+    assert graph["8"]["class_type"] == "VAEEncode"
+    assert graph["8"]["inputs"]["pixels"] == ["6", 0]
+    assert graph["13"]["inputs"]["latent_image"] == ["8", 0]
+    assert graph["13"]["inputs"]["positive"] == ["11", 0]
+    assert graph["13"]["inputs"]["negative"] == ["10", 0]
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
+    assert graph["27"]["inputs"]["image"] == ["25", 0]
+
+
+def test_redesign_request_strength_bounds():
+    ok = RedesignRequest(
+        base_revision_id="rev-1", prompt="restyle", strength=0.6
+    )
+    assert ok.strength == 0.6
+    assert ok.reference_asset_id is None
+    for bad in (0.19, 0.96):
+        with pytest.raises(ValidationError):
+            RedesignRequest(
+                base_revision_id="rev-1", prompt="restyle", strength=bad
+            )
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_redesign_with_reference(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_redesign(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        request_text="warm scandinavian living room",
+        base_asset_id="base-1",
+        reference_asset_id="ref-1",
+        strength=0.7,
+        negative_prompt="blurry",
+        correlation_id=None,
+        dispatcher=None,
+        seed=42,
+        has_reference=True,
+    )
+    payload = captured["payload"]
+    assert captured["job_type"] == "image.edit"
+    assert captured["required_capabilities"] == ["image_edit"]
+    assert payload["workflow_manifest"]["id"] == "image-redesign-reference-v1"
+    assert payload["inputs"]["strength"] == 0.7
+    assert payload["inputs"]["seed"] == 42
+    assert payload["asset_roles"] == {
+        "base_image": "base-1",
+        "reference_image": "ref-1",
+    }
+    assert payload["ipa_weight"] == 0.85
+    assert payload["generation"]["input_asset_ids"] == ["base-1", "ref-1"]
+    assert len(captured["idempotency_key"]) <= 160
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_redesign_without_reference_forces_zero_weight(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_redesign(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        request_text="minimalist restyle",
+        base_asset_id="base-1",
+        reference_asset_id="black-1",
+        strength=0.5,
+        negative_prompt="blurry",
+        correlation_id=None,
+        dispatcher=None,
+        has_reference=False,
+    )
+    payload = captured["payload"]
+    assert payload["ipa_weight"] == 0.0
+    assert payload["redesign"]["reference_asset_id"] is None
+    # the synthetic black reference asset is bound to the reference slot
+    assert payload["asset_roles"]["reference_image"] == "black-1"
+    assert payload["generation"]["input_asset_ids"] == ["base-1", "black-1"]
