@@ -29,18 +29,29 @@ DEFAULT_CAPABILITIES = [
     "plan_analyze",
     "image_generation",
     "image_edit",
-    "blender_render",
     "geometry_quality",
 ]
+
+# #64: capabilities a fake-mode worker cannot execute for real. They stay valid
+# opt-in tokens so a real (local-mode) worker can still declare them via env.
+FAKE_MODE_EXCLUDED_CAPABILITIES = frozenset({"blender_render"})
 
 def parse_capabilities(raw_caps: str | None) -> list[str]:
     if not raw_caps:
         return DEFAULT_CAPABILITIES
     capabilities = [c.strip() for c in raw_caps.split(",") if c.strip()]
-    unknown = set(capabilities) - set(DEFAULT_CAPABILITIES)
+    known = set(DEFAULT_CAPABILITIES) | FAKE_MODE_EXCLUDED_CAPABILITIES
+    unknown = set(capabilities) - known
     if unknown:
         print(f"Error: unknown worker capability tokens: {unknown}")
         raise SystemExit(1)
+    return capabilities
+
+def filter_capabilities_for_mode(capabilities: list[str], mode: str) -> list[str]:
+    """Fake-mode workers must not advertise capabilities they cannot execute for real."""
+    if mode == "fake":
+        # #64: a fake success would otherwise silently satisfy real render leases.
+        return [c for c in capabilities if c not in FAKE_MODE_EXCLUDED_CAPABILITIES]
     return capabilities
 
 def resolve_llm_model(profile_upstream: str) -> str:
@@ -58,6 +69,7 @@ async def _run() -> None:
 
     # Capability parsing
     capabilities = parse_capabilities(os.getenv("STROY_WORKER_CAPABILITIES"))
+    capabilities = filter_capabilities_for_mode(capabilities, mode)
 
     client = WorkerClient(server, token, worker_id)
     if mode == "local":
