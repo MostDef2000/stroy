@@ -238,6 +238,8 @@ def test_segment_subject_crops_and_places_full_size(monkeypatch):
     base.putpixel((50, 40), (255, 0, 0))  # marker at the bbox origin
     fake = _FakeRemBg(_opaque_center)
     _patch_segmenter(monkeypatch, fake)
+    # Deterministic raw dilate/blur path regardless of cv2 availability.
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
 
     alpha = segmentation.segment_subject(base, (50, 40, 120, 110), feather=0)
     assert alpha is not None
@@ -259,6 +261,8 @@ def test_segment_subject_clips_bbox_to_image_edges(monkeypatch):
     base = Image.new("RGB", (200, 150), "white")
     fake = _FakeRemBg(_opaque_center)
     _patch_segmenter(monkeypatch, fake)
+    # Deterministic raw dilate/blur path regardless of cv2 availability.
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
 
     alpha = segmentation.segment_subject(base, (-20, -10, 60, 50), feather=0)
     assert alpha is not None
@@ -282,6 +286,9 @@ def test_segment_subject_dilates_and_softens(monkeypatch):
 
     fake = _FakeRemBg(small)
     _patch_segmenter(monkeypatch, fake)
+    # Force the raw dilate+blur path: with real cv2 installed the grabCut
+    # refinement would replace this output and make the test env-dependent.
+    monkeypatch.setattr(segmentation, "_refine_with_grabcut", lambda *a, **k: None)
     raw = small(base).getchannel("A")
 
     alpha = segmentation.segment_subject(base, (0, 0, 100, 100), feather=20)
@@ -530,10 +537,16 @@ def test_refine_with_grabcut_seeds_and_strips_pad(monkeypatch):
     assert captured["img"][pad + 10, pad + 10] == [0, 0, 0]
 
 
-def test_refine_with_grabcut_returns_none_without_opencv():
+def test_refine_with_grabcut_returns_none_without_opencv(monkeypatch):
     crop = Image.new("RGB", (30, 30), "white")
     alpha = Image.new("L", (30, 30), 0)
-    # no fake injected: real cv2 is absent in the test venv
+
+    # Simulate a missing OpenCV deterministically, independent of whether the
+    # real cv2 package happens to be installed in the environment.
+    def missing_cv2():
+        raise ModuleNotFoundError("No module named 'cv2'")
+
+    monkeypatch.setattr(segmentation, "_cv2", missing_cv2)
     assert segmentation._refine_with_grabcut(crop, alpha, 16) is None
 
 
