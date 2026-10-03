@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import hashlib
 
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,9 @@ from stroy.services.jobs import create_job
 
 DEFAULT_WORKFLOW_PATH = Path("workflows/flux-redesign-v0.manifest.json")
 EDIT_WORKFLOW_PATH = Path("workflows/image-edit-kontext-v0.manifest.json")
+REDESIGN_REFERENCE_WORKFLOW_PATH = Path(
+    "workflows/image-redesign-reference-v1.manifest.json"
+)
 
 
 def load_default_workflow(path: Path = DEFAULT_WORKFLOW_PATH) -> WorkflowManifest:
@@ -203,7 +208,7 @@ async def list_generation_manifests(
 async def resolve_base_asset_for_edit(
     session: AsyncSession,
     project_id: str,
-    camera_id: str,
+    camera_id: str | None,
     base_revision_id: str,
 ) -> AssetRow | None:
     # Walk SceneRevisionRow.parent_revision_id from base_revision_id up to root
@@ -216,15 +221,19 @@ async def resolve_base_asset_for_edit(
         )
         curr_id = res.scalar_one_or_none()
 
-    # Query GenerationManifestRow WHERE project_id matches AND camera_id matches AND design_revision_id IN ancestors
+    # Query GenerationManifestRow WHERE project_id matches AND design_revision_id
+    # IN ancestors (AND camera_id matches when a camera is supplied - photo-first
+    # callers pass None and accept any camera's most recent output).
     # ORDER BY created_at DESC, id DESC
+    conditions = [
+        GenerationManifestRow.project_id == project_id,
+        GenerationManifestRow.design_revision_id.in_(ancestors),
+    ]
+    if camera_id is not None:
+        conditions.append(GenerationManifestRow.camera_id == camera_id)
     result = await session.execute(
         select(GenerationManifestRow)
-        .where(
-            GenerationManifestRow.project_id == project_id,
-            GenerationManifestRow.camera_id == camera_id,
-            GenerationManifestRow.design_revision_id.in_(ancestors),
-        )
+        .where(*conditions)
         .order_by(
             GenerationManifestRow.created_at.desc(),
             GenerationManifestRow.id.desc(),
@@ -256,9 +265,9 @@ async def queue_reference_edit(
     *,
     project_id: str,
     design_revision_id: str,
-    camera_id: str,
+    camera_id: str | None,
     request_text: str,
-    target_entity_id: str,
+    target_entity_id: str | None,
     reference_asset_id: str,
     affected_region: dict,
     protected_entity_ids: list[str],
@@ -268,15 +277,29 @@ async def queue_reference_edit(
     base_asset_id: str | None = None,
     mask_asset_id: str | None = None,
     reference_subject_bbox: list[int] | None = None,
+    ipa_weight: float = 0.85,
+    has_reference: bool = True,
 ) -> JobRow:
     workflow = load_default_workflow(workflow_path)
     generation_id = str(uuid4())
+    # No-reference (Remove/Restyle) edits bind a synthetic black placeholder to
+    # the reference slot; it must contribute nothing, so the IP-Adapter weight
+    # is forced to 0.0 regardless of the requested value. Mirrors
+    # queue_reference_redesign. ``reference_asset_id`` stays the placeholder id
+    # used by asset_roles / input_asset_ids.
+    effective_ipa_weight = ipa_weight if has_reference else 0.0
+    # Photo-first (mask_region-only) edits carry no canonical entity/camera.
+    # GenerationContext.camera_id and GenerationManifestRow.camera_id are
+    # non-nullable, so a stable placeholder keeps the manifest contract valid.
+    camera_id = camera_id or "default"
     structured_conditioning = {
         "purpose": "object_replacement",
         "regeneration_scope": "targeted",
-        "affected_entity_ids": [target_entity_id],
+        "affected_entity_ids": [target_entity_id] if target_entity_id else [],
         "protected_entity_ids": sorted(set(protected_entity_ids)),
-        "replacement_reference_asset_id": reference_asset_id,
+        "replacement_reference_asset_id": (
+            reference_asset_id if has_reference else None
+        ),
         "affected_region": affected_region,
         "request_text": request_text,
     }
@@ -304,11 +327,11 @@ async def queue_reference_edit(
         "design_revision_id": design_revision_id,
         "camera_id": camera_id,
         "input_asset_ids": [reference_asset_id],
-        "affected_entity_ids": [target_entity_id],
+        "affected_entity_ids": [target_entity_id] if target_entity_id else [],
         "regeneration_scope": "targeted",
         "replacement": {
             "target_entity_id": target_entity_id,
-            "reference_asset_id": reference_asset_id,
+            "reference_asset_id": reference_asset_id if has_reference else None,
             "affected_region": affected_region,
         },
     }
@@ -318,27 +341,183 @@ async def queue_reference_edit(
         payload["replacement"]["mask_asset_id"] = mask_asset_id
         payload["generation"]["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
         payload["input_asset_ids"] = [base_asset_id, reference_asset_id, mask_asset_id]
+        # The cropped reference asset feeds ONLY the IPAdapterFlux identity
+        # path (control_image, node 25). The ReferenceLatent path (node 12)
+        # conditions on the base-scene latent (node 20, VAEEncodeForInpaint),
+        # not the reference.
         payload["asset_roles"] = {
             "base_image": base_asset_id,
             "reference_image": reference_asset_id,
             "mask_image": mask_asset_id,
+            "control_image": reference_asset_id,
         }
 
     if reference_subject_bbox:
         payload["reference_subject_bbox"] = reference_subject_bbox
+    payload["ipa_weight"] = effective_ipa_weight
 
+    # UUID components are truncated to 12 chars so the key fits the
+    # JobRow.idempotency_key String(160) column on Postgres (SQLite does
+    # not enforce VARCHAR length, so the overflow is invisible in tests).
     idempotency_key = (
-        f"replacement:{design_revision_id}:{camera_id}:"
-        f"{target_entity_id}:{reference_asset_id}"
+        f"replacement:{design_revision_id[:12]}:{camera_id}:"
+        f"{target_entity_id or 'region'}:{reference_asset_id[:12]}"
     )
     if base_asset_id:
-        idempotency_key += f":{base_asset_id}"
+        idempotency_key += f":{base_asset_id[:12]}"
     if reference_subject_bbox:
-        # Compact, length-bounded suffix: a raw list can overflow the
-        # JobRow.idempotency_key String(160) column on Postgres (SQLite does
-        # not enforce VARCHAR length, so the overflow is invisible in tests).
+        # Compact, length-bounded suffix: a raw list can overflow the column.
         bbox_hash = hashlib.sha1(str(reference_subject_bbox).encode()).hexdigest()[:12]
         idempotency_key += f":crop-{bbox_hash}"
+    if not has_reference:
+        # Distinguish no-reference (placeholder-bound) edits from edits that
+        # genuinely carry a reference. Mirrors the redesign has_reference flag.
+        idempotency_key += ":noreference"
+    idempotency_key += f":ipa{effective_ipa_weight}"
+
+    return await create_job(
+        session,
+        project_id=project_id,
+        job_type="image.edit",
+        required_capabilities=["image_edit"],
+        payload=payload,
+        idempotency_key=idempotency_key,
+        correlation_id=correlation_id,
+        dispatcher=dispatcher,
+    )
+
+
+def black_reference_png() -> bytes:
+    """1x1 black PNG used as the reference slot when no reference is supplied."""
+    buffer = BytesIO()
+    Image.new("RGB", (1, 1), (0, 0, 0)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def create_black_reference_asset(
+    session: AsyncSession,
+    *,
+    object_store: Any,
+    project_id: str,
+    base_asset_id: str,
+    source: str,
+    original_name: str,
+) -> AssetRow:
+    """Store and persist the synthetic black reference asset.
+
+    Shared by the redesign and replacement routes when the caller supplies no
+    reference image: the workflow's ``reference_image`` slot must stay bound,
+    so a 1x1 black PNG is stored and the IP-Adapter weight is forced to 0.0
+    (see :func:`queue_reference_edit` / :func:`queue_reference_redesign`).
+    """
+    black_bytes = black_reference_png()
+    object_key = f"projects/{project_id}/{uuid4()}.png"
+    await object_store.put_bytes(object_key, black_bytes, "image/png")
+    asset = AssetRow(
+        id=str(uuid4()),
+        project_id=project_id,
+        object_key=object_key,
+        original_name=original_name,
+        media_type="image/png",
+        size_bytes=len(black_bytes),
+        sha256=hashlib.sha256(black_bytes).hexdigest(),
+        provenance="generated",
+        role="reference",
+        source_asset_ids=[base_asset_id],
+        metadata_json={
+            "width_px": 1,
+            "height_px": 1,
+            "source": source,
+        },
+    )
+    session.add(asset)
+    await session.commit()
+    await session.refresh(asset)
+    return asset
+
+
+async def queue_reference_redesign(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    design_revision_id: str,
+    request_text: str,
+    base_asset_id: str,
+    reference_asset_id: str,
+    strength: float,
+    negative_prompt: str,
+    correlation_id: str | None,
+    dispatcher: JobDispatcher | None,
+    seed: int | None = None,
+    has_reference: bool = True,
+    workflow_path: Path = REDESIGN_REFERENCE_WORKFLOW_PATH,
+) -> JobRow:
+    """Queue a reference-based whole-room redesign (img2img over the base photo).
+
+    ``reference_asset_id`` is always the asset bound to the graph's
+    reference_image slot. ``has_reference=False`` means prompt-only restyle:
+    the caller passes a synthetic 1x1 black asset and the IP-Adapter weight is
+    forced to 0.0 so the placeholder contributes nothing.
+    """
+    workflow = load_default_workflow(workflow_path)
+    generation_id = str(uuid4())
+    resolved_seed = seed if seed is not None else 0
+    ipa_weight = 0.85 if has_reference else 0.0
+    # GenerationContext.camera_id / GenerationManifestRow.camera_id are
+    # non-nullable; photo-first redesigns have no canonical camera.
+    camera_id = "default"
+    input_asset_ids = [base_asset_id, reference_asset_id]
+    structured_conditioning = {
+        "purpose": "room_redesign",
+        "regeneration_scope": "full",
+        "base_asset_id": base_asset_id,
+        "reference_asset_id": reference_asset_id if has_reference else None,
+        "strength": strength,
+        "request_text": request_text,
+    }
+    payload = {
+        "purpose": "room_redesign",
+        "workflow_manifest": workflow.model_dump(mode="json", exclude_none=True),
+        "inputs": {
+            "prompt": request_text,
+            "negative_prompt": negative_prompt,
+            "seed": resolved_seed,
+            "strength": strength,
+        },
+        "generation": {
+            "generation_id": generation_id,
+            "scene_revision_id": design_revision_id,
+            "design_revision_id": design_revision_id,
+            "camera_id": camera_id,
+            "seed": resolved_seed,
+            "input_asset_ids": input_asset_ids,
+            "structured_conditioning": structured_conditioning,
+        },
+        "scene_revision_id": design_revision_id,
+        "design_revision_id": design_revision_id,
+        "camera_id": camera_id,
+        "input_asset_ids": input_asset_ids,
+        "regeneration_scope": "full",
+        "ipa_weight": ipa_weight,
+        "redesign": {
+            "base_asset_id": base_asset_id,
+            "reference_asset_id": reference_asset_id if has_reference else None,
+            "strength": strength,
+        },
+    }
+    # base_image always binds; reference_image binds the real reference or the
+    # synthetic black placeholder (same asset id the caller stored).
+    payload["asset_roles"] = {
+        "base_image": base_asset_id,
+        "reference_image": reference_asset_id,
+    }
+
+    # UUID components truncated to 12 chars to fit JobRow.idempotency_key
+    # String(160) on Postgres (SQLite does not enforce VARCHAR length).
+    idempotency_key = (
+        f"redesign:{design_revision_id[:12]}:{base_asset_id[:12]}:"
+        f"{reference_asset_id[:12]}:s{strength}"
+    )
 
     return await create_job(
         session,

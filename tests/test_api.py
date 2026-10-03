@@ -11,7 +11,10 @@ from sqlalchemy import select
 
 from stroy.api.app import create_app
 from stroy.config import Settings
-from stroy.db.models import DesignCommandRow, GenerationManifestRow, JobRow
+from stroy.db.models import AssetRow, DesignCommandRow, GenerationManifestRow, JobRow
+from stroy.editing.mask import render_replacement_mask
+from stroy.editing.replacement import ReplacementRegion
+from stroy.generation import WorkflowManifest
 from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
 
@@ -1608,6 +1611,9 @@ async def test_reference_object_replacement_flow(settings):
                 "base_image": base_asset_id,
                 "reference_image": reference_id,
                 "mask_image": body["mask_asset_id"],
+                # v0.3.0: the same reference asset feeds the IPAdapterFlux
+                # identity path as the control image
+                "control_image": reference_id,
             }
             assert payload["replacement"]["target_entity_id"] == "object.sofa.main"
             assert payload["replacement"]["reference_asset_id"] == reference_id
@@ -1691,6 +1697,217 @@ async def test_reference_object_replacement_flow(settings):
             assert reference_row["sha256"] == reference_sha
             assert reference_row["role"] == "reference"
             assert reference_row["provenance"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_reference_object_replacement_with_mask_region(settings, monkeypatch):
+    # Never touch the real rembg model/network: force the graceful fallback.
+    from stroy.editing import segmentation
+
+    monkeypatch.setattr(segmentation, "segment_subject", lambda *a, **k: None)
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Replacement mask region"},
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.replacement",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.wall.main",
+                            "kind": "wall",
+                            "transform": {
+                                "translation_mm": [0, 2000, 1400],
+                                "rotation_deg": [0, 0, 0],
+                                "scale": [1, 1, 1],
+                            },
+                            "geometry": {"dimensions_mm": [5000, 120, 2800]},
+                            "locks": {"geometry": True, "transform": True},
+                        },
+                        {
+                            "id": "object.sofa.main",
+                            "kind": "furniture",
+                            "transform": {
+                                "translation_mm": [0, 0, 900],
+                                "rotation_deg": [0, 0, 0],
+                                "scale": [1, 1, 1],
+                            },
+                            "geometry": {"dimensions_mm": [2200, 900, 900]},
+                            "locks": {},
+                        },
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 1000,
+                            "height_px": 800,
+                            "intrinsics": {
+                                "fx": 800,
+                                "fy": 800,
+                                "cx": 500,
+                                "cy": 400,
+                            },
+                            "transform": {
+                                "translation_mm": [0, -5000, 1500],
+                                "rotation_deg": [90, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            base_revision_id = scene.json()["revision_id"]
+
+            reference = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("chair-reference.png", png_bytes(), "image/png")},
+            )
+            assert reference.status_code == 201
+            reference_id = reference.json()["id"]
+
+            # Seed a prior generation on camera.main. The base PNG is
+            # 1024x1024 so its metadata carries width_px/height_px large
+            # enough for the client mask_region (in base-image pixels) to
+            # be rendered verbatim.
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_bytes = base_buffer.getvalue()
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room-base.png", base_bytes, "image/png")},
+            )
+            assert base_upload.status_code == 201
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {
+                                "id": "flux-redesign-v0",
+                                "version": "0.2.0",
+                            },
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            replacement = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                    "mask_region": [334, 578, 654, 884],
+                },
+            )
+            assert replacement.status_code == 201, replacement.json()
+            body = replacement.json()
+            # mask_region bypasses the camera projection: the client box is
+            # used verbatim in base-image pixel space (client_override branch).
+            assert body["affected_region"]["type"] == "client_override"
+            assert body["affected_region"]["bbox_px"] == [334, 578, 654, 884]
+            assert body["mask_asset_id"]
+
+            # An explicit silhouette shape is accepted by the API. rembg is not
+            # installed in the test env, so the mask must gracefully fall back
+            # to the rectangle rendering and still return 201.
+            silhouette = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": body["revision_id"],
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                    "mask_region": [334, 578, 654, 884],
+                    "shape": "silhouette",
+                },
+            )
+            assert silhouette.status_code == 201, silhouette.json()
+            assert silhouette.json()["mask_asset_id"]
+
+            # A failing object store on the base-image fetch must still return
+            # 201 with the rectangle mask (graceful degradation).
+            original_get = app.state.object_store.get_bytes
+            calls = {"count": 0}
+
+            async def flaky_get(key):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise RuntimeError("simulated object store outage")
+                return await original_get(key)
+
+            monkeypatch.setattr(app.state.object_store, "get_bytes", flaky_get)
+            store_down = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": silhouette.json()["revision_id"],
+                    "target_entity_id": "object.sofa.main",
+                    "reference_asset_id": reference_id,
+                    "camera_id": "camera.main",
+                    "prompt": "replace the sofa with the reference furniture",
+                    "mask_region": [334, 578, 654, 884],
+                    "shape": "silhouette",
+                },
+            )
+            assert store_down.status_code == 201, store_down.json()
+            mask_id = store_down.json()["mask_asset_id"]
+
+            expected_region = ReplacementRegion(
+                type="client_override",
+                target_entity_id="object.sofa.main",
+                camera_id="camera.main",
+                bbox_px=(334, 578, 654, 884),
+                feather_px=24,
+                source="client_mask_region",
+            )
+            expected_mask = render_replacement_mask(expected_region, 1024, 1024, 1024, 1024)
+            downloaded = await client.get(
+                f"/api/v1/assets/{mask_id}", headers=headers
+            )
+            assert downloaded.status_code == 200
+            assert downloaded.content == expected_mask
 
 
 
@@ -2022,3 +2239,694 @@ def test_style_analyze_request_allows_missing_source_text():
         {"reference_asset_ids": ["a-1", "a-2", "a-3"], "source_text": ""}
     )
     assert request.source_text == ""
+
+
+@pytest.mark.asyncio
+async def test_mask_only_replacement_without_scene_entity(settings, monkeypatch):
+    """Photo-first replacement: a client mask_region alone is enough; no
+    canonical entity/camera lookup, no DesignCommandRow, job queued with a
+    client_override region and a null entity in the payload."""
+    from stroy.editing import segmentation
+
+    monkeypatch.setattr(segmentation, "segment_subject", lambda *a, **k: None)
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Photo-first"}
+            )
+            project_id = project.json()["id"]
+
+            # Scene exists (lineage anchor) but the request references NO entity.
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.photo",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            assert scene.status_code == 201
+            base_revision_id = scene.json()["revision_id"]
+
+            reference = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("ref.png", png_bytes(), "image/png")},
+            )
+            assert reference.status_code == 201
+            reference_id = reference.json()["id"]
+
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            assert base_upload.status_code == 201
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            replacement = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "reference_asset_id": reference_id,
+                    "base_asset_id": base_asset_id,
+                    "mask_region": [100, 100, 400, 400],
+                    "prompt": "remove the sofa",
+                },
+            )
+            assert replacement.status_code == 201, replacement.json()
+            body = replacement.json()
+            assert body["command"] is None
+            assert body["affected_region"]["type"] == "client_override"
+            assert body["affected_region"]["target_entity_id"] is None
+            assert body["affected_region"]["camera_id"] is None
+            assert body["mask_asset_id"]
+            assert body["base_asset_id"] == base_asset_id
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                assert payload["replacement"]["target_entity_id"] is None
+                assert payload["affected_entity_ids"] == []
+                assert payload["generation"]["camera_id"] == "default"
+                assert payload["asset_roles"]["base_image"] == base_asset_id
+                assert payload["asset_roles"]["mask_image"] == body["mask_asset_id"]
+                # no DesignCommandRow was written for the no-scene path
+                commands = (
+                    await db.execute(select(DesignCommandRow))
+                ).scalars().all()
+                assert commands == []
+
+
+@pytest.mark.asyncio
+async def test_replacement_without_reference_binds_black_placeholder(settings, monkeypatch):
+    """Remove/Restyle: mask_region + NO reference_asset_id succeeds without a
+    client-uploaded placeholder. The server binds a synthetic black reference
+    slot and silently forces ipa_weight to 0.0 (never 422)."""
+    from stroy.editing import segmentation
+
+    monkeypatch.setattr(segmentation, "segment_subject", lambda *a, **k: None)
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "No ref edit"}
+            )
+            project_id = project.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.noref",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            assert scene.status_code == 201
+            base_revision_id = scene.json()["revision_id"]
+
+            # No reference asset is uploaded by the client at all.
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            assert base_upload.status_code == 201
+            base_asset_id = base_upload.json()["id"]
+
+            replacement = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "base_asset_id": base_asset_id,
+                    "mask_region": [100, 100, 400, 400],
+                    "prompt": "remove the sofa",
+                    # an explicit weight > 0 must be silently forced to 0.0
+                    "ipa_weight": 1.5,
+                },
+            )
+            assert replacement.status_code == 201, replacement.json()
+            body = replacement.json()
+            assert body["command"] is None
+            assert body["affected_region"]["type"] == "client_override"
+            assert body["ipa_weight"] == 0.0
+            synthetic_id = body["reference_asset_id"]
+            assert synthetic_id
+
+            async with app.state.session_factory() as db:
+                ref_row = await db.get(AssetRow, synthetic_id)
+                assert ref_row is not None
+                assert ref_row.project_id == project_id
+                assert ref_row.role == "reference"
+                assert ref_row.media_type == "image/png"
+                assert ref_row.metadata_json["source"] == (
+                    "replacement_black_reference"
+                )
+
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                assert payload["ipa_weight"] == 0.0
+                # the real reference is reported as absent, but the synthetic
+                # asset stays bound to the slot
+                assert payload["replacement"]["reference_asset_id"] is None
+                assert (
+                    payload["generation"]["structured_conditioning"][
+                        "replacement_reference_asset_id"
+                    ]
+                    is None
+                )
+                assert payload["asset_roles"]["reference_image"] == synthetic_id
+                assert payload["asset_roles"]["control_image"] == synthetic_id
+                assert "noreference" in job_row.idempotency_key
+
+            downloaded = await client.get(
+                f"/api/v1/assets/{synthetic_id}", headers=headers
+            )
+            assert downloaded.status_code == 200
+            assert Image.open(BytesIO(downloaded.content)).size == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_replacement_without_mask_or_entity_is_422(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "No mask"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.nomask",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            reference = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("ref.png", png_bytes(), "image/png")},
+            )
+            reference_id = reference.json()["id"]
+
+            response = await client.post(
+                f"/api/v1/projects/{project_id}/replacements",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "reference_asset_id": reference_id,
+                    "prompt": "replace something",
+                },
+            )
+            assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reference_redesign_flow(settings):
+    """Whole-room redesign toward a reference interior: 201, job queued with
+    the new manifest, strength mapped to KSampler.denoise, asset_roles set."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Redesign"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.redesign",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+
+            reference = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "reference"},
+                files={"file": ("interior.png", png_bytes(), "image/png")},
+            )
+            reference_id = reference.json()["id"]
+
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            redesign = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "reference_asset_id": reference_id,
+                    "prompt": "warm scandinavian living room",
+                    "strength": 0.7,
+                    "seed": 42,
+                },
+            )
+            assert redesign.status_code == 201, redesign.json()
+            body = redesign.json()
+            assert body["base_asset_id"] == base_asset_id
+            assert body["reference_asset_id"] == reference_id
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                assert payload["workflow_manifest"]["id"] == (
+                    "image-redesign-reference-v1"
+                )
+                assert payload["inputs"]["strength"] == 0.7
+                assert payload["inputs"]["seed"] == 42
+                assert payload["asset_roles"] == {
+                    "base_image": base_asset_id,
+                    "reference_image": reference_id,
+                }
+                assert payload["ipa_weight"] == 0.85
+                graph = WorkflowManifest.model_validate(
+                    payload["workflow_manifest"]
+                ).materialize(
+                    {
+                        **payload["inputs"],
+                        "base_image": "base.png",
+                        "reference_image": "ref.png",
+                    }
+                )
+                assert graph["13"]["inputs"]["denoise"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_reference_redesign_without_reference_uses_black_placeholder(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Redesign none"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.redesign.none",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            redesign = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "prompt": "minimalist restyle",
+                },
+            )
+            assert redesign.status_code == 201, redesign.json()
+            body = redesign.json()
+            # a synthetic black reference asset was created and bound
+            assert body["reference_asset_id"] != base_asset_id
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                assert payload["ipa_weight"] == 0.0
+                assert payload["redesign"]["reference_asset_id"] is None
+                assert payload["asset_roles"]["reference_image"] == (
+                    body["reference_asset_id"]
+                )
+
+
+@pytest.mark.asyncio
+async def test_reference_redesign_strength_bounds(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Bounds"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.bounds",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            for bad in (0.19, 0.96):
+                response = await client.post(
+                    f"/api/v1/projects/{project_id}/redesigns",
+                    headers=headers,
+                    json={
+                        "base_revision_id": base_revision_id,
+                        "prompt": "restyle",
+                        "strength": bad,
+                    },
+                )
+                assert response.status_code == 422, (bad, response.json())
+
+
+@pytest.mark.asyncio
+async def test_reference_redesign_with_explicit_base_asset(settings):
+    """A freshly uploaded photo + redesign with explicit base_asset_id works
+    end-to-end: 201 and the job binds the uploaded asset as base_image."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Uploaded base"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.uploaded",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+
+            # Freshly uploaded photo, no generation manifest lineage at all.
+            photo_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                photo_buffer, format="PNG"
+            )
+            photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("photo.png", photo_buffer.getvalue(), "image/png")},
+            )
+            assert photo.status_code == 201
+            photo_id = photo.json()["id"]
+
+            redesign = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "base_asset_id": photo_id,
+                    "prompt": "warm scandinavian living room",
+                },
+            )
+            assert redesign.status_code == 201, redesign.json()
+            body = redesign.json()
+            assert body["base_asset_id"] == photo_id
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                assert payload["asset_roles"]["base_image"] == photo_id
+                assert payload["redesign"]["base_asset_id"] == photo_id
+
+
+@pytest.mark.asyncio
+async def test_reference_redesign_rejects_non_reference_role(settings):
+    """reference_asset_id must be an image asset with role=reference (422)."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Bad ref"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.badref",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+
+            # A valid base photo so the request reaches reference validation.
+            base_photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("photo.png", png_bytes(), "image/png")},
+            )
+            assert base_photo.status_code == 201
+            base_photo_id = base_photo.json()["id"]
+
+            # role=derived, not reference
+            derived = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("derived.png", png_bytes(), "image/png")},
+            )
+            assert derived.status_code == 201
+            derived_id = derived.json()["id"]
+
+            response = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "base_asset_id": base_photo_id,
+                    "reference_asset_id": derived_id,
+                    "prompt": "restyle",
+                },
+            )
+            assert response.status_code == 422
+            assert response.json()["detail"]["code"] == "invalid_reference_asset"
+
+
+@pytest.mark.asyncio
+async def test_noop_revision_conflict_returns_409(settings, monkeypatch):
+    """A concurrent same-parent no-op insert surfaces as 409, not 500."""
+    from stroy.domain.commands import CommandConflict
+    from stroy.api import routes as routes_module
+
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Conflict"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.conflict",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+
+            # A valid base photo so the request reaches create_noop_revision.
+            base_photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("photo.png", png_bytes(), "image/png")},
+            )
+            assert base_photo.status_code == 201
+            base_photo_id = base_photo.json()["id"]
+
+            async def boom(*args, **kwargs):
+                raise CommandConflict("base revision was updated concurrently")
+
+            monkeypatch.setattr(routes_module, "create_noop_revision", boom)
+
+            response = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "base_asset_id": base_photo_id,
+                    "prompt": "restyle",
+                },
+            )
+            assert response.status_code == 409
+            assert response.json()["detail"]["code"] == "revision_conflict"

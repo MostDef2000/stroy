@@ -1,0 +1,777 @@
+"""IP-Adapter identity conditioning tests (issue #63 step 3, manifest v0.3.0).
+
+Covers: ReplacementRequest.ipa_weight acceptance, ipa_weight flowing into the
+queued edit job payload (asset_roles["control_image"], idempotency suffix),
+v0.3.0 manifest materialization with the IPAdapterFlux nodes, the executor's
+control_image handling (same cropped reference bytes, v0.2 payload
+compatibility, adapter provenance), and the client-supplied mask_region
+override (base-image pixel box bypassing the calibrated-camera projection).
+"""
+
+from __future__ import annotations
+
+import io
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+from PIL import Image
+from pydantic import ValidationError
+
+from stroy.api.routes import RedesignRequest, ReplacementRequest
+from stroy.domain.models import Camera, SceneEntity
+from stroy.editing import resolve_replacement_region
+from stroy.generation import WorkflowManifest
+from stroy.services import generations as gens
+from stroy.worker.executors import ComfyUIExecutor
+
+REPO_MANIFEST = Path("workflows/image-edit-kontext-v0.manifest.json")
+REDESIGN_MANIFEST = Path("workflows/image-redesign-reference-v1.manifest.json")
+
+
+def _edit_manifest() -> WorkflowManifest:
+    return WorkflowManifest.model_validate_json(REPO_MANIFEST.read_text())
+
+
+def _png_bytes(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# ReplacementRequest.ipa_weight
+# ---------------------------------------------------------------------------
+
+
+def _request_kwargs() -> dict:
+    return dict(
+        base_revision_id="rev-1",
+        target_entity_id="sofa-1",
+        reference_asset_id="asset-9",
+        camera_id="default",
+    )
+
+
+def test_replacement_request_ipa_weight_default_and_bounds():
+    request = ReplacementRequest(**_request_kwargs())
+    assert request.ipa_weight == 0.85
+
+    ok = ReplacementRequest(**_request_kwargs(), ipa_weight=0.0)
+    assert ok.ipa_weight == 0.0
+    ok = ReplacementRequest(**_request_kwargs(), ipa_weight=2.0)
+    assert ok.ipa_weight == 2.0
+
+    for bad in (-0.1, 2.1, 5.0):
+        with pytest.raises(ValidationError):
+            ReplacementRequest(**_request_kwargs(), ipa_weight=bad)
+
+
+# ---------------------------------------------------------------------------
+# ReplacementRequest.mask_region + region resolution
+# ---------------------------------------------------------------------------
+
+
+def _camera() -> Camera:
+    # mirrors the fixture in tests/test_reference_replacement.py
+    return Camera.model_validate(
+        {
+            "id": "camera.main",
+            "width_px": 1000,
+            "height_px": 800,
+            "intrinsics": {"fx": 800, "fy": 800, "cx": 500, "cy": 400},
+            "transform": {
+                "translation_mm": [0, -5000, 1500],
+                "rotation_deg": [90, 0, 0],
+            },
+        }
+    )
+
+
+def _entity() -> SceneEntity:
+    return SceneEntity.model_validate(
+        {
+            "id": "object.sofa.main",
+            "kind": "furniture",
+            "transform": {
+                "translation_mm": [0, 0, 900],
+                "rotation_deg": [0, 0, 0],
+                "scale": [1, 1, 1],
+            },
+            "geometry": {"dimensions_mm": [2200, 900, 900]},
+        }
+    )
+
+
+def test_replacement_request_accepts_mask_region():
+    request = ReplacementRequest(**_request_kwargs(), mask_region=[334, 578, 654, 884])
+    assert request.mask_region == [334, 578, 654, 884]
+    assert ReplacementRequest(**_request_kwargs()).mask_region is None
+
+
+def test_replacement_request_mask_shape_defaults_and_validates():
+    # backward compat: an absent shape is the rectangle mask
+    assert ReplacementRequest(**_request_kwargs()).shape == "rectangle"
+    assert ReplacementRequest(**_request_kwargs(), shape="rectangle").shape == "rectangle"
+    silhouette = ReplacementRequest(**_request_kwargs(), shape="silhouette")
+    assert silhouette.shape == "silhouette"
+    with pytest.raises(ValidationError):
+        ReplacementRequest(**_request_kwargs(), shape="triangle")  # type: ignore[arg-type]
+
+
+def test_replacement_request_rejects_malformed_mask_region():
+    bad_regions = [
+        [1, 2, 3],  # len != 4
+        [10, 10, 5, 20],  # x1 >= x2
+        [-1, 0, 10, 10],  # negative value
+        [10, 10, 10, 20],  # degenerate (x1 == x2)
+    ]
+    for bad in bad_regions:
+        with pytest.raises(ValidationError, match="mask_region"):
+            ReplacementRequest(**_request_kwargs(), mask_region=bad)
+
+
+def test_resolve_replacement_region_client_override():
+    region = resolve_replacement_region(_entity(), _camera(), [334, 578, 654, 884])
+    assert region.type == "client_override"
+    assert region.bbox_px == (334, 578, 654, 884)
+    assert region.feather_px > 0
+    assert region.target_entity_id == _entity().id
+    assert region.camera_id == _camera().id
+
+
+def test_resolve_replacement_region_none_uses_projection():
+    region = resolve_replacement_region(_entity(), _camera(), None)
+    assert region.type == "projected_bbox"
+    x0, y0, x1, y1 = region.bbox_px
+    camera = _camera()
+    assert 0 <= x0 < x1 <= camera.width_px
+    assert 0 <= y0 < y1 <= camera.height_px
+    assert region.feather_px >= 8
+
+
+# ---------------------------------------------------------------------------
+# queue_reference_edit payload flow
+# ---------------------------------------------------------------------------
+
+
+async def _queue_edit(
+    monkeypatch,
+    ipa_weight: float,
+    *,
+    design_revision_id: str = "rev-2",
+    camera_id: str = "default",
+    target_entity_id: str = "sofa-1",
+    reference_asset_id: str = "asset-9",
+    base_asset_id: str = "base-1",
+) -> dict:
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_edit(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id=design_revision_id,
+        camera_id=camera_id,
+        request_text="swap the sofa",
+        target_entity_id=target_entity_id,
+        reference_asset_id=reference_asset_id,
+        affected_region={"x": 0, "y": 0},
+        protected_entity_ids=["wall-1"],
+        correlation_id=None,
+        dispatcher=None,
+        base_asset_id=base_asset_id,
+        mask_asset_id="mask-1",
+        ipa_weight=ipa_weight,
+    )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_ipa_weight_flows_into_payload(monkeypatch):
+    captured = await _queue_edit(monkeypatch, 1.25)
+    payload = captured["payload"]
+
+    # the SAME reference asset is exposed as the control_image role
+    assert payload["asset_roles"]["reference_image"] == "asset-9"
+    assert payload["asset_roles"]["control_image"] == "asset-9"
+    # the control asset id is downloadable: it is the reference id, which is
+    # listed in input_asset_ids (worker download_urls are keyed by asset id)
+    assert "asset-9" in payload["input_asset_ids"]
+    assert payload["ipa_weight"] == 1.25
+    assert ":ipa1.25" in captured["idempotency_key"]
+
+
+@pytest.mark.asyncio
+async def test_ipa_weight_distinguishes_idempotency_keys(monkeypatch):
+    key_default = (await _queue_edit(monkeypatch, 0.85))["idempotency_key"]
+    key_zero = (await _queue_edit(monkeypatch, 0.0))["idempotency_key"]
+    key_full = (await _queue_edit(monkeypatch, 1.0))["idempotency_key"]
+    assert len({key_default, key_zero, key_full}) == 3
+    assert key_default.endswith(":ipa0.85")
+    assert key_zero.endswith(":ipa0.0")
+    assert key_full.endswith(":ipa1.0")
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_fits_db_column_with_real_uuids(monkeypatch):
+    """Full 36-char UUIDs overflowed the JobRow.idempotency_key String(160)
+    column on Postgres (SQLite does not enforce VARCHAR length, so tests with
+    short fake ids never caught it). The key must fit and still vary per
+    ipa_weight so identical resubmissions dedupe."""
+    uuid = "f6664367-1a2b-3c4d-5e6f-0123456789ab"
+    captured = await _queue_edit(
+        monkeypatch,
+        0.85,
+        design_revision_id=uuid,
+        reference_asset_id=uuid,
+        base_asset_id=uuid,
+        target_entity_id="chair-1",
+        camera_id="default",
+    )
+    key = captured["idempotency_key"]
+    assert len(key) <= 160, key
+    # still unique per ipa_weight
+    other = await _queue_edit(
+        monkeypatch,
+        1.2,
+        design_revision_id=uuid,
+        reference_asset_id=uuid,
+        base_asset_id=uuid,
+        target_entity_id="chair-1",
+        camera_id="default",
+    )
+    assert other["idempotency_key"] != key
+
+
+@pytest.mark.asyncio
+async def test_ipa_weight_zero_produces_valid_payload(monkeypatch):
+    """ipa_weight=0.0 keeps the full v0.2.0-shaped payload (all roles bound);
+    the IP-Adapter nodes simply contribute zero weight at sampling time."""
+    captured = await _queue_edit(monkeypatch, 0.0)
+    payload = captured["payload"]
+
+    assert payload["ipa_weight"] == 0.0
+    assert payload["asset_roles"] == {
+        "base_image": "base-1",
+        "reference_image": "asset-9",
+        "mask_image": "mask-1",
+        "control_image": "asset-9",
+    }
+    manifest = WorkflowManifest.model_validate(payload["workflow_manifest"])
+    graph = manifest.materialize(
+        {
+            "prompt": payload["inputs"]["prompt"],
+            "seed": payload["inputs"]["seed"],
+            "base_image": "base.png",
+            "reference_image": "ref.png",
+            "mask_image": "mask.png",
+            "control_image": "control.png",
+        }
+    )
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    assert graph["27"]["inputs"]["weight"] == 0.85
+
+
+# ---------------------------------------------------------------------------
+# v0.3.0 manifest materialization
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_v030_materializes_with_control_image():
+    manifest = _edit_manifest()
+    assert manifest.version == "0.3.1"
+    assert manifest.required_inputs == [
+        "prompt",
+        "seed",
+        "base_image",
+        "reference_image",
+        "mask_image",
+        "control_image",
+    ]
+    assert manifest.bindings["control_image"].node_id == "25"
+    assert manifest.bindings["control_image"].input_name == "image"
+
+    graph = manifest.materialize(
+        {
+            "prompt": "a blue chair",
+            "seed": 1,
+            "base_image": "base.png",
+            "reference_image": "ref.png",
+            "mask_image": "mask.png",
+            "control_image": "control.png",
+        }
+    )
+    # Real Shakker-Labs comfyui-ipadapter-flux node wiring (box object_info):
+    # no separate CLIPVisionLoader node - the loader takes clip_vision as a
+    # directory-name string.
+    assert "23" not in graph
+    assert graph["24"]["class_type"] == "IPAdapterFluxLoader"
+    assert graph["24"]["inputs"]["ipadapter"] == "ip-adapter.bin"
+    assert graph["24"]["inputs"]["clip_vision"] == "google/siglip-so400m-patch14-384"
+    assert graph["24"]["inputs"]["provider"] == "cuda"
+    assert graph["25"]["class_type"] == "LoadImage"
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
+    assert graph["27"]["inputs"]["model"] == ["3", 0]
+    assert graph["27"]["inputs"]["ipadapter_flux"] == ["24", 0]
+    assert graph["27"]["inputs"]["image"] == ["25", 0]
+    # materialize leaves the manifest literal; the executor overrides weight
+    # from ipa_weight at execution time
+    assert graph["27"]["inputs"]["weight"] == 0.85
+    assert graph["27"]["inputs"]["start_percent"] == 0.0
+    assert graph["27"]["inputs"]["end_percent"] == 1.0
+    # KSampler consumes the IP-Adapter-patched model
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    # ReferenceLatent retained as locality hint: 9 -> 11 -> 12 -> 21; the
+    # step-3 rewire sources the latent from node 20 (VAEEncodeForInpaint of
+    # the base scene) instead of node 8 (stretched reference crop)
+    assert graph["12"]["class_type"] == "ReferenceLatent"
+    assert graph["12"]["inputs"]["conditioning"] == ["11", 0]
+    assert graph["12"]["inputs"]["latent"] == ["20", 0]
+    assert graph["21"]["inputs"]["conditioning"] == ["12", 0]
+
+
+def test_manifest_v030_rejects_missing_control_image():
+    manifest = _edit_manifest()
+    with pytest.raises(ValueError, match="control_image"):
+        manifest.materialize(
+            {
+                "prompt": "p",
+                "seed": 1,
+                "base_image": "base.png",
+                "reference_image": "ref.png",
+                "mask_image": "mask.png",
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Executor: control_image upload + provenance
+# ---------------------------------------------------------------------------
+
+
+class StubClient:
+    """Serves the replacement asset URLs; serves a real PNG for the
+    reference asset so cropping runs. Counts downloads per asset id."""
+
+    URLS = {
+        "asset-base": "/inputs/asset-base",
+        "asset-ref": "/inputs/asset-ref",
+        "asset-mask": "/inputs/asset-mask",
+    }
+
+    def __init__(self) -> None:
+        self.downloads: list[str] = []
+
+    async def download_input(self, url: str) -> bytes:
+        self.downloads.append(url)
+        if url == self.URLS["asset-ref"]:
+            return _png_bytes(100, 100, (10, 20, 30))
+        for known in self.URLS.values():
+            if url == known:
+                return b"bytes"
+        raise ValueError(f"unexpected download url: {url}")
+
+
+class RecordingAdapter:
+    """Adapter double that records uploads and the submitted graph."""
+
+    def __init__(self) -> None:
+        self.upload_calls: list[tuple[str, bytes]] = []
+        self.submitted_graph: dict | None = None
+
+    async def free_memory(self) -> bool:
+        return True
+
+    async def upload_image(self, filename: str, data: bytes) -> str:
+        self.upload_calls.append((filename, data))
+        return filename
+
+    async def submit(self, graph: dict, worker_id: str) -> str:
+        self.submitted_graph = graph
+        return "prompt-1"
+
+    async def wait(self, prompt_id: str, timeout_seconds: int) -> dict:
+        return {"outputs": {}}
+
+    async def collect_output_images(self, history: dict) -> list:
+        return []
+
+    async def server_version(self) -> str | None:
+        return "0.3.5"
+
+
+def _v03_job(asset_roles: dict | None = None) -> dict:
+    return {
+        "job_id": "job-1",
+        "download_urls": dict(StubClient.URLS),
+        "payload": {
+            "workflow_manifest": _edit_manifest().model_dump(mode="json"),
+            "inputs": {"prompt": "replace the chair", "seed": 7},
+            "ipa_weight": 1.25,
+            "asset_roles": asset_roles
+            if asset_roles is not None
+            else {
+                "base_image": "asset-base",
+                "reference_image": "asset-ref",
+                "mask_image": "asset-mask",
+                "control_image": "asset-ref",
+            },
+            "generation": {
+                "generation_id": "gen-1",
+                "scene_revision_id": "rev-1",
+                "design_revision_id": "rev-1",
+                "camera_id": "default",
+                "input_asset_ids": ["asset-base", "asset-ref", "asset-mask"],
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_executor_uploads_control_image_with_reference_bytes():
+    client = StubClient()
+    adapter = RecordingAdapter()
+    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family", client=client)  # type: ignore[arg-type]
+
+    result = await executor.execute(_v03_job())
+
+    # the reference asset is downloaded ONCE and uploaded under both roles
+    assert client.downloads.count(StubClient.URLS["asset-ref"]) == 1
+    uploads = dict(adapter.upload_calls)
+    assert uploads["reference_image_asset-ref.png"] == (
+        uploads["control_image_asset-ref.png"]
+    )
+    graph = adapter.submitted_graph
+    assert graph is not None
+    assert graph["25"]["inputs"]["image"] == "control_image_asset-ref.png"
+    assert graph["7"]["inputs"]["image"] == "reference_image_asset-ref.png"
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    # submitted graph uses the real Shakker-Labs nodes and the executor's
+    # ipa_weight override reaches the ApplyIPAdapterFlux weight input
+    assert graph["24"]["class_type"] == "IPAdapterFluxLoader"
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
+    assert graph["27"]["inputs"]["weight"] == 1.25
+    # provenance records the IP-Adapter identity path (real node values)
+    assert result["adapter_provenance"]["ipadapter_model"] == "ip-adapter.bin"
+    assert result["adapter_provenance"]["ipadapter_weight"] == 1.25
+    assert result["adapter_provenance"]["ipadapter_clip"] == (
+        "google/siglip-so400m-patch14-384"
+    )
+
+
+@pytest.mark.asyncio
+async def test_executor_crops_control_image_with_reference():
+    client = StubClient()
+    adapter = RecordingAdapter()
+    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family", client=client)  # type: ignore[arg-type]
+    job = _v03_job()
+    job["payload"]["reference_subject_bbox"] = [10, 10, 20, 20]
+
+    await executor.execute(job)
+
+    uploads = dict(adapter.upload_calls)
+    ref_bytes = uploads["reference_image_asset-ref.png"]
+    control_bytes = uploads["control_image_asset-ref.png"]
+    # both roles carry the SAME cropped PNG bytes (no second crop/upload path)
+    assert ref_bytes == control_bytes
+    out = Image.open(io.BytesIO(control_bytes)).convert("RGB")
+    assert out.size == (20, 20)
+    assert out.getpixel((0, 0)) == (10, 20, 30)
+
+
+@pytest.mark.asyncio
+async def test_executor_derives_control_image_from_v02_payload():
+    """v0.2.0 payloads expose only reference_image; with the v0.3.0 manifest
+    the executor derives the control_image role from the same asset."""
+    client = StubClient()
+    adapter = RecordingAdapter()
+    executor = ComfyUIExecutor(adapter, "worker-1", "flux-dev-family", client=client)  # type: ignore[arg-type]
+
+    await executor.execute(
+        _v03_job(
+            asset_roles={
+                "base_image": "asset-base",
+                "reference_image": "asset-ref",
+                "mask_image": "asset-mask",
+            }
+        )
+    )
+
+    uploads = dict(adapter.upload_calls)
+    assert uploads["control_image_asset-ref.png"] == (
+        uploads["reference_image_asset-ref.png"]
+    )
+    graph = adapter.submitted_graph
+    assert graph is not None
+    assert graph["25"]["inputs"]["image"] == "control_image_asset-ref.png"
+
+
+# ---------------------------------------------------------------------------
+# Photo-first replacement: mask_region-only requests need no entity/camera
+# ---------------------------------------------------------------------------
+
+
+def test_replacement_request_mask_only_needs_no_entity_or_camera():
+    request = ReplacementRequest(
+        base_revision_id="rev-1",
+        reference_asset_id="asset-9",
+        mask_region=[10, 10, 100, 100],
+    )
+    assert request.target_entity_id is None
+    assert request.camera_id is None
+    assert request.mask_region == [10, 10, 100, 100]
+
+
+def test_replacement_request_without_mask_requires_entity_and_camera():
+    with pytest.raises(ValidationError, match="target_entity_id"):
+        ReplacementRequest(
+            base_revision_id="rev-1",
+            reference_asset_id="asset-9",
+        )
+    with pytest.raises(ValidationError, match="camera_id"):
+        ReplacementRequest(
+            base_revision_id="rev-1",
+            reference_asset_id="asset-9",
+            target_entity_id="sofa-1",
+        )
+    # old full shape still accepted
+    full = ReplacementRequest(**_request_kwargs())
+    assert full.target_entity_id == "sofa-1"
+    assert full.camera_id == "default"
+
+
+def test_resolve_replacement_region_mask_only_without_scene():
+    region = resolve_replacement_region(None, None, [334, 578, 654, 884])
+    assert region.type == "client_override"
+    assert region.target_entity_id is None
+    assert region.camera_id is None
+    assert region.bbox_px == (334, 578, 654, 884)
+    # projected branch is unreachable without entity/camera
+    with pytest.raises(ValueError):
+        resolve_replacement_region(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_edit_mask_only_payload(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_edit(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        camera_id=None,
+        request_text="remove the sofa",
+        target_entity_id=None,
+        reference_asset_id="asset-9",
+        affected_region={"type": "client_override"},
+        protected_entity_ids=[],
+        correlation_id=None,
+        dispatcher=None,
+        base_asset_id="base-1",
+        mask_asset_id="mask-1",
+    )
+    payload = captured["payload"]
+    assert payload["replacement"]["target_entity_id"] is None
+    assert payload["affected_entity_ids"] == []
+    assert payload["generation"]["camera_id"] == "default"
+    assert payload["generation"]["structured_conditioning"]["affected_entity_ids"] == []
+    assert ":region:" in captured["idempotency_key"]
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_edit_without_reference_forces_zero_weight(monkeypatch):
+    """has_reference=False mirrors queue_reference_redesign: the requested
+    ipa_weight is forced to 0.0, the payload reports no real reference, the
+    synthetic black asset stays bound to the reference slot, and the
+    idempotency key carries a 'noreference' marker."""
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_edit(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        camera_id=None,
+        request_text="remove the sofa",
+        target_entity_id=None,
+        reference_asset_id="black-1",
+        affected_region={"type": "client_override"},
+        protected_entity_ids=[],
+        correlation_id=None,
+        dispatcher=None,
+        base_asset_id="base-1",
+        mask_asset_id="mask-1",
+        ipa_weight=1.5,
+        has_reference=False,
+    )
+    payload = captured["payload"]
+    assert payload["ipa_weight"] == 0.0
+    assert payload["replacement"]["reference_asset_id"] is None
+    assert (
+        payload["generation"]["structured_conditioning"][
+            "replacement_reference_asset_id"
+        ]
+        is None
+    )
+    # the synthetic black asset is still bound to reference/control slots
+    assert payload["asset_roles"]["reference_image"] == "black-1"
+    assert payload["asset_roles"]["control_image"] == "black-1"
+    assert "black-1" in payload["input_asset_ids"]
+    assert ":noreference" in captured["idempotency_key"]
+    assert captured["idempotency_key"].endswith(":ipa0.0")
+
+
+# ---------------------------------------------------------------------------
+# Reference-based room redesign (image-redesign-reference-v1)
+# ---------------------------------------------------------------------------
+
+
+def _redesign_manifest() -> WorkflowManifest:
+    return WorkflowManifest.model_validate_json(REDESIGN_MANIFEST.read_text())
+
+
+def test_redesign_manifest_validates_and_node_subset():
+    manifest = _redesign_manifest()
+    assert manifest.id == "image-redesign-reference-v1"
+    assert manifest.model_profile == "flux-dev-family"
+    assert manifest.required_inputs == [
+        "prompt",
+        "negative_prompt",
+        "seed",
+        "strength",
+        "base_image",
+        "reference_image",
+    ]
+    edit_classes = {
+        node["class_type"] for node in _edit_manifest().graph.values()
+    }
+    redesign_classes = {
+        node["class_type"] for node in manifest.graph.values()
+    }
+    assert redesign_classes <= (edit_classes | {"VAEEncode"})
+    assert "VAEEncodeForInpaint" not in redesign_classes
+    assert "EmptySD3LatentImage" not in redesign_classes
+
+
+def test_redesign_manifest_materializes_strength_and_img2img():
+    manifest = _redesign_manifest()
+    graph = manifest.materialize(
+        {
+            "prompt": "warm scandinavian living room",
+            "negative_prompt": "blurry",
+            "seed": 42,
+            "strength": 0.7,
+            "base_image": "base.png",
+            "reference_image": "ref.png",
+        }
+    )
+    assert graph["6"]["inputs"]["image"] == "base.png"
+    assert graph["25"]["inputs"]["image"] == "ref.png"
+    assert graph["9"]["inputs"]["text"] == "warm scandinavian living room"
+    assert graph["10"]["inputs"]["text"] == "blurry"
+    assert graph["13"]["inputs"]["seed"] == 42
+    # strength drives KSampler.denoise; base latent is plain VAEEncode (img2img)
+    assert graph["13"]["inputs"]["denoise"] == 0.7
+    assert graph["8"]["class_type"] == "VAEEncode"
+    assert graph["8"]["inputs"]["pixels"] == ["6", 0]
+    assert graph["13"]["inputs"]["latent_image"] == ["8", 0]
+    assert graph["13"]["inputs"]["positive"] == ["11", 0]
+    assert graph["13"]["inputs"]["negative"] == ["10", 0]
+    assert graph["13"]["inputs"]["model"] == ["27", 0]
+    assert graph["27"]["class_type"] == "ApplyIPAdapterFlux"
+    assert graph["27"]["inputs"]["image"] == ["25", 0]
+
+
+def test_redesign_request_strength_bounds():
+    ok = RedesignRequest(
+        base_revision_id="rev-1", prompt="restyle", strength=0.6
+    )
+    assert ok.strength == 0.6
+    assert ok.reference_asset_id is None
+    for bad in (0.19, 0.96):
+        with pytest.raises(ValidationError):
+            RedesignRequest(
+                base_revision_id="rev-1", prompt="restyle", strength=bad
+            )
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_redesign_with_reference(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_redesign(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        request_text="warm scandinavian living room",
+        base_asset_id="base-1",
+        reference_asset_id="ref-1",
+        strength=0.7,
+        negative_prompt="blurry",
+        correlation_id=None,
+        dispatcher=None,
+        seed=42,
+        has_reference=True,
+    )
+    payload = captured["payload"]
+    assert captured["job_type"] == "image.edit"
+    assert captured["required_capabilities"] == ["image_edit"]
+    assert payload["workflow_manifest"]["id"] == "image-redesign-reference-v1"
+    assert payload["inputs"]["strength"] == 0.7
+    assert payload["inputs"]["seed"] == 42
+    assert payload["asset_roles"] == {
+        "base_image": "base-1",
+        "reference_image": "ref-1",
+    }
+    assert payload["ipa_weight"] == 0.85
+    assert payload["generation"]["input_asset_ids"] == ["base-1", "ref-1"]
+    assert len(captured["idempotency_key"]) <= 160
+
+
+@pytest.mark.asyncio
+async def test_queue_reference_redesign_without_reference_forces_zero_weight(monkeypatch):
+    captured: dict = {}
+
+    async def fake_create_job(session, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(job_type=kwargs["job_type"])
+
+    monkeypatch.setattr(gens, "create_job", fake_create_job)
+    await gens.queue_reference_redesign(
+        MagicMock(),
+        project_id="p1",
+        design_revision_id="rev-2",
+        request_text="minimalist restyle",
+        base_asset_id="base-1",
+        reference_asset_id="black-1",
+        strength=0.5,
+        negative_prompt="blurry",
+        correlation_id=None,
+        dispatcher=None,
+        has_reference=False,
+    )
+    payload = captured["payload"]
+    assert payload["ipa_weight"] == 0.0
+    assert payload["redesign"]["reference_asset_id"] is None
+    # the synthetic black reference asset is bound to the reference slot
+    assert payload["asset_roles"]["reference_image"] == "black-1"
+    assert payload["generation"]["input_asset_ids"] == ["base-1", "black-1"]

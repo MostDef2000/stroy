@@ -1,10 +1,64 @@
 from __future__ import annotations
 
 import io
+import logging
 
 from PIL import Image, ImageDraw
 
 from stroy.editing.replacement import ReplacementRegion
+
+logger = logging.getLogger(__name__)
+
+
+def _encode_mask(img: Image.Image) -> bytes:
+    """Encode a mask image as the L-mode PNG downstream consumers expect."""
+    if img.mode != "L":
+        img = img.convert("L")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _as_rgb_image(base_image: "Image.Image | bytes | bytearray | None") -> Image.Image | None:
+    if isinstance(base_image, Image.Image):
+        return base_image
+    if isinstance(base_image, (bytes, bytearray)):
+        try:
+            return Image.open(io.BytesIO(bytes(base_image))).convert("RGB")
+        except Exception:  # noqa: BLE001 - an unreadable base just disables silhouette
+            return None
+    return None
+
+
+def _render_silhouette(
+    base_image: "Image.Image | bytes | bytearray | None",
+    bbox: tuple[int, int, int, int],
+    feather: int,
+    target_width: int,
+    target_height: int,
+) -> Image.Image | None:
+    """Ask the segmenter for a full-size silhouette alpha, or None to fall back."""
+    from stroy.editing import segmentation
+
+    image = _as_rgb_image(base_image)
+    if image is None:
+        return None
+    if image.size != (target_width, target_height):
+        # Resizing would silently distort the silhouette geometry; fall back
+        # to the rectangle mask instead.
+        logger.warning(
+            "base image size %s does not match declared target size %s; "
+            "falling back to rectangle mask",
+            image.size,
+            (target_width, target_height),
+        )
+        return None
+    alpha = segmentation.segment_subject(image, bbox, feather=feather)
+    if alpha is None:
+        return None
+    if alpha.mode != "L":
+        alpha = alpha.convert("L")
+    return alpha
 
 
 def render_replacement_mask(
@@ -13,6 +67,9 @@ def render_replacement_mask(
     camera_height_px: int,
     target_width: int,
     target_height: int,
+    *,
+    shape: str = "rectangle",
+    base_image: "Image.Image | bytes | bytearray | None" = None,
 ) -> bytes:
     """Rasterize a replacement region into a grayscale mask PNG.
 
@@ -23,6 +80,12 @@ def render_replacement_mask(
     integer expansions instead of a single feather radius). The PNG is
     consumed by ComfyUI ``ImageToMask(channel="red")`` — an L-mode PNG loads
     with replicated channels, so the red channel equals the gray value.
+
+    ``shape="silhouette"`` instead derives a soft subject silhouette from the
+    supplied base image via :func:`stroy.editing.segmentation.segment_subject`;
+    when segmentation is unavailable or degenerate it logs and falls back to
+    the rectangle rendering. ``"rectangle"`` (the default) is byte-for-byte
+    unchanged.
     """
     x0, y0, x1, y1 = region.bbox_px
 
@@ -39,6 +102,14 @@ def render_replacement_mask(
 
     feather = max(0, int(region.feather_px))
     feather = min(feather, (tx1 - tx0) // 2, (ty1 - ty0) // 2)
+
+    if shape == "silhouette":
+        alpha = _render_silhouette(
+            base_image, (tx0, ty0, tx1, ty1), feather, target_width, target_height
+        )
+        if alpha is not None:
+            return _encode_mask(alpha)
+        logger.info("silhouette mask unavailable; falling back to rectangle mask")
 
     img = Image.new("L", (target_width, target_height), 0)
     draw = ImageDraw.Draw(img)
@@ -57,9 +128,7 @@ def render_replacement_mask(
             fill=255,
         )
 
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    return _encode_mask(img)
 
 
 def crop_image_bytes(data: bytes, bbox: "list[int]") -> bytes:

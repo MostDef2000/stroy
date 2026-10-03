@@ -98,6 +98,35 @@ async def apply_scene_command(
     return revision
 
 
+async def create_noop_revision(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    parent_revision_id: str,
+    scene: Scene,
+) -> SceneRevisionRow:
+    """Append a revision that records lineage without mutating the scene.
+
+    Used by photo-first edits that have no canonical entity/camera to change:
+    the scene_json is copied verbatim and no ``DesignCommandRow`` is written.
+    """
+    revision = SceneRevisionRow(
+        project_id=project_id,
+        parent_revision_id=parent_revision_id,
+        command_id=None,
+        content_hash=canonical_hash(scene),
+        scene_json=scene.model_dump(mode="json", exclude_none=True),
+    )
+    session.add(revision)
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise CommandConflict("base revision was updated concurrently") from exc
+    await session.refresh(revision)
+    return revision
+
+
 async def list_revisions(
     session: AsyncSession, project_id: str
 ) -> list[SceneRevisionRow]:

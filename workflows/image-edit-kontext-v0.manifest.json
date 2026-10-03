@@ -1,13 +1,14 @@
 {
   "id": "image-edit-kontext-v0",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "model_profile": "flux-dev-family",
   "required_inputs": [
     "prompt",
     "seed",
     "base_image",
     "reference_image",
-    "mask_image"
+    "mask_image",
+    "control_image"
   ],
   "outputs": [
     "image"
@@ -32,6 +33,10 @@
     },
     "mask_image": {
       "node_id": "17",
+      "input_name": "image"
+    },
+    "control_image": {
+      "node_id": "25",
       "input_name": "image"
     }
   },
@@ -129,7 +134,7 @@
           0
         ],
         "latent": [
-          "8",
+          "20",
           0
         ]
       }
@@ -198,6 +203,40 @@
         "set_cond_area": "default"
       }
     },
+    "24": {
+      "class_type": "IPAdapterFluxLoader",
+      "inputs": {
+        "ipadapter": "ip-adapter.bin",
+        "clip_vision": "google/siglip-so400m-patch14-384",
+        "provider": "cuda"
+      }
+    },
+    "25": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "27": {
+      "class_type": "ApplyIPAdapterFlux",
+      "inputs": {
+        "model": [
+          "3",
+          0
+        ],
+        "ipadapter_flux": [
+          "24",
+          0
+        ],
+        "image": [
+          "25",
+          0
+        ],
+        "weight": 0.85,
+        "start_percent": 0.0,
+        "end_percent": 1.0
+      }
+    },
     "13": {
       "class_type": "KSampler",
       "inputs": {
@@ -208,7 +247,7 @@
         "scheduler": "simple",
         "denoise": 1.0,
         "model": [
-          "3",
+          "27",
           0
         ],
         "positive": [
@@ -249,5 +288,5 @@
       }
     }
   },
-  "notes": "Mask-constrained Kontext replacement (v0.2.0). The BASE image (current room state) feeds VAEEncodeForInpaint whose noise mask confines sampling to the affected region - unmasked pixels keep the base exactly. The REFERENCE stays conditioning-only (ReferenceLatent path), so a whole-room reference can no longer collapse the output onto itself. The mask PNG (white=edit region, linear feather ramp baked in server-side) binds through ImageToMask(red). Node inputs verified against the box fork object_info (v9.1): ImageToMask(image,channel), VAEEncodeForInpaint(pixels,vae,mask,grow_mask_by 0..64), ConditioningSetMask(conditioning,mask,strength,set_cond_area); FeatherMask node deliberately not used (no single feather input - feathering is baked into the mask PNG server-side)."
+  "notes": "Mask-constrained Kontext replacement with IP-Adapter identity conditioning (v0.3.1). The BASE image (current room state) feeds VAEEncodeForInpaint whose noise mask confines sampling to the affected region - unmasked pixels keep the base exactly. The REFERENCE stays conditioning-only: node 12 ReferenceLatent takes its latent from node 20 (VAEEncodeForInpaint of the base scene) instead of node 8 (VAEEncode of the stretched reference crop), so the locality hint comes from the base frame rather than injecting a whole-frame reference wash (nodes 8/16 remain in the graph but are no longer consumed); identity transfer is carried solely by the Shakker-Labs comfyui-ipadapter-flux nodes: node 25 loads the CROPPED reference (control_image role, same asset as reference_image), node 24 IPAdapterFluxLoader loads ip-adapter.bin plus the google/siglip-so400m-patch14-384 CLIP-Vision encoder (provider cuda) and outputs IP_ADAPTER_FLUX_INSTANTX, and node 27 ApplyIPAdapterFlux patches the UNET (model from node 3) with that adapter and the cropped reference image before KSampler 13; node 27's weight input is driven by ipa_weight at execution time. The mask PNG (white=edit region, linear feather ramp baked in server-side) binds through ImageToMask(red). Node inputs verified against the box fork object_info (v9.1): ImageToMask(image,channel), VAEEncodeForInpaint(pixels,vae,mask,grow_mask_by 0..64), ConditioningSetMask(conditioning,mask,strength,set_cond_area); FeatherMask node deliberately not used (no single feather input - feathering is baked into the mask PNG server-side)."
 }

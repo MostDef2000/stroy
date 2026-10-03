@@ -79,7 +79,7 @@ class QwenExecutor:
         return result
 
 
-ASSET_INPUT_ROLES = frozenset({"base_image", "reference_image", "mask_image"})
+ASSET_INPUT_ROLES = frozenset({"base_image", "reference_image", "mask_image", "control_image"})
 
 
 class ComfyUIExecutor:
@@ -114,9 +114,9 @@ class ComfyUIExecutor:
 
         # Resolve semantic inputs that map to project assets (images). The
         # payload's asset_roles dict names the asset id for each semantic
-        # input (base_image / reference_image / mask_image). Legacy v0.1.0
-        # edit manifests only require reference_image and carry no
-        # asset_roles - fall back to the first generation input asset.
+        # input (base_image / reference_image / mask_image / control_image).
+        # Legacy v0.1.0 edit manifests only require reference_image and carry
+        # no asset_roles - fall back to the first generation input asset.
         asset_required = [
             name
             for name in manifest.required_inputs
@@ -134,7 +134,8 @@ class ComfyUIExecutor:
                 )
             asset_roles = payload.get("asset_roles")
             if not isinstance(asset_roles, dict):
-                if set(asset_required) != {"reference_image"}:
+                legacy_expected = {"reference_image", "control_image"}
+                if set(asset_required) not in ({"reference_image"}, legacy_expected):
                     raise ValueError(
                         "image job requires payload.asset_roles for asset inputs: "
                         + ", ".join(asset_required)
@@ -149,7 +150,20 @@ class ComfyUIExecutor:
                         "in generation context"
                     )
                 asset_roles = {"reference_image": legacy_ids[0]}
+            if (
+                "control_image" in asset_required
+                and not asset_roles.get("control_image")
+                and asset_roles.get("reference_image")
+            ):
+                # v0.3.0 IP-Adapter identity path: the control image is the
+                # SAME cropped reference asset. Payloads from before the
+                # control_image role only expose reference_image - derive it.
+                asset_roles["control_image"] = asset_roles["reference_image"]
             for name in asset_required:
+                if name == "control_image" and "reference_image" in asset_required:
+                    # Uploaded together with reference_image below from the
+                    # same (cropped) bytes - no second download or crop.
+                    continue
                 asset_id = asset_roles.get(name)
                 if not isinstance(asset_id, str) or not asset_id:
                     raise ValueError(
@@ -168,6 +182,10 @@ class ComfyUIExecutor:
                 semantic_inputs[name] = await self.adapter.upload_image(
                     f"{name}_{asset_id}.png", image_bytes
                 )
+                if name == "reference_image" and "control_image" in asset_required:
+                    semantic_inputs["control_image"] = await self.adapter.upload_image(
+                        f"control_image_{asset_id}.png", image_bytes
+                    )
 
         if os.getenv("STROY_COMFY_FREE_BEFORE", "1") == "1":
             try:
@@ -176,6 +194,20 @@ class ComfyUIExecutor:
                 logger.warning(f"failed to free ComfyUI memory before job: {exc}")
 
         graph = manifest.materialize(semantic_inputs)
+
+        # IP-Adapter identity path (Shakker-Labs comfyui-ipadapter-flux):
+        # ipa_weight must drive the ApplyIPAdapterFlux node's weight input at
+        # execution time (the manifest literal is only a default). Guarded so
+        # manifests without that node are untouched.
+        ipa_weight = float(payload.get("ipa_weight", 0.85))
+        for node in graph.values():
+            if (
+                isinstance(node, dict)
+                and node.get("class_type") == "ApplyIPAdapterFlux"
+            ):
+                node_inputs = node.setdefault("inputs", {})
+                if isinstance(node_inputs, dict):
+                    node_inputs["weight"] = ipa_weight
 
         prompt_id = await self.adapter.submit(graph, self.worker_id)
         job_id = job.get("job_id")
@@ -193,7 +225,19 @@ class ComfyUIExecutor:
                 self.active_prompts.pop(job_id, None)
 
         version = await self.adapter.server_version()
-        adapter_provenance = {"adapter": "comfyui", **({"server_version": version} if version else {})}
+        adapter_provenance: dict[str, Any] = {
+            "adapter": "comfyui",
+            **({"server_version": version} if version else {}),
+        }
+        if "control_image" in manifest.required_inputs:
+            # IP-Adapter identity path (Shakker-Labs comfyui-ipadapter-flux).
+            adapter_provenance.update(
+                {
+                    "ipadapter_model": "ip-adapter.bin",
+                    "ipadapter_weight": float(payload.get("ipa_weight", 0.85)),
+                    "ipadapter_clip": "google/siglip-so400m-patch14-384",
+                }
+            )
 
         return {
             "prompt_id": prompt_id,

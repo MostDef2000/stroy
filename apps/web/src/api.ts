@@ -158,6 +158,54 @@ export type SceneRevision = {
   scene: SceneDocument;
 };
 
+export type AffectedRegion = {
+  type: string;
+  target_entity_id: string | null;
+  camera_id: string | null;
+  bbox_px: [number, number, number, number];
+  feather_px: number;
+  source: string;
+};
+
+export type RegionReplacementInput = {
+  base_revision_id: string;
+  base_asset_id: string;
+  mask_region: [number, number, number, number];
+  prompt: string;
+  reference_asset_id?: string;
+  ipa_weight?: number;
+  shape?: "rectangle" | "silhouette";
+};
+
+export type RegionReplacementResponse = {
+  revision_id: string;
+  content_hash: string;
+  scene: SceneDocument;
+  command: Record<string, unknown> | null;
+  affected_region: AffectedRegion;
+  job: Job;
+  base_asset_id: string;
+  mask_asset_id: string;
+};
+
+export type RedesignInput = {
+  base_revision_id: string;
+  base_asset_id: string;
+  reference_asset_id?: string;
+  prompt: string;
+  strength: number;
+  seed?: number;
+  negative_prompt?: string;
+};
+
+export type RedesignResponse = {
+  revision_id: string;
+  content_hash: string;
+  job: Job;
+  base_asset_id: string;
+  reference_asset_id: string;
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
 
@@ -349,6 +397,26 @@ export const api = {
         prompt
       })
     });
+  },
+
+  createRegionReplacement(projectId: string, body: RegionReplacementInput) {
+    return request<RegionReplacementResponse>(
+      `/api/v1/projects/${projectId}/replacements`,
+      {
+        method: "POST",
+        body: JSON.stringify(body)
+      }
+    );
+  },
+
+  createRedesign(projectId: string, body: RedesignInput) {
+    return request<RedesignResponse>(
+      `/api/v1/projects/${projectId}/redesigns`,
+      {
+        method: "POST",
+        body: JSON.stringify(body)
+      }
+    );
   },
 
   createGeneration(

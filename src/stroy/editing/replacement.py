@@ -12,8 +12,11 @@ class ReplacementRegion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: str = "projected_bbox"
-    target_entity_id: str
-    camera_id: str
+    # Scene-less (photo-first) replacement: a client mask_region carries no
+    # canonical entity/camera, so both ids are optional. The projected branch
+    # still populates them.
+    target_entity_id: str | None = None
+    camera_id: str | None = None
     bbox_px: tuple[int, int, int, int]
     feather_px: int = Field(ge=0)
     source: str = "canonical_entity_geometry"
@@ -94,4 +97,39 @@ def projected_entity_region(
         camera_id=camera.id,
         bbox_px=(x0, y0, x1, y1),
         feather_px=feather,
+    )
+
+
+def resolve_replacement_region(
+    entity: SceneEntity | None,
+    camera: Camera | None,
+    mask_region: list[int] | None = None,
+) -> ReplacementRegion:
+    """Return the replacement region.
+
+    When ``mask_region`` is provided it is a [x1, y1, x2, y2] box in the
+    BASE-IMAGE (target) pixel space and is used verbatim (client override),
+    bypassing the unreliable calibrated-camera projection. Otherwise the
+    projected entity region is returned and both ``entity`` and ``camera``
+    must be supplied.
+
+    Photo-first callers may pass ``entity=None``/``camera=None`` together with
+    ``mask_region``; the projected branch is then unreachable by construction.
+    """
+    if mask_region is None:
+        if entity is None or camera is None:
+            raise ValueError(
+                "replacement region requires an entity and camera when no "
+                "mask_region is supplied"
+            )
+        return projected_entity_region(entity, camera)
+    x0, y0, x1, y1 = mask_region
+    feather = max(8, round(min(x1 - x0, y1 - y0) * 0.08))
+    return ReplacementRegion(
+        type="client_override",
+        target_entity_id=entity.id if entity is not None else None,
+        camera_id=camera.id if camera is not None else None,
+        bbox_px=(x0, y0, x1, y1),
+        feather_px=feather,
+        source="client_mask_region",
     )
