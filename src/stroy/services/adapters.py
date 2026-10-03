@@ -61,8 +61,9 @@ async def _request_json(
             f"runtime returned HTTP {response.status_code}: {url}"
         )
     if response.status_code >= 400:
+        body = response.text[:400].replace("\n", " ")
         raise AdapterProtocolError(
-            f"runtime rejected request with HTTP {response.status_code}: {url}"
+            f"runtime rejected request with HTTP {response.status_code}: {url}: {body}"
         )
 
     try:

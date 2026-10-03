@@ -132,6 +132,37 @@ async def test_openai_adapter_maps_server_unavailable():
 
 
 @pytest.mark.asyncio
+async def test_openai_adapter_protocol_error_includes_response_body():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"error": {"message": "model 'x' not found, try pulling it first"}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleLLM("http://qwen/v1", "local", "model", client=client)
+    with pytest.raises(AdapterProtocolError) as excinfo:
+        await adapter.complete([{"role": "user", "content": "hello"}])
+    assert "model 'x' not found" in str(excinfo.value)
+    assert "HTTP 404" in str(excinfo.value)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_protocol_error_truncates_long_body():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, text="x" * 5000)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleLLM("http://qwen/v1", "local", "model", client=client)
+    with pytest.raises(AdapterProtocolError) as excinfo:
+        await adapter.complete([{"role": "user", "content": "hello"}])
+    message = str(excinfo.value)
+    assert len(message) < 1000
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_comfyui_missing_prompt_id_is_protocol_error():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={})
