@@ -153,11 +153,13 @@ function EntityMesh({
 function CameraController({
   calibrated,
   overview,
-  resetKey
+  resetKey,
+  sceneKey
 }: {
   calibrated: SceneCamera | null;
   overview: { x: number; z: number; span: number } | null;
   resetKey: number;
+  sceneKey: string;
 }) {
   const { camera } = useThree();
 
@@ -219,7 +221,7 @@ function CameraController({
       0
     );
     camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-  }, [calibrated, camera, overview, resetKey]);
+  }, [calibrated, camera, resetKey, sceneKey]);
 
   return null;
 }
@@ -227,11 +229,13 @@ function CameraController({
 function OverviewOrbitControls({
   enabled,
   overview,
-  resetKey
+  resetKey,
+  sceneKey
 }: {
   enabled: boolean;
   overview: { x: number; z: number; span: number } | null;
   resetKey: number;
+  sceneKey: string;
 }) {
   const { camera, gl } = useThree();
 
@@ -249,7 +253,7 @@ function OverviewOrbitControls({
     controls.update();
 
     return () => controls.dispose();
-  }, [camera, enabled, gl, overview, resetKey]);
+  }, [camera, enabled, gl, resetKey, sceneKey]);
 
   return null;
 }
@@ -265,6 +269,9 @@ export function SceneViewer({ scene }: { scene: SceneDocument | null }) {
     [entities]
   );
   const overview = useMemo(() => planOverview(entities), [entities]);
+  const sceneKey = scene ? `${scene.project_id}:${scene.scene_id}` : "no-scene";
+  const gridSize = Math.max(12, Math.ceil((overview?.span ?? 9) * 1.35));
+  const gridDivisions = Math.max(12, Math.min(80, Math.round(gridSize * 2)));
   const selected = entities.find((entity) => entity.id === selectedId) ?? null;
   const calibrated =
     cameraId === "overview"
@@ -324,15 +331,24 @@ export function SceneViewer({ scene }: { scene: SceneDocument | null }) {
         }
       >
         <Canvas camera={{ position: [6, 5, 6], fov: 45 }}>
-          <CameraController calibrated={calibrated} overview={overview} resetKey={viewResetKey} />
+          <CameraController
+            calibrated={calibrated}
+            overview={overview}
+            resetKey={viewResetKey}
+            sceneKey={sceneKey}
+          />
           <OverviewOrbitControls
             enabled={cameraId === "overview"}
             overview={overview}
             resetKey={viewResetKey}
+            sceneKey={sceneKey}
           />
           <ambientLight intensity={1.4} />
           <directionalLight position={[4, 8, 4]} intensity={2} />
-          <gridHelper args={[12, 24]} />
+          <gridHelper
+            args={[gridSize, gridDivisions]}
+            position={[overview?.x ?? 0, -0.01, overview?.z ?? 0]}
+          />
           {renderableEntities.map((entity) => (
             <EntityMesh
               key={entity.id}
