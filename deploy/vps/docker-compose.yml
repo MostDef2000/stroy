@@ -67,7 +67,7 @@ services:
       STROY_WORKER_EXECUTOR_MODE: fake
       STROY_WORKER_ID: stroy-vps-1
       STROY_WORKER_NAME: VPS CPU worker
-      STROY_WORKER_CAPABILITIES: style_analysis,llm,blender_render,geometry_quality
+      STROY_WORKER_CAPABILITIES: style_analysis,llm,geometry_quality
     depends_on:
       api:
         condition: service_healthy

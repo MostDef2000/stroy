@@ -4,7 +4,7 @@ import httpx
 from unittest.mock import patch
 from stroy.worker.executors import ComfyUIExecutor
 from stroy.services.adapters import ComfyUIAdapter
-from stroy.worker.main import parse_capabilities
+from stroy.worker.main import filter_capabilities_for_mode, parse_capabilities
 
 
 class StubComfyAdapter:
@@ -131,14 +131,31 @@ async def test_comfy_provenance():
 
 def test_capability_parsing():
     # Default
-    assert parse_capabilities(None) == ["llm", "style_analysis", "plan_analyze", "image_generation", "image_edit", "blender_render", "geometry_quality"]
+    assert parse_capabilities(None) == ["llm", "style_analysis", "plan_analyze", "image_generation", "image_edit", "geometry_quality"]
     
     # Custom valid
     assert parse_capabilities("style_analysis, image_generation") == ["style_analysis", "image_generation"]
+
+    # blender_render stays a valid opt-in token for real workers (#64)
+    assert parse_capabilities("llm, blender_render") == ["llm", "blender_render"]
     
     # Invalid token
     with pytest.raises(SystemExit):
         parse_capabilities("llm, unknown_cap")
+
+
+def test_filter_capabilities_fake_strips_blender_render():
+    # #64: a fake-mode worker must not advertise a capability it cannot execute.
+    assert filter_capabilities_for_mode(
+        ["style_analysis", "llm", "blender_render", "geometry_quality"], "fake"
+    ) == ["style_analysis", "llm", "geometry_quality"]
+
+
+def test_filter_capabilities_local_keeps_blender_render():
+    # Real mode has a real BlenderExecutor, so pass the capability through.
+    assert filter_capabilities_for_mode(
+        ["style_analysis", "llm", "blender_render", "geometry_quality"], "local"
+    ) == ["style_analysis", "llm", "blender_render", "geometry_quality"]
 
 @pytest.mark.asyncio
 async def test_adapter_cancel_behavior():
