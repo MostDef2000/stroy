@@ -20,9 +20,9 @@ import { ReplacementPanel } from "./ReplacementPanel";
 import { SceneViewer } from "./SceneViewer";
 import "./styles.css";
 
-// Post-MVP "twin" machinery (canonical 3D scene, camera calibration, geometry
-// diagnostics, style analysis) is hidden behind this flag. The photo-first
-// flow above is the primary surface; flip to true to bring the old panels back.
+// Camera calibration, geometry diagnostics and style-analysis panels remain
+// hidden behind this flag. MVP-2 phase A is twin-first, so SceneViewer itself
+// stays visible after a canonical scene revision exists.
 const SHOW_ADVANCED_PANELS = false;
 
 function goldenRoom(projectId: string): SceneDocument {
@@ -472,9 +472,9 @@ export default function App() {
           />
         )}
 
-        {SHOW_ADVANCED_PANELS && (
+        {selected && revision && (
           <section className="canvas-panel">
-            <SceneViewer scene={revision?.scene ?? null} />
+            <SceneViewer scene={revision.scene} />
           </section>
         )}
 
