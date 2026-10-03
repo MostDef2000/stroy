@@ -132,6 +132,7 @@ export function PlanEditor({
   const [phase, setPhase] = useState<"entry" | "editor">("entry");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [analyzeJobId, setAnalyzeJobId] = useState<string | null>(null);
+  const [analyzeStartedAt, setAnalyzeStartedAt] = useState<number | null>(null);
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
@@ -163,6 +164,7 @@ export function PlanEditor({
     setPhase("entry");
     setSelectedIds([]);
     setAnalyzeJobId(null);
+    setAnalyzeStartedAt(null);
     setDraft(null);
     setDraftVersion(null);
     setDraftStatus(null);
@@ -198,11 +200,28 @@ export function PlanEditor({
     [jobs, analyzeJobId]
   );
 
+  // Elapsed-time ticker for the analyzing banner (job payloads carry no progress).
+  const [elapsedTick, setElapsedTick] = useState(0);
+  useEffect(() => {
+    if (!analyzeJobId) return;
+    const timer = window.setInterval(() => setElapsedTick((t) => t + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [analyzeJobId]);
+  const analyzeElapsed = useMemo(() => {
+    if (!analyzeJobId || !analyzeStartedAt) return null;
+    void elapsedTick;
+    const seconds = Math.max(0, Math.floor((Date.now() - analyzeStartedAt) / 1000));
+    const mm = Math.floor(seconds / 60);
+    const ss = String(seconds % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+  }, [analyzeJobId, analyzeStartedAt, elapsedTick]);
+
   // When the analyze job completes, the draft is persisted server-side.
   useEffect(() => {
     if (!analyzeJobId || activeJob?.status !== "succeeded") return;
     let cancelled = false;
     setAnalyzeJobId(null);
+    setAnalyzeStartedAt(null);
     api
       .getPlanDraft(projectId)
       .then((response) => {
@@ -239,6 +258,7 @@ export function PlanEditor({
     try {
       const response = await api.analyzePlan(projectId, selectedIds);
       setAnalyzeJobId(response.job_id);
+      setAnalyzeStartedAt(Date.now());
       setInfo("Analyzing…");
     } catch (reason) {
       setError(parseApiError(reason).message);
@@ -630,6 +650,8 @@ export function PlanEditor({
           <p className={activeJob?.status === "failed" ? "error" : "muted"}>
             Analyzing… {activeJob?.status ?? "queued"}
             {progressText ? ` · ${progressText}` : ""}
+            {analyzeElapsed ? ` · ${analyzeElapsed} elapsed` : ""} · plan parsing on
+            the GPU box typically takes 1–4 minutes (hard cap 15)
           </p>
         )}
         {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}

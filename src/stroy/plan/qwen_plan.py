@@ -29,6 +29,7 @@ class MultimodalLLMClient(Protocol):
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -262,7 +263,9 @@ class QwenPlanAdapter:
         }
 
     async def _complete(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        return await self.llm.complete(messages)
+        # temperature=0: sampling nondeterminism was observed to produce
+        # invalid JSON on ~50% of real plan parses (see #23 acceptance).
+        return await self.llm.complete(messages, temperature=0.0)
 
     @staticmethod
     def _reply_content(response: dict[str, Any]) -> str:
