@@ -515,6 +515,7 @@ export function PlanEditor({
   }
 
   function startEndpointDrag(event: ReactPointerEvent<SVGCircleElement>, wallId: string, end: 1 | 2) {
+    if (mode !== "select") return;
     event.stopPropagation();
     svgRef.current?.setPointerCapture(event.pointerId);
     dragRef.current = { type: "endpoint", wallId, end };
@@ -522,6 +523,7 @@ export function PlanEditor({
   }
 
   function startOpeningDrag(event: ReactPointerEvent<SVGRectElement>, wallId: string, openingId: string) {
+    if (mode !== "select") return;
     event.stopPropagation();
     svgRef.current?.setPointerCapture(event.pointerId);
     dragRef.current = { type: "opening", wallId, openingId };
@@ -677,7 +679,7 @@ export function PlanEditor({
           className={scaleBannerFocus ? "pl-scale-banner focus" : "pl-scale-banner"}
         >
           <strong>Scale unknown.</strong> Real dimensions are disabled until you set the scale.
-          <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); }}>
+          <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
             Set scale
           </button>
         </div>
@@ -686,7 +688,7 @@ export function PlanEditor({
       {scaleKnown && draft?.scale.source === "plan_label" && (
         <div className="pl-scale-banner">
           Parsed scale: {mmPerPx?.toFixed(3)} mm/px.
-          <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); }}>
+          <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
             Override
           </button>
         </div>
@@ -762,6 +764,7 @@ export function PlanEditor({
                         stroke="transparent"
                         strokeWidth={Math.max(thickness, 12)}
                         onPointerDown={(event) => {
+                          if (mode !== "select") return;
                           event.stopPropagation();
                           setSelection({ kind: "wall", wallId: wall.id });
                         }}
@@ -829,6 +832,7 @@ export function PlanEditor({
                       textAnchor="middle"
                       className="pl-room-label"
                       onPointerDown={(event) => {
+                        if (mode !== "select") return;
                         event.stopPropagation();
                         setSelection({ kind: "room", roomId: room.id });
                       }}
@@ -883,7 +887,11 @@ export function PlanEditor({
         <button
           type="button"
           className={mode === "set-scale" ? "secondary active" : "secondary"}
-          onClick={() => { setMode(mode === "set-scale" ? "select" : "set-scale"); setScalePoints([]); }}
+          onClick={() => {
+            setMode(mode === "set-scale" ? "select" : "set-scale");
+            setScalePoints([]);
+            setSelection(null);
+          }}
         >
           Set scale
         </button>
