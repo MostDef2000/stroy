@@ -80,6 +80,7 @@ async def _run() -> None:
             os.getenv("STROY_LLM_API_KEY", "local"),
             resolve_llm_model(llm_profile.upstream),
             profile_id=llm_profile.id,
+            timeout_seconds=float(os.getenv("STROY_LLM_TIMEOUT_SECONDS", "120")),
         )
         comfy = ComfyUIAdapter(os.getenv("STROY_COMFYUI_URL", "http://127.0.0.1:8188"))
         blender = BlenderAdapter(
@@ -90,7 +91,7 @@ async def _run() -> None:
         executors = {
             "llm.complete": QwenExecutor(llm),
             "style.analyze": QwenExecutor(llm),
-            "plan.analyze": PlanAnalyzeExecutor(QwenPlanAdapter(llm), client),
+            "plan.analyze": PlanAnalyzeExecutor(QwenPlanAdapter(llm, attempts=3), client),
             "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id, client=client),
             "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id, client=client),
             "render.blender": BlenderExecutor(blender),

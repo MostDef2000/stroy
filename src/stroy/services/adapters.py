@@ -128,11 +128,14 @@ class OpenAICompatibleLLM:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"model": self.model, "messages": messages}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if temperature is not None:
+            payload["temperature"] = temperature
         return await _request_json(
             self.client,
             "POST",

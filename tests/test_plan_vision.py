@@ -79,14 +79,17 @@ class StubLLM:
         self.model = model
         self.profile_id: str | None = "qwen3-vl-8b"
         self.calls: list[list[dict[str, Any]]] = []
+        self.temperatures: list[float | None] = []
 
     async def complete(
         self,
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         self.calls.append(messages)
+        self.temperatures.append(temperature)
         return {"choices": [{"message": {"content": self.replies.pop(0)}}]}
 
 
@@ -297,3 +300,18 @@ def test_downscaled_jpeg_shrinks_payload_far_below_original() -> None:
     original = _big_png()
     _, payload = _decode_data_url(_data_url(original))
     assert len(payload) < len(original) // 5
+
+
+async def test_plan_calls_use_greedy_sampling() -> None:
+    adapter, stub = _adapter([json.dumps(_raw_draft())])
+    await adapter.analyze_plan(images=[_PNG])
+    assert stub.temperatures == [0.0]
+
+
+async def test_three_attempts_configured_via_constructor() -> None:
+    stub = StubLLM(["nope", "still nope", "and nope"])
+    adapter = QwenPlanAdapter(stub, attempts=3)
+    with pytest.raises(AdapterProtocolError, match="did not return a valid plan draft"):
+        await adapter.analyze_plan(images=[_PNG])
+    assert len(stub.calls) == 3
+    assert stub.temperatures == [0.0, 0.0, 0.0]
