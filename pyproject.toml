@@ -15,6 +15,7 @@ dependencies = [
   "boto3>=1.35,<2",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
+  "opencv-python-headless>=4.10,<5",
   "pydantic-settings>=2.7,<3",
   "pillow>=11.0,<13",
   "redis>=5.2,<7",
