@@ -16,6 +16,11 @@ from stroy.editing.mask import crop_image_bytes
 from stroy.generation import GenerationContext, WorkflowManifest
 from stroy.quality import GeometryDiagnostic, geometry_edge_score
 from stroy.rendering import BlenderAdapter, RenderContext, build_blender_plan
+from stroy.plan.qwen_plan import (
+    MockPlanAdapter,
+    PlanAnalysisAdapter,
+    build_local_plan_adapter,
+)
 from stroy.services.adapters import ComfyUIAdapter, AdapterError
 from stroy.style.vision import VisionStyleAdapter, MockVisionStyleAdapter
 from stroy.style.qwen_vision import build_local_vision_adapter
@@ -323,6 +328,183 @@ class VisionStyleExecutor:
             input_asset_ids=payload.get("input_asset_ids"),
         )
         return result
+
+
+class PlanAnalyzeExecutor:
+    """Reconstruct a bare-apartment plan draft from uploaded plan image(s).
+
+    One multimodal call is made per image; the resulting per-image drafts are
+    merged into a single floor list.  Mirrors ``VisionStyleExecutor`` for
+    asset download and byte-injection handling.
+    """
+
+    def __init__(
+        self,
+        adapter: PlanAnalysisAdapter,
+        download_client: AssetDownloader | None = None,
+    ) -> None:
+        self.adapter = adapter
+        self.download_client = download_client
+
+    async def _download_images(
+        self, job: dict[str, Any], asset_ids: list[str]
+    ) -> list[bytes]:
+        if not asset_ids or self.download_client is None:
+            return []
+        downloads = job.get("download_urls")
+        if not isinstance(downloads, dict):
+            return []
+        urls = [
+            str(downloads[asset_id])
+            for asset_id in asset_ids
+            if isinstance(downloads.get(asset_id), str)
+        ]
+        if not urls:
+            return []
+        try:
+            return [await self.download_client.download_input(url) for url in urls]
+        except Exception as exc:  # noqa: BLE001 - surface as a job failure
+            raise ValueError(f"plan job asset download failed: {exc}") from exc
+
+    async def execute(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload", {})
+        raw_images = payload.get("images")
+        if (
+            isinstance(raw_images, list)
+            and raw_images
+            and all(isinstance(image, bytes) for image in raw_images)
+        ):
+            images = list(raw_images)
+        else:
+            asset_ids = payload.get("input_asset_ids") or []
+            images = await self._download_images(job, asset_ids)
+        if not images:
+            raise ValueError("plan analyze job requires plan image inputs")
+
+        hints = payload.get("hints")
+        if not isinstance(hints, dict):
+            hints = None
+
+        results = [
+            await self.adapter.analyze_plan(images=[image], hints=hints)
+            for image in images
+        ]
+        return _merge_plan_results(results)
+
+
+def _reid_entity_id(entity_id: str, image_index: int) -> str:
+    return f"{entity_id}.img{image_index}"
+
+
+def _reid_floor(floor: dict[str, Any], image_index: int) -> dict[str, Any]:
+    """Namespace every entity id in a per-image floor with ``.img{i}``."""
+    new_floor = dict(floor)
+    wall_id_map: dict[str, str] = {}
+    new_walls: list[dict[str, Any]] = []
+    for wall in floor.get("walls") or []:
+        if not isinstance(wall, dict):
+            new_walls.append(wall)
+            continue
+        old_id = wall.get("id")
+        new_id = _reid_entity_id(str(old_id), image_index)
+        if isinstance(old_id, str):
+            wall_id_map[old_id] = new_id
+        new_wall = dict(wall)
+        new_wall["id"] = new_id
+        new_openings: list[dict[str, Any]] = []
+        for opening in wall.get("openings") or []:
+            if not isinstance(opening, dict):
+                new_openings.append(opening)
+                continue
+            new_opening = dict(opening)
+            new_opening["id"] = _reid_entity_id(
+                str(opening.get("id")), image_index
+            )
+            host = new_opening.get("host_wall_id")
+            if isinstance(host, str):
+                new_opening["host_wall_id"] = wall_id_map.get(
+                    host, _reid_entity_id(host, image_index)
+                )
+            new_openings.append(new_opening)
+        new_wall["openings"] = new_openings
+        new_walls.append(new_wall)
+
+    new_rooms: list[dict[str, Any]] = []
+    for room in floor.get("rooms") or []:
+        if not isinstance(room, dict):
+            new_rooms.append(room)
+            continue
+        new_room = dict(room)
+        new_room["id"] = _reid_entity_id(str(room.get("id")), image_index)
+        new_room["wall_ids"] = [
+            wall_id_map.get(str(wall_id), _reid_entity_id(str(wall_id), image_index))
+            for wall_id in room.get("wall_ids") or []
+        ]
+        new_rooms.append(new_room)
+
+    new_floor["walls"] = new_walls
+    new_floor["rooms"] = new_rooms
+    return new_floor
+
+
+def _merge_plan_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not results:
+        raise ValueError("plan analyze produced no results")
+
+    if len(results) == 1:
+        merged = dict(results[0])
+        draft = dict(merged.get("plan_draft") or {})
+        floors = list(draft.get("floors") or [])
+        scale = draft.get("scale") or {"source": "unknown", "mm_per_px": None}
+        draft["floors"] = floors
+        draft["scale"] = scale
+        merged["plan_draft"] = draft
+        return merged
+
+    merged = dict(results[0])
+    base_draft = dict(merged.get("plan_draft") or {})
+    scale = base_draft.get("scale") or {"source": "unknown", "mm_per_px": None}
+    floors_by_name: dict[str, dict[str, Any]] = {}
+    floor_order: list[str] = []
+
+    for image_index, result in enumerate(results):
+        result_draft = result.get("plan_draft") or {}
+        for floor in result_draft.get("floors") or []:
+            if not isinstance(floor, dict):
+                continue
+            reid = _reid_floor(floor, image_index)
+            name = str(reid.get("name") or "main")
+            if name not in floors_by_name:
+                merged_floor = dict(reid)
+                merged_floor["walls"] = list(reid.get("walls") or [])
+                merged_floor["rooms"] = list(reid.get("rooms") or [])
+                floors_by_name[name] = merged_floor
+                floor_order.append(name)
+            else:
+                floors_by_name[name]["walls"].extend(reid.get("walls") or [])
+                floors_by_name[name]["rooms"].extend(reid.get("rooms") or [])
+        extra_scale = result_draft.get("scale") or {}
+        if scale.get("source") == "unknown" and extra_scale.get("source") not in (
+            None,
+            "unknown",
+        ):
+            scale = extra_scale
+
+    base_draft["floors"] = [floors_by_name[name] for name in floor_order]
+    base_draft["scale"] = scale
+    merged["plan_draft"] = base_draft
+    return merged
+
+
+def build_plan_analyze_executor(
+    adapter_name: str,
+    download_client: AssetDownloader | None = None,
+) -> Any:
+    if adapter_name in {"mock", "fake"}:
+        return PlanAnalyzeExecutor(MockPlanAdapter(), download_client)
+    if adapter_name == "local":
+        return PlanAnalyzeExecutor(build_local_plan_adapter(), download_client)
+    raise ValueError(f"unknown plan analyze adapter: {adapter_name}")
 
 
 class FakeStyleExecutor:

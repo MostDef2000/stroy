@@ -5,6 +5,7 @@ import os
 import signal
 
 from stroy.models import ModelProfileRegistry
+from stroy.plan.qwen_plan import QwenPlanAdapter
 from stroy.rendering import BlenderAdapter
 from stroy.services.adapters import ComfyUIAdapter, FakeLLMAdapter, OpenAICompatibleLLM
 from stroy.worker.client import WorkerClient
@@ -13,7 +14,9 @@ from stroy.worker.executors import (
     ComfyUIExecutor,
     FakeImageExecutor,
     GeometryQualityExecutor,
+    PlanAnalyzeExecutor,
     QwenExecutor,
+    build_plan_analyze_executor,
     build_style_analyze_executor,
 )
 from stroy.worker.runtime import FakeExecutor, WorkerRunner
@@ -23,6 +26,7 @@ from stroy.worker.runtime import FakeExecutor, WorkerRunner
 DEFAULT_CAPABILITIES = [
     "llm",
     "style_analysis",
+    "plan_analyze",
     "image_generation",
     "image_edit",
     "blender_render",
@@ -81,6 +85,7 @@ async def _run() -> None:
         executors = {
             "llm.complete": QwenExecutor(llm),
             "style.analyze": QwenExecutor(llm),
+            "plan.analyze": PlanAnalyzeExecutor(QwenPlanAdapter(llm), client),
             "image.generate": ComfyUIExecutor(comfy, worker_id, image_profile.id, client=client),
             "image.edit": ComfyUIExecutor(comfy, worker_id, image_profile.id, client=client),
             "render.blender": BlenderExecutor(blender),
@@ -92,6 +97,9 @@ async def _run() -> None:
             "llm.complete": QwenExecutor(FakeLLMAdapter()),
             "style.analyze": build_style_analyze_executor(
                 os.getenv("STROY_STYLE_VISION_ADAPTER", "mock"), client
+            ),
+            "plan.analyze": build_plan_analyze_executor(
+                os.getenv("STROY_PLAN_VISION_ADAPTER", "mock"), client
             ),
             "render.blender": FakeExecutor("fake-blender"),
             "image.generate": FakeImageExecutor(),

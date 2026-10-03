@@ -98,6 +98,38 @@ async def apply_scene_command(
     return revision
 
 
+async def append_snapshot_revision(
+    session: AsyncSession,
+    project_id: str,
+    scene: Scene,
+    *,
+    parent_revision_id: str | None = None,
+) -> SceneRevisionRow:
+    """Append a plain snapshot revision with no ``DesignCommandRow``.
+
+    Used by plan-draft commits: the scene is built wholesale from the draft
+    rather than evolved by a command, so lineage is recorded by parent id
+    only.  The parent may be ``None`` when the project has no revision yet.
+    """
+    if scene.project_id != project_id:
+        raise ValueError("scene.project_id must match route project_id")
+    revision = SceneRevisionRow(
+        project_id=project_id,
+        parent_revision_id=parent_revision_id,
+        command_id=None,
+        content_hash=canonical_hash(scene),
+        scene_json=scene.model_dump(mode="json", exclude_none=True),
+    )
+    session.add(revision)
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise CommandConflict("base revision was updated concurrently") from exc
+    await session.refresh(revision)
+    return revision
+
+
 async def create_noop_revision(
     session: AsyncSession,
     project_id: str,

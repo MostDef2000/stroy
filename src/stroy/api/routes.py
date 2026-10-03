@@ -23,6 +23,7 @@ from stroy.api.dependencies import (
 from stroy.db.models import AssetRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, Scene
+from stroy.domain.plan import PlanDraft
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
 from stroy.services.asset_metadata import extract_asset_metadata
@@ -52,6 +53,14 @@ from stroy.services.jobs import (
 from stroy.services.quality import list_geometry_diagnostics, persist_geometry_diagnostic
 from stroy.services.renders import list_render_manifests, persist_render_manifest
 from stroy.services.styles import create_style_profile_from_job, list_style_profiles
+from stroy.services.plans import (
+    DraftAlreadyCommittedError,
+    ScaleUnknownError,
+    commit_draft,
+    create_plan_draft_from_job,
+    get_latest_draft,
+    save_draft,
+)
 from stroy.services.scenes import (
     apply_scene_command,
     create_noop_revision,
@@ -115,6 +124,22 @@ class StyleAnalyzeRequest(BaseModel):
     reference_asset_ids: list[str] = Field(min_length=3, max_length=5)
     overrides: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class PlanAnalyzeHints(BaseModel):
+    known_wall_length_mm: float | None = Field(default=None, gt=0)
+    wall_asset_index: int | None = Field(default=None, ge=0)
+    length_mm: float | None = Field(default=None, gt=0)
+
+
+class PlanAnalyzeRequest(BaseModel):
+    asset_ids: list[str] = Field(min_length=1)
+    hints: PlanAnalyzeHints = Field(default_factory=PlanAnalyzeHints)
+    idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class PlanDraftSave(BaseModel):
+    draft: PlanDraft
 
 
 class CameraUpsertRequest(BaseModel):
@@ -1543,6 +1568,128 @@ async def style_profile_get(style_profile_id: str, session: DbSession):
 
 
 @router.post(
+    "/api/v1/projects/{project_id}/plan/analyze",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def plan_analyze(
+    project_id: str,
+    payload: PlanAnalyzeRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    plan_assets: list[AssetRow] = []
+    for asset_id in payload.asset_ids:
+        asset = await session.get(AssetRow, asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_plan_asset", "asset_id": asset_id},
+            )
+        if not asset.media_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_plan_asset",
+                    "asset_id": asset_id,
+                    "detail": "plan assets must be images",
+                },
+            )
+        plan_assets.append(asset)
+
+    row = await create_job(
+        session,
+        project_id=project_id,
+        job_type="plan.analyze",
+        required_capabilities=["plan_analyze"],
+        payload={
+            "purpose": "plan_draft",
+            "input_asset_ids": [asset.id for asset in plan_assets],
+            "hints": payload.hints.model_dump(exclude_none=True),
+        },
+        idempotency_key=payload.idempotency_key,
+        correlation_id=request.state.request_id,
+        dispatcher=request.app.state.job_dispatcher,
+    )
+    return {**job_view(row), "job_id": row.id, "draft_id": None}
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/plan/draft",
+    dependencies=[Depends(require_owner)],
+)
+async def plan_draft_get(project_id: str, session: DbSession):
+    row = await get_latest_draft(session, project_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="plan draft not found")
+    return {
+        "draft_id": row.id,
+        "project_id": row.project_id,
+        "version": row.version,
+        "status": row.status,
+        "job_id": row.job_id,
+        "created_at": row.created_at,
+        "draft": row.draft_json,
+    }
+
+
+@router.put(
+    "/api/v1/projects/{project_id}/plan/draft",
+    dependencies=[Depends(require_csrf)],
+)
+async def plan_draft_save(
+    project_id: str,
+    payload: PlanDraftSave,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    row = await save_draft(session, project_id, payload.draft)
+    return {
+        "draft_id": row.id,
+        "project_id": row.project_id,
+        "version": row.version,
+        "status": row.status,
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/plan/draft/commit",
+    dependencies=[Depends(require_csrf)],
+)
+async def plan_draft_commit(
+    project_id: str,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    draft_row = await get_latest_draft(session, project_id)
+    if draft_row is None:
+        raise HTTPException(status_code=404, detail="plan draft not found")
+    try:
+        revision = await commit_draft(session, project_id, draft_row)
+    except DraftAlreadyCommittedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "draft_already_committed", "detail": str(exc)},
+        ) from exc
+    except ScaleUnknownError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "scale_unknown", "detail": str(exc)},
+        ) from exc
+    except (ValueError, CommandRejected) as exc:
+        raise _domain_conflict(exc) from exc
+    return {"revision_id": revision.id, "content_hash": revision.content_hash}
+
+
+@router.post(
     "/api/v1/projects/{project_id}/design/instructions",
     status_code=201,
     dependencies=[Depends(require_csrf)],
@@ -1862,6 +2009,17 @@ async def worker_job_complete(
                 **processed_result,
                 "style_profile_id": style_row.id,
                 "style_profile": style_row.profile_json,
+            }
+        if row.job_type == "plan.analyze":
+            plan_row = await create_plan_draft_from_job(
+                session,
+                row,
+                processed_result,
+            )
+            processed_result = {
+                **processed_result,
+                "draft_id": plan_row.id,
+                "plan_draft": plan_row.draft_json,
             }
         if row.job_type == "render.blender":
             render_row = await persist_render_manifest(
