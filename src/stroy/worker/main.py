@@ -43,6 +43,11 @@ def parse_capabilities(raw_caps: str | None) -> list[str]:
         raise SystemExit(1)
     return capabilities
 
+def resolve_llm_model(profile_upstream: str) -> str:
+    """Env override wins over the profile registry upstream (e.g. ollama wrapper names)."""
+    return os.getenv("STROY_LLM_MODEL") or profile_upstream
+
+
 async def _run() -> None:
     server = os.getenv("STROY_SERVER_URL", "http://127.0.0.1:8000")
     worker_id = os.getenv("STROY_WORKER_ID", "local-fake-worker")
@@ -73,7 +78,7 @@ async def _run() -> None:
         llm = OpenAICompatibleLLM(
             os.getenv("STROY_LLM_BASE_URL", "http://127.0.0.1:8001/v1"),
             os.getenv("STROY_LLM_API_KEY", "local"),
-            llm_profile.upstream,
+            resolve_llm_model(llm_profile.upstream),
             profile_id=llm_profile.id,
         )
         comfy = ComfyUIAdapter(os.getenv("STROY_COMFYUI_URL", "http://127.0.0.1:8188"))
