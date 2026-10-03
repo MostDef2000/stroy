@@ -15,6 +15,9 @@ services:
       STROY_S3_ENDPOINT: http://minio:9000
       STROY_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
       STROY_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # onnxruntime 1.30 ships MS 1DS telemetry (CPU spin + cache db growth);
+      # disabled server-side since the u2net rollout (ops 1cc6c49).
+      ORT_DISABLE_TELEMETRY: "1"
     ports:
       - "127.0.0.1:8000:8000"
     networks:
@@ -29,13 +32,15 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import os, urllib.request as u; h = (os.getenv('STROY_TRUSTED_HOSTS') or 'localhost').split(',')[0]; u.urlopen(u.Request('http://127.0.0.1:8000/health', headers={'Host': h}), timeout=5)"]
-      interval: 10s
+      # 60s: healthcheck churn on the 1-vCPU box (ops b1ea31a; see KB 29.09 entry)
+      interval: 60s
       timeout: 5s
       retries: 10
     deploy:
       resources:
         limits:
-          memory: 256M
+          # u2net session needs ~768M (256M OOM-killed at 232MB anon, ops 1cc6c49)
+          memory: 768M
         reservations:
           memory: 192M
     logging:
@@ -93,7 +98,8 @@ services:
       - private
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U stroy"]
-      interval: 5s
+      # 30s (kept under a minute so api's service_healthy wait stays fast)
+      interval: 30s
       timeout: 5s
       retries: 10
     deploy:
@@ -118,7 +124,8 @@ services:
       - private
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      # 30s (kept under a minute so api's service_healthy wait stays fast)
+      interval: 30s
       timeout: 5s
       retries: 10
     deploy:
@@ -146,7 +153,8 @@ services:
       - private
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
-      interval: 10s
+      # 60s: healthcheck churn on the 1-vCPU box (ops b1ea31a; see KB 29.09 entry)
+      interval: 60s
       timeout: 5s
       retries: 10
     deploy:
