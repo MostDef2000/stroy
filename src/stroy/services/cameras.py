@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stroy.camera import camera_residual_px
+from stroy.camera.solve import solve_camera_pose
 from stroy.db.models import AssetRow, SceneRevisionRow
 from stroy.domain.commands import CommandConflict
 from stroy.domain.models import Camera, Scene, canonical_hash
@@ -16,6 +17,7 @@ async def upsert_camera(
     *,
     expected_base_revision_id: str,
     camera: Camera,
+    solve: bool = False,
 ) -> SceneRevisionRow:
     current = await latest_revision(session, project_id)
     if current is None:
@@ -33,6 +35,17 @@ async def upsert_camera(
             raise ValueError("camera source asset must be an image")
 
     next_camera = camera.model_copy(deep=True)
+    if solve:
+        if not (next_camera.calibration and next_camera.calibration.observations):
+            raise ValueError("camera pose solve requires calibration observations")
+        solved = solve_camera_pose(
+            next_camera.calibration.observations,
+            next_camera.width_px,
+            next_camera.height_px,
+            intrinsics=next_camera.intrinsics,
+            initial_transform=next_camera.transform,
+        )
+        next_camera.transform = solved.transform
     if next_camera.calibration and next_camera.calibration.observations:
         residual = camera_residual_px(next_camera)
         if residual is None:

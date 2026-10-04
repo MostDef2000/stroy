@@ -145,6 +145,7 @@ class PlanDraftSave(BaseModel):
 class CameraUpsertRequest(BaseModel):
     base_revision_id: str = Field(min_length=1)
     camera: Camera
+    solve: bool = False
 
 
 class CameraDeleteRequest(BaseModel):
@@ -567,6 +568,7 @@ async def camera_upsert(
             project_id,
             expected_base_revision_id=payload.base_revision_id,
             camera=payload.camera,
+            solve=payload.solve,
         )
     except (ValueError, CommandRejected, CommandConflict) as exc:
         raise _domain_conflict(exc) from exc
