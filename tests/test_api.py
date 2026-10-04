@@ -11,7 +11,14 @@ from sqlalchemy import select
 
 from stroy.api.app import create_app
 from stroy.config import Settings
-from stroy.db.models import AssetRow, DesignCommandRow, GenerationManifestRow, JobRow
+from stroy.db.models import (
+    AssetRow,
+    DesignCommandRow,
+    GenerationManifestRow,
+    JobRow,
+    ProjectRow,
+    RenderManifestRow,
+)
 from stroy.editing.mask import render_replacement_mask
 from stroy.editing.replacement import ReplacementRegion
 from stroy.generation import WorkflowManifest
@@ -869,6 +876,13 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
                             "renderer_profile": "blender-cycles-v0",
                             "passes": pass_assets,
                         },
+                        # The worker sends the Blender scene metadata alongside
+                        # the manifest; render_seconds must survive persistence
+                        # and reach the renders API.
+                        "scene_metadata": {
+                            "schema_version": "0.1.0",
+                            "render_seconds": 12.5,
+                        },
                         "output_asset_ids": list(pass_assets.values()),
                     },
                 },
@@ -884,6 +898,16 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
             assert len(renders.json()) == 1
             manifest = renders.json()[0]["manifest"]
             assert manifest["passes"] == pass_assets
+            # render_seconds flows from scene_metadata -> manifest_json -> API.
+            assert renders.json()[0]["render_seconds"] == 12.5
+            assert manifest["render_seconds"] == 12.5
+
+            render_detail = await client.get(
+                f"/api/v1/renders/{lease['payload']['render_id']}"
+            )
+            assert render_detail.status_code == 200
+            assert render_detail.json()["render_seconds"] == 12.5
+            assert render_detail.json()["manifest"]["render_seconds"] == 12.5
 
             assets = await client.get(
                 f"/api/v1/projects/{project_id}/assets"
@@ -897,6 +921,47 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
             assert set(pass_assets).issubset(tagged)
             assert all(tagged[name]["role"] == "derived" for name in pass_assets)
 
+
+@pytest.mark.asyncio
+async def test_render_api_tolerates_manifest_without_render_seconds(settings):
+    """Old manifests (no scene_metadata) must still serve with render_seconds=None."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            await login(client)
+            async with app.state.session_factory() as db:
+                db.add(ProjectRow(id="project.legacy-render", name="Legacy render"))
+                db.add(
+                    RenderManifestRow(
+                        id="render.legacy",
+                        project_id="project.legacy-render",
+                        job_id="job.legacy",
+                        scene_revision_id="revision.legacy",
+                        camera_id="camera.main",
+                        manifest_json={
+                            "schema_version": "0.1.0",
+                            "render_id": "render.legacy",
+                            "scene_revision_id": "revision.legacy",
+                            "camera_id": "camera.main",
+                            "passes": {"rgb": "asset.rgb"},
+                        },
+                    )
+                )
+                await db.commit()
+
+            detail = await client.get("/api/v1/renders/render.legacy")
+            assert detail.status_code == 200
+            assert detail.json()["render_seconds"] is None
+            assert "render_seconds" not in detail.json()["manifest"]
+
+            listing = await client.get(
+                "/api/v1/projects/project.legacy-render/renders"
+            )
+            assert listing.status_code == 200
+            assert listing.json()[0]["render_seconds"] is None
 
 
 @pytest.mark.asyncio

@@ -59,13 +59,64 @@ def resolve_llm_model(profile_upstream: str) -> str:
     return os.getenv("STROY_LLM_MODEL") or profile_upstream
 
 
+def _log_value(value: object) -> str:
+    """Quote a value only when it would otherwise break key=value parsing."""
+    text = str(value)
+    return f'"{text}"' if any(character.isspace() for character in text) else text
+
+
+def format_startup_line(
+    *,
+    pid: int,
+    worker_id: str,
+    worker_name: str,
+    mode: str,
+    server: str,
+    capabilities: list[str],
+    executors: dict[str, object],
+    blender_bin: str,
+    blender_timeout_seconds: int,
+    git_revision: str | None = None,
+) -> str:
+    """One structured startup line, safe for the journal: no tokens or secrets.
+
+    Answers the #74 question "what is running and can it reach the queue" from
+    a single log record: identity, queue target, resolved capabilities,
+    registered executors and Blender resolution.
+    """
+    fields: list[tuple[str, object]] = [
+        ("pid", pid),
+        ("worker_id", worker_id),
+        ("worker_name", worker_name),
+        ("mode", mode),
+        ("server", server),
+        ("capabilities", ",".join(capabilities)),
+        ("executors", ",".join(sorted(executors))),
+        ("blender_bin", blender_bin),
+        ("blender_timeout_s", blender_timeout_seconds),
+    ]
+    if git_revision:
+        fields.append(("git_revision", git_revision))
+    rendered = " ".join(
+        f"{key}={_log_value(value)}" for key, value in fields
+    )
+    return f"worker.startup {rendered}"
+
+
 async def _run() -> None:
     server = os.getenv("STROY_SERVER_URL", "http://127.0.0.1:8000")
     worker_id = os.getenv("STROY_WORKER_ID", "local-fake-worker")
+    worker_name = os.getenv("STROY_WORKER_NAME", "Home GPU worker")
     token = os.getenv("STROY_WORKER_TOKEN", "development-worker-token")
     poll = float(os.getenv("STROY_WORKER_POLL_SECONDS", "5"))
     heartbeat = float(os.getenv("STROY_WORKER_HEARTBEAT_SECONDS", "20"))
     mode = os.getenv("STROY_WORKER_EXECUTOR_MODE", "fake")
+
+    # Blender resolution is read regardless of mode so the startup line can
+    # report the effective binary/timeout (and local mode reuses the values).
+    blender_bin = os.getenv("STROY_BLENDER_BIN", "blender")
+    blender_script = os.getenv("STROY_BLENDER_SCRIPT", "blender/stroy_blender.py")
+    blender_timeout_seconds = int(os.getenv("STROY_BLENDER_TIMEOUT_SECONDS", "900"))
 
     # Capability parsing
     capabilities = parse_capabilities(os.getenv("STROY_WORKER_CAPABILITIES"))
@@ -96,10 +147,11 @@ async def _run() -> None:
         )
         comfy = ComfyUIAdapter(os.getenv("STROY_COMFYUI_URL", "http://127.0.0.1:8188"))
         blender = BlenderAdapter(
-            os.getenv("STROY_BLENDER_BIN", "blender"),
-            script_path=os.getenv("STROY_BLENDER_SCRIPT", "blender/stroy_blender.py"),
-            timeout_seconds=int(os.getenv("STROY_BLENDER_TIMEOUT_SECONDS", "900")),
+            blender_bin,
+            script_path=blender_script,
+            timeout_seconds=blender_timeout_seconds,
         )
+
         executors = {
             "llm.complete": QwenExecutor(llm),
             "style.analyze": QwenExecutor(llm),
@@ -126,11 +178,30 @@ async def _run() -> None:
         }
         models = ["fake"]
 
+    # #74: one line at boot so the journal alone answers "what is running and
+    # can it reach the queue". Emitted before register so it survives a failed
+    # registration. No token/server credentials beyond the queue target URL.
+    print(
+        format_startup_line(
+            pid=os.getpid(),
+            worker_id=worker_id,
+            worker_name=worker_name,
+            mode=mode,
+            server=server,
+            capabilities=capabilities,
+            executors=executors,
+            blender_bin=blender_bin,
+            blender_timeout_seconds=blender_timeout_seconds,
+            git_revision=os.getenv("GIT_SHA") or os.getenv("STROY_GIT_SHA"),
+        ),
+        flush=True,
+    )
+
     await client.register(
         {
             "schema_version": "0.1.0",
             "worker_id": worker_id,
-            "display_name": os.getenv("STROY_WORKER_NAME", "Home GPU worker"),
+            "display_name": worker_name,
             "capabilities": capabilities,
             "models": models,
             "runtimes": {"comfyui" if mode == "local" else mode: {"status": "ready", "version": "0.1.0"}},

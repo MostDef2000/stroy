@@ -25,6 +25,10 @@ class RenderManifest(BaseModel):
     camera_id: str = Field(min_length=1)
     renderer_profile: str | None = None
     passes: dict[str, str] = Field(default_factory=dict)
+    # Wall-clock Blender render time, lifted from the worker's scene_metadata
+    # (blender/stroy_blender.py `_metadata`). Optional so manifests persisted
+    # before this field existed still validate/serve (None).
+    render_seconds: float | None = None
 
 
 def finalize_render_manifest(

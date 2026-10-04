@@ -895,6 +895,7 @@ async def render_list(project_id: str, session: DbSession):
             "design_revision_id": row.design_revision_id,
             "camera_id": row.camera_id,
             "created_at": row.created_at,
+            "render_seconds": (row.manifest_json or {}).get("render_seconds"),
             "manifest": row.manifest_json,
         }
         for row in rows
@@ -917,6 +918,7 @@ async def render_get(render_id: str, session: DbSession):
         "design_revision_id": row.design_revision_id,
         "camera_id": row.camera_id,
         "created_at": row.created_at,
+        "render_seconds": (row.manifest_json or {}).get("render_seconds"),
         "manifest": row.manifest_json,
     }
 
