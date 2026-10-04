@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 try:  # Blender's bundled Python provides bpy; the guard keeps the module testable.
@@ -503,7 +504,7 @@ def _normalize_output(output_dir: Path, prefix: str, wired_prefixes: set[str]) -
         extra.unlink(missing_ok=True)
 
 
-def _metadata(plan: dict, engine: str) -> dict:
+def _metadata(plan: dict, engine: str, render_seconds: float = 0.0) -> dict:
     metadata = {
         "schema_version": "0.1.0",
         "scene_revision_id": plan["scene_revision_id"],
@@ -511,6 +512,10 @@ def _metadata(plan: dict, engine: str) -> dict:
         "scene_id": plan["scene_id"],
         "renderer_profile": plan.get("renderer_profile", DEFAULT_RENDERER_PROFILE),
         "engine": engine,
+        # Wall-clock seconds spent inside the render call; 0.0 when the script
+        # runs without --render. Measured in-process so the worker does not have
+        # to guess duration after the fact.
+        "render_seconds": render_seconds,
         "camera": plan["camera"],
         "objects": [
             {
@@ -556,11 +561,15 @@ def main() -> int:
         scene.render.image_settings.file_format = "PNG"
         scene.render.image_settings.color_mode = "RGB"
         scene.render.filepath = str(output_dir / "rgb.png")
+        started = time.time()
         bpy.ops.render.render(write_still=True)
+        render_seconds = round(max(0.0, time.time() - started), 3)
         for name in ("depth", "normals", "object_ids", "material_ids"):
             _normalize_output(output_dir, name, wired_prefixes)
+    else:
+        render_seconds = 0.0
 
-    metadata = _metadata(plan, engine)
+    metadata = _metadata(plan, engine, render_seconds=render_seconds)
     (output_dir / "scene_metadata.json").write_text(
         json.dumps(metadata, sort_keys=True, indent=2),
         encoding="utf-8",

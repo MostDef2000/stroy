@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import math
@@ -14,6 +15,7 @@ from stroy.rendering import (
     build_blender_plan,
     finalize_render_manifest,
 )
+from stroy.rendering.blender import _MAX_INDEX, stable_id_map
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +93,45 @@ def test_object_and_material_indices_are_stable_and_nonzero() -> None:
     assert material_indices == {
         entity.material_ref: entity.material_index for entity in rerun.entities
     }
+
+
+def test_stable_id_map_fits_blender_int16_and_stays_unique() -> None:
+    # Apartment-scale entity set: 300 identifiers make 15-bit hash collisions
+    # plausible, exercising the deterministic linear-probe path.
+    values = [f"entity.room{index // 10}.fixture.{index:04d}" for index in range(300)]
+
+    mapping = stable_id_map(values)
+
+    assert len(mapping) == len(set(values))
+    # Blender clamps IndexOB/IndexMA to int16, so every index must stay in
+    # [1, 32767] or the pass silently collapses distinct entities to 32767.
+    assert _MAX_INDEX == (1 << 15) - 1
+    assert all(1 <= index <= 32767 for index in mapping.values())
+    # object_index/material_index must be DISTINCT per entity for the pass to
+    # be meaningful.
+    assert len(set(mapping.values())) == len(mapping)
+    # Same input set -> same assignment (stability for idempotent re-plans).
+    assert stable_id_map(values) == mapping
+
+
+def test_stable_id_map_resolves_hash_collisions_without_duplicates() -> None:
+    seen: dict[int, str] = {}
+    colliding: list[str] = []
+    for index in range(100000):
+        value = f"entity.collision.{index}"
+        raw = int.from_bytes(
+            hashlib.sha256(value.encode("utf-8")).digest()[:3], "big"
+        )
+        slot = raw % _MAX_INDEX
+        if slot in seen:
+            colliding = [seen[slot], value]
+            break
+        seen[slot] = value
+
+    assert colliding, "expected a 15-bit hash collision within 100000 values"
+    mapping = stable_id_map(colliding)
+    assert len(set(mapping.values())) == 2
+    assert all(1 <= index <= _MAX_INDEX for index in mapping.values())
 
 
 def test_camera_intrinsics_translate_without_hidden_resolution_change() -> None:
@@ -224,6 +265,16 @@ def test_metadata_includes_blender_version_with_bpy(monkeypatch) -> None:
     monkeypatch.setattr(module, "bpy", type("FakeBpy", (), {"app": fake_app}))
     metadata = module._metadata(minimal_blender_plan(), "CYCLES")
     assert metadata["blender_version"] == "5.0.1"
+
+
+def test_metadata_reports_nonnegative_render_seconds() -> None:
+    module = load_blender_script_module()
+    metadata = module._metadata(minimal_blender_plan(), "CYCLES")
+    assert "render_seconds" in metadata
+    assert metadata["render_seconds"] >= 0
+
+    measured = module._metadata(minimal_blender_plan(), "CYCLES", render_seconds=12.5)
+    assert measured["render_seconds"] == 12.5
 
 
 def test_pick_compute_device_type_matches_enum_items() -> None:

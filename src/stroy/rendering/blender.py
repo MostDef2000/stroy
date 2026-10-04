@@ -15,17 +15,32 @@ from stroy.domain.models import Camera, Scene, SceneEntity
 
 
 PASS_NAMES = ("rgb", "depth", "normals", "object_ids", "material_ids")
-_MAX_INDEX = (1 << 24) - 1
+
+# Blender stores the IndexOB/IndexMA render passes as int16, so any pass index
+# above 32767 is clamped to 32767 in the EXR (box-proven live 2026-10-04: a
+# 24-bit object_index 7235864 and material_index 13484493 both came back as
+# 32767). Indices MUST therefore fit in 15 bits: two distinct entities that
+# both clamp to 32767 become indistinguishable and the index-pass QA contract
+# (per-object/per-material targeting) silently breaks.
+_MAX_INDEX = (1 << 15) - 1
 
 
 def stable_id_map(values: list[str]) -> dict[str, int]:
     used: set[int] = set()
     result: dict[str, int] = {}
     for value in sorted(set(values)):
-        candidate = int.from_bytes(
+        raw = int.from_bytes(
             hashlib.sha256(value.encode("utf-8")).digest()[:3], "big"
         )
-        candidate = max(1, candidate)
+        # Fold the 24-bit digest into the 15-bit pass range. `% _MAX_INDEX + 1`
+        # maps onto [1, _MAX_INDEX] (0 is the "unused slot" value and must be
+        # avoided, matching the old max(1, ...) behaviour).
+        candidate = raw % _MAX_INDEX + 1
+        # 15-bit space makes hash collisions plausible at apartment scale
+        # (birthday bound ~270 entities). Deterministic linear probing into the
+        # next free index keeps the map total and stable for a given entity
+        # set: object_index must be DISTINCT per entity for the pass to be
+        # meaningful.
         while candidate in used:
             candidate += 1
             if candidate > _MAX_INDEX:
