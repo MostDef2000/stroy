@@ -1254,4 +1254,201 @@ header span { color: #777; font-size: 13px; }
 }
 
 
+/* Project shell: header, page tabs, overflow menu (#101) */
+.project-header {
+  align-items: flex-start;
+}
+
+.project-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.project-header-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.page-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: #e9e6df;
+}
+
+.page-tab {
+  background: transparent;
+  color: #56544f;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.page-tab:hover {
+  background: #dedbd3;
+}
+
+.page-tab.active {
+  background: #242424;
+  color: white;
+}
+
+.overflow-menu {
+  position: relative;
+}
+
+.overflow-menu-button {
+  min-width: 38px;
+  background: #ece9e2;
+  color: #333;
+  font-size: 18px;
+  line-height: 1;
+  padding: 7px 10px;
+}
+
+.overflow-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 200px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: white;
+  border: 1px solid #dedbd3;
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(20, 20, 20, 0.16);
+}
+
+.overflow-dropdown button {
+  text-align: left;
+  background: #f8f0ef;
+  color: #8a3028;
+}
+
+/* Overview readiness cards (#101) */
+.readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.readiness-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 14px;
+  border: 1px solid #dedbd3;
+  border-left: 4px solid #cbc8c0;
+  border-radius: 12px;
+  background: white;
+}
+
+.readiness-card p {
+  margin: 0;
+  color: #6a675f;
+  font-size: 13px;
+}
+
+.readiness-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.readiness-card-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.readiness-badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: #eeece6;
+  color: #56544f;
+  white-space: nowrap;
+}
+
+.readiness-card.ok {
+  border-left-color: #3f7d52;
+}
+.readiness-card.ok .readiness-badge {
+  background: #e3f2e8;
+  color: #2e6841;
+}
+
+.readiness-card.pending {
+  border-left-color: #b98a24;
+}
+.readiness-card.pending .readiness-badge {
+  background: #fdf3e3;
+  color: #6b4d12;
+}
+
+.readiness-card.attention {
+  border-left-color: #b04a3a;
+}
+.readiness-card.attention .readiness-badge {
+  background: #f8ecea;
+  color: #8a3028;
+}
+
+.readiness-card > button {
+  justify-self: start;
+}
+
+/* Per-page uploads + empty states (#101) */
+.page-upload-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: white;
+  border: 1px solid #dedbd3;
+  border-radius: 12px;
+}
+
+.page-upload-row .upload-progress {
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.empty-state {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 28px;
+  background: white;
+  border: 1px dashed #cbc8c0;
+  border-radius: 14px;
+}
+
+.empty-state h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.empty-state p {
+  margin: 0;
+  color: #77736b;
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .project-header-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .page-tabs {
+    overflow-x: auto;
+  }
+}
 
