@@ -1,4 +1,12 @@
-import type { Asset, AssetRole, Job, StyleProfile, Worker } from "../api";
+import type {
+  Asset,
+  AssetRole,
+  Generation,
+  Job,
+  RevisionSummary,
+  StyleProfile,
+  Worker
+} from "../api";
 
 function shortId(value: string | null | undefined) {
   return value ? value.slice(0, 8) : "—";
@@ -9,6 +17,8 @@ function shortId(value: string | null | undefined) {
 export function DiagnosticsPage({
   workers,
   jobs,
+  revisions,
+  generations,
   styleProfiles,
   assets,
   onCancel,
@@ -16,6 +26,8 @@ export function DiagnosticsPage({
 }: {
   workers: Worker[];
   jobs: Job[];
+  revisions: RevisionSummary[];
+  generations: Generation[];
   styleProfiles: StyleProfile[];
   assets: Asset[];
   onCancel: (jobId: string) => void;
@@ -131,6 +143,36 @@ export function DiagnosticsPage({
               </div>
             );
           })}
+        </article>
+
+        <article className="panel">
+          <h2>Revisions &amp; generations</h2>
+          <h3>Revisions</h3>
+          {revisions.length === 0 && <p className="muted">версий пока нет</p>}
+          {revisions.slice(0, 12).map((item) => (
+            <div className="row" key={item.revision_id}>
+              <span>{item.command_id ? `cmd ${item.command_id}` : "snapshot"}</span>
+              <span className="tag">{new Date(item.created_at).toLocaleString()}</span>
+              <small className="mono">
+                {item.revision_id}
+                {item.parent_revision_id ? ` · parent ${item.parent_revision_id}` : ""}
+                {` · hash ${item.content_hash.slice(0, 12)}`}
+              </small>
+            </div>
+          ))}
+
+          <h3>Generations</h3>
+          {generations.length === 0 && <p className="muted">генераций пока нет</p>}
+          {generations.slice(0, 12).map((item) => (
+            <div className="row" key={item.id}>
+              <span>generation</span>
+              <span className="tag">{item.manifest.output_asset_ids?.length ?? 0} assets</span>
+              <small className="mono">
+                {item.id} · job {item.job_id} · design {item.design_revision_id} · camera{" "}
+                {item.camera_id} · {new Date(item.created_at).toLocaleString()}
+              </small>
+            </div>
+          ))}
         </article>
       </section>
     </>

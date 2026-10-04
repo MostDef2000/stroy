@@ -15,6 +15,7 @@ export function DesignPage({
   assets,
   jobs,
   generations,
+  workersOnline,
   onChanged,
   onUpload,
   uploadProgress,
@@ -29,6 +30,7 @@ export function DesignPage({
   assets: Asset[];
   jobs: Job[];
   generations: Generation[];
+  workersOnline: boolean;
   onChanged: () => Promise<void>;
   onUpload: (file: File | null, role: AssetRole) => void;
   uploadProgress: number | null;
@@ -56,6 +58,13 @@ export function DesignPage({
 
   return (
     <>
+      {!workersOnline && (
+        <p className="worker-notice muted">
+          Генерация временно недоступна: GPU-worker офлайн. Новые задачи будут ждать
+          восстановления воркера.
+        </p>
+      )}
+
       <section className="page-upload-row" aria-label="Загрузка референса">
         <label className="upload">
           Загрузить референс

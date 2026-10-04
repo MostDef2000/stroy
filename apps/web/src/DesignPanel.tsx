@@ -19,6 +19,12 @@ function jobError(job: Job) {
   return `${code}: ${detail}`;
 }
 
+function humanOperation(command: Record<string, unknown> | undefined) {
+  const operation = command?.["operation"];
+  if (typeof operation !== "string" || !operation) return null;
+  return operation.replace(/[_.]+/g, " ").trim();
+}
+
 export function DesignPanel({
   revisions,
   jobs,
@@ -82,12 +88,14 @@ export function DesignPanel({
             typeof result["final_revision_id"] === "string"
               ? (result["final_revision_id"] as string)
               : null;
+          const firstOperation = humanOperation(commands[0]);
           return (
             <div className="design-event" key={job.id}>
               <div className="design-event-head">
-                <span>instruction #{shortId(job.id)}</span>
+                <span>{firstOperation ?? "instruction"}</span>
                 <span className="tag">{job.status}</span>
               </div>
+              <small>instruction #{shortId(job.id)}</small>
               {commands.map((command, index) => (
                 <div className="command-summary" key={`${job.id}-${index}`}>
                   <strong>{String(command["operation"] ?? "command")}</strong>
@@ -108,8 +116,11 @@ export function DesignPanel({
         <h3>Revisions</h3>
         {revisions.slice(0, 12).map((revision) => (
           <div className="revision-line" key={revision.revision_id}>
-            <span>rev {shortId(revision.revision_id)}</span>
-            <span>{revision.command_id ? `cmd ${shortId(revision.command_id)}` : "snapshot"}</span>
+            <span>{new Date(revision.created_at).toLocaleString()}</span>
+            <small>
+              rev {shortId(revision.revision_id)}
+              {revision.command_id ? ` · cmd ${shortId(revision.command_id)}` : " · snapshot"}
+            </small>
             {revision.revision_id === currentRevisionId ? (
               <span className="tag">current</span>
             ) : (
@@ -143,8 +154,8 @@ export function DesignPanel({
                 Before
                 <select value={beforeId} onChange={(event) => setBeforeId(event.target.value)}>
                   {generations.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      rev {shortId(item.design_revision_id)} · gen {shortId(item.id)}
+                    <option key={item.id} value={item.id} title={`gen ${shortId(item.id)}`}>
+                      {new Date(item.created_at).toLocaleString()}
                     </option>
                   ))}
                 </select>
@@ -153,8 +164,8 @@ export function DesignPanel({
                 After
                 <select value={afterId} onChange={(event) => setAfterId(event.target.value)}>
                   {generations.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      rev {shortId(item.design_revision_id)} · gen {shortId(item.id)}
+                    <option key={item.id} value={item.id} title={`gen ${shortId(item.id)}`}>
+                      {new Date(item.created_at).toLocaleString()}
                     </option>
                   ))}
                 </select>
@@ -168,7 +179,7 @@ export function DesignPanel({
                   <figure key={label as string}>
                     <figcaption>
                       <strong>{label as string}</strong>
-                      <span>revision {shortId(item?.design_revision_id)}</span>
+                      <small>revision {shortId(item?.design_revision_id)}</small>
                     </figcaption>
                     {assetId ? (
                       <img src={api.assetUrl(assetId)} alt={label as string} />

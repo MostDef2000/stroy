@@ -7,6 +7,7 @@ export function PlanPage({
   projectId,
   assets,
   jobs,
+  workersOnline,
   onChanged,
   onUpload,
   uploadProgress
@@ -14,12 +15,20 @@ export function PlanPage({
   projectId: string;
   assets: Asset[];
   jobs: Job[];
+  workersOnline: boolean;
   onChanged: () => Promise<void>;
   onUpload: (file: File | null, role: AssetRole) => void;
   uploadProgress: number | null;
 }) {
   return (
     <>
+      {!workersOnline && (
+        <p className="worker-notice muted">
+          Генерация временно недоступна: GPU-worker офлайн. Новые задачи будут ждать
+          восстановления воркера.
+        </p>
+      )}
+
       <section className="page-upload-row" aria-label="Загрузка плана квартиры">
         <label className="upload">
           Загрузить план квартиры
