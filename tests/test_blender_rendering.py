@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import math
+import types
 from pathlib import Path
 
 import jsonschema
@@ -128,6 +129,13 @@ def test_blender_command_is_headless_and_explicit() -> None:
     assert "/tmp/plan.json" in command
     assert "/tmp/render" in command
 
+    # A crashing --python script must fail the process instead of reporting 0.
+    exit_code_index = command.index("--python-exit-code")
+    assert command[exit_code_index + 1] == "1"
+    # Blender global options must precede the "--" script-arg separator.
+    assert exit_code_index < command.index("--")
+    assert exit_code_index < command.index("--python")
+
 
 def test_blender_script_compiles_without_importing_bpy() -> None:
     source = (ROOT / "blender" / "stroy_blender.py").read_text(encoding="utf-8")
@@ -180,6 +188,105 @@ def load_blender_script_module():
     return module
 
 
+def load_benchmark_module():
+    spec = importlib.util.spec_from_file_location(
+        "benchmark_bare_twin_under_test",
+        ROOT / "scripts" / "benchmark_bare_twin.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def minimal_blender_plan() -> dict:
+    return {
+        "scene_revision_id": "revision.test",
+        "design_revision_id": None,
+        "scene_id": "scene.test",
+        "renderer_profile": "blender-cycles-v0",
+        "camera": {"semantic_id": "camera.test"},
+        "entities": [],
+        "passes": ["rgb"],
+    }
+
+
+def test_metadata_omits_blender_version_without_bpy() -> None:
+    module = load_blender_script_module()
+    assert module.bpy is None
+    metadata = module._metadata(minimal_blender_plan(), "CYCLES")
+    assert "blender_version" not in metadata
+
+
+def test_metadata_includes_blender_version_with_bpy(monkeypatch) -> None:
+    module = load_blender_script_module()
+    fake_app = type("app", (), {"version_string": "5.0.1"})
+    monkeypatch.setattr(module, "bpy", type("FakeBpy", (), {"app": fake_app}))
+    metadata = module._metadata(minimal_blender_plan(), "CYCLES")
+    assert metadata["blender_version"] == "5.0.1"
+
+
+def test_pick_compute_device_type_matches_enum_items() -> None:
+    module = load_blender_script_module()
+    enum_items = [
+        types.SimpleNamespace(identifier="OPTIX"),
+        types.SimpleNamespace(identifier="CUDA"),
+    ]
+    stub = types.SimpleNamespace(
+        bl_rna=types.SimpleNamespace(
+            properties={
+                "compute_device_type": types.SimpleNamespace(enum_items=enum_items)
+            }
+        )
+    )
+    assert module._pick_compute_device_type(stub, ("OPTIX", "CUDA")) == "OPTIX"
+    assert module._pick_compute_device_type(stub, ("HIP",)) == "NONE"
+
+
+def test_pick_compute_device_type_without_rna_returns_none() -> None:
+    module = load_blender_script_module()
+    assert module._pick_compute_device_type(object(), ("OPTIX",)) == "NONE"
+
+
+def test_compositing_tree_uses_legacy_scene_node_tree() -> None:
+    module = load_blender_script_module()
+    legacy_tree = object()
+    scene = types.SimpleNamespace(node_tree=legacy_tree, use_nodes=False)
+
+    assert module._compositing_tree(scene) is legacy_tree
+    assert scene.use_nodes is True
+
+
+def test_compositing_tree_creates_node_group_on_blender_5(monkeypatch) -> None:
+    module = load_blender_script_module()
+    created: list[tuple[str, str]] = []
+    group = types.SimpleNamespace(nodes=object(), links=object())
+
+    class FakeNodeGroups:
+        def new(self, name: str, type_name: str):
+            created.append((name, type_name))
+            return group
+
+    fake_bpy = types.SimpleNamespace(
+        data=types.SimpleNamespace(node_groups=FakeNodeGroups())
+    )
+    monkeypatch.setattr(module, "bpy", fake_bpy)
+    scene = types.SimpleNamespace(use_nodes=False, compositing_node_group=None)
+
+    tree = module._compositing_tree(scene)
+
+    assert tree is group
+    assert scene.compositing_node_group is group
+    assert created == [("stroy-compositor", "CompositorNodeTree")]
+    assert scene.use_nodes is True
+
+
+def test_compositing_tree_raises_without_compositor_api() -> None:
+    module = load_blender_script_module()
+    with pytest.raises(RuntimeError, match="no compositing tree API"):
+        module._compositing_tree(types.SimpleNamespace())
+
+
 def test_renderer_profiles_known() -> None:
     module = load_blender_script_module()
     profiles = module.RENDERER_PROFILES
@@ -208,6 +315,38 @@ def test_renderer_profiles_known() -> None:
 def test_benchmark_script_compiles() -> None:
     source = (ROOT / "scripts" / "benchmark_bare_twin.py").read_text(encoding="utf-8")
     compile(source, "benchmark_bare_twin.py", "exec")
+
+
+def test_benchmark_report_marks_nonzero_return_code_as_failure(
+    tmp_path: Path,
+) -> None:
+    module = load_benchmark_module()
+    run = {
+        "profile": "blender-cycles-v0",
+        "camera_id": "camera.entry",
+        "run_index": 0,
+        "warm": False,
+        "wall_seconds": 2.2,
+        "peak_vram_mib": None,
+        "return_code": 1,
+        "output_dir": str(tmp_path / "run-0"),
+    }
+    module.write_outputs(
+        tmp_path,
+        scene="fixtures/bare-twin-bench.scene.json",
+        resolution=1024,
+        blender_bin="blender",
+        profiles=["blender-cycles-v0"],
+        runs=[run],
+        warnings=["blender-cycles-v0/camera.entry/run-0 exited 1"],
+        runs_per=1,
+    )
+
+    report = (tmp_path / "benchmark.md").read_text(encoding="utf-8")
+    assert "| rc=1 |" in report
+    assert "| ok |" not in report
+    payload = json.loads((tmp_path / "benchmark.json").read_text(encoding="utf-8"))
+    assert payload["runs"][0]["return_code"] == 1
 
 
 def test_render_manifest_matches_versioned_schema() -> None:
