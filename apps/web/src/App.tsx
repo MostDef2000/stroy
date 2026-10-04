@@ -477,7 +477,11 @@ export default function App() {
 
         {selected && revision && (
           <section className="canvas-panel">
-            <SceneViewer scene={revision.scene} />
+            <SceneViewer
+              scene={revision.scene}
+              projectId={selected}
+              onChanged={() => refreshProject(selected)}
+            />
           </section>
         )}
 

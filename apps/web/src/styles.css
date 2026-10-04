@@ -111,6 +111,17 @@ header span { color: #777; font-size: 13px; }
   font-size: 12px;
 }
 
+.viewer-error {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  padding: 8px 10px;
+  background: rgba(255, 245, 245, 0.96);
+  border: 1px solid #e0b4b4;
+  border-radius: 8px;
+}
+
 .status-panel {
   background: white;
   border: 1px solid #dedbd3;
