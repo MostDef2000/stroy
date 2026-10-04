@@ -1,15 +1,22 @@
 import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, Asset, AssetRole, Generation, Job, SceneRevision } from "./api";
+import { statusLabel } from "./copy";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type EditAction = "Replace" | "Remove" | "Restyle";
 type Pending = { jobId: string; revisionId: string; baseAssetId: string };
 type Iteration = { baseAssetId: string; resultAssetId: string; resultRevisionId: string };
 
+// Model-facing prompt values — deliberately English; do not translate.
 const ACTION_PROMPTS: Record<EditAction, string> = {
   Replace: "replace the selected object with a new object matching the reference",
   Remove: "remove the selected object and naturally fill the background",
   Restyle: "restyle the selected object to match the reference"
+};
+const ACTION_LABELS: Record<EditAction, string> = {
+  Replace: "Заменить",
+  Remove: "Убрать",
+  Restyle: "Переделать"
 };
 const MIN_SELECTION_PX = 8;
 
@@ -167,7 +174,7 @@ export function PhotoEditPanel({
   async function submitRegion() {
     if (!resolvedPhotoId || !prompt.trim() || busy) return;
     const region = naturalRegion();
-    if (!region) return setError("The photo is still loading, or the selection is too small.");
+    if (!region) return setError("Фото ещё загружается или выделение слишком мало.");
     setBusy(true); setError("");
     try {
       const response = await api.createRegionReplacement(projectId, {
@@ -203,30 +210,30 @@ export function PhotoEditPanel({
   const referencePicker = (
     <>
       <label>
-        Reference image (optional)
+        Референс (необязательно)
         <select value={referenceId} onChange={(event) => setReferenceId(event.target.value)}>
-          <option value="">None — prompt only</option>
+          <option value="">Нет — только инструкция</option>
           {imageAssets.references.map((asset) => (
             <option key={asset.id} value={asset.id}>{asset.original_name ?? asset.id.slice(0, 8)}</option>
           ))}
         </select>
       </label>
       <label className="upload">
-        Upload reference
+        Загрузить референс
         <input type="file" accept="image/*" onChange={(event) => void handleReference(event.target.files?.[0] ?? null)} />
       </label>
-      {referenceProgress !== null && <span className="muted">Uploading reference… {referenceProgress}%</span>}
+      {referenceProgress !== null && <span className="muted">Загрузка референса… {referenceProgress}%</span>}
     </>
   );
 
   return (
     <article className="panel photo-edit-panel">
       <div className="panel-heading pe-heading">
-        <h2>Photo editor</h2>
-        <select aria-label="Working photo" value={resolvedPhotoId} onChange={(event) => setPhotoId(event.target.value)}>
-          {imageAssets.photos.length === 0 && <option value="">No photos yet</option>}
+        <h2>Редактор фото</h2>
+        <select aria-label="Рабочее фото" value={resolvedPhotoId} onChange={(event) => setPhotoId(event.target.value)}>
+          {imageAssets.photos.length === 0 && <option value="">Фотографий пока нет</option>}
           {resolvedPhotoId && !imageAssets.photos.some((asset) => asset.id === resolvedPhotoId) && (
-            <option value={resolvedPhotoId}>current photo</option>
+            <option value={resolvedPhotoId}>текущее фото</option>
           )}
           {imageAssets.photos.map((asset) => (
             <option key={asset.id} value={asset.id}>{asset.original_name ?? asset.id.slice(0, 8)}</option>
@@ -236,19 +243,19 @@ export function PhotoEditPanel({
 
       <div className="pe-upload-row">
         <label className="upload">
-          Upload photo
+          Загрузить фото
           <input type="file" accept="image/*" onChange={(event) => void handlePhoto(event.target.files?.[0] ?? null)} />
         </label>
-        {photoProgress !== null && <span className="muted">Uploading photo… {photoProgress}%</span>}
+        {photoProgress !== null && <span className="muted">Загрузка фото… {photoProgress}%</span>}
       </div>
 
-      {!resolvedPhotoId && <p className="muted">Upload a room photo to start editing.</p>}
+      {!resolvedPhotoId && <p className="muted">Загрузите фото комнаты, чтобы начать редактирование.</p>}
 
       {resolvedPhotoId && (
         <>
           <div className="pe-stage">
             <div className="pe-image-wrap">
-              <img ref={imgRef} src={api.assetUrl(resolvedPhotoId)} alt="Working photo" draggable={false} />
+              <img ref={imgRef} src={api.assetUrl(resolvedPhotoId)} alt="Рабочее фото" draggable={false} />
               <div
                 className="pe-overlay"
                 onPointerDown={startDrag}
@@ -271,21 +278,21 @@ export function PhotoEditPanel({
                     className={action === name ? "secondary active" : "secondary"}
                     onClick={() => { setAction(name); setPrompt(ACTION_PROMPTS[name]); }}
                   >
-                    {name}
+                    {ACTION_LABELS[name]}
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="hint">Drag on the photo to select a region, or redesign the whole frame.</p>
+              <p className="hint">Выделите область на фото или переделайте весь кадр.</p>
             )}
 
             <label>
-              Edit instruction
+              Инструкция правки
               <textarea
                 rows={3}
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder={rect ? "Describe the region edit…" : "Describe the whole-room redesign…"}
+                placeholder={rect ? "Опишите правку области…" : "Опишите переделку комнаты…"}
               />
             </label>
             {referencePicker}
@@ -296,21 +303,21 @@ export function PhotoEditPanel({
                   <summary>Параметры</summary>
                   {referenceId && (
                     <label>
-                      IP-Adapter weight · {ipaWeight.toFixed(2)}
+                      Вес IP-Adapter · {ipaWeight.toFixed(2)}
                       <input type="range" min={0} max={1} step={0.05} value={ipaWeight} onChange={(event) => setIpaWeight(Number(event.target.value))} />
                     </label>
                   )}
                   <label>
-                    Mask shape
+                    Форма маски
                     <select value={shape} onChange={(event) => setShape(event.target.value as "rectangle" | "silhouette")}>
-                      <option value="rectangle">Rectangle</option>
-                      <option value="silhouette">Silhouette</option>
+                      <option value="rectangle">Прямоугольник</option>
+                      <option value="silhouette">Силуэт</option>
                     </select>
                   </label>
                 </details>
                 <div className="pe-actions">
-                  <button type="button" onClick={() => void submitRegion()} disabled={busy || !prompt.trim()}>Run region edit</button>
-                  <button type="button" className="secondary" onClick={() => setRect(null)} disabled={busy}>Clear selection</button>
+                  <button type="button" onClick={() => void submitRegion()} disabled={busy || !prompt.trim()}>Запустить правку области</button>
+                  <button type="button" className="secondary" onClick={() => setRect(null)} disabled={busy}>Сбросить выделение</button>
                 </div>
               </>
             ) : (
@@ -318,11 +325,11 @@ export function PhotoEditPanel({
                 <details className="pe-advanced">
                   <summary>Параметры</summary>
                   <label>
-                    Redesign strength · {strength.toFixed(2)}
+                    Сила переделки · {strength.toFixed(2)}
                     <input type="range" min={0.2} max={0.95} step={0.05} value={strength} onChange={(event) => setStrength(Number(event.target.value))} />
                   </label>
                 </details>
-                <button type="button" onClick={() => void submitFullFrame()} disabled={busy || !prompt.trim()}>Run redesign</button>
+                <button type="button" onClick={() => void submitFullFrame()} disabled={busy || !prompt.trim()}>Запустить переделку</button>
               </>
             )}
           </div>
@@ -332,8 +339,8 @@ export function PhotoEditPanel({
       {iteration && (
         <div className="pe-result">
           <div className="compare-grid">
-            {([["Before", iteration.baseAssetId, "working photo"],
-              ["After", iteration.resultAssetId, `rev ${iteration.resultRevisionId.slice(0, 8)}`]] as const).map(
+            {([["До", iteration.baseAssetId, "рабочее фото"],
+              ["После", iteration.resultAssetId, `ревизия ${iteration.resultRevisionId.slice(0, 8)}`]] as const).map(
               ([label, assetId, caption]) => (
                 <figure key={label}>
                   <figcaption><strong>{label}</strong><span>{caption}</span></figcaption>
@@ -342,13 +349,13 @@ export function PhotoEditPanel({
               )
             )}
           </div>
-          <button type="button" onClick={applyResultAsBase}>Use as base</button>
+          <button type="button" onClick={applyResultAsBase}>Сделать основным</button>
         </div>
       )}
 
       {pending && (
         <p className={activeJob?.status === "failed" ? "error" : "muted"}>
-          Edit job {activeJob?.status ?? "pending"}{progressText ? ` · ${progressText}` : ""}
+          Правка: {statusLabel(activeJob?.status ?? "pending")}{progressText ? ` · ${progressText}` : ""}
         </p>
       )}
       {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}

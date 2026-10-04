@@ -38,13 +38,13 @@ export function DiagnosticsPage({
       <section className="panel test-generation-panel">
         <h2>Проверка пайплайна</h2>
         <div className="pl-actions">
-          <button onClick={onTestGeneration}>Test generation</button>
+          <button onClick={onTestGeneration}>Тестовая генерация</button>
         </div>
       </section>
 
       <section className="dashboard-grid">
         <article className="panel">
-          <h2>Compute</h2>
+          <h2>Вычисления</h2>
           {workers.length === 0 && <p className="muted">worker ещё не зарегистрирован</p>}
           {workers.map((worker) => (
             <div className="row" key={worker.id}>
@@ -58,7 +58,7 @@ export function DiagnosticsPage({
         </article>
 
         <article className="panel">
-          <h2>Jobs</h2>
+          <h2>Задания</h2>
           {jobs.length === 0 && <p className="muted">очередь пуста</p>}
           {jobs.slice(0, 8).map((job) => {
             const fraction =
@@ -81,7 +81,7 @@ export function DiagnosticsPage({
                 </small>
                 {cancellable && (
                   <button className="secondary" onClick={() => onCancel(job.id)}>
-                    Cancel
+                    Отменить
                   </button>
                 )}
               </div>
@@ -90,7 +90,7 @@ export function DiagnosticsPage({
         </article>
 
         <article className="panel">
-          <h2>Style profiles</h2>
+          <h2>Профили стиля</h2>
           {styleProfiles.length === 0 && (
             <p className="muted">
               профилей пока нет — запустите анализ стиля по reference-фото
@@ -120,7 +120,7 @@ export function DiagnosticsPage({
         </article>
 
         <article className="panel">
-          <h2>Assets</h2>
+          <h2>Файлы</h2>
           {assets.length === 0 && <p className="muted">файлов пока нет</p>}
           {(["apartment", "reference", "derived"] as AssetRole[]).map((role) => {
             const group = assets.filter((asset) => asset.role === role);
@@ -146,8 +146,8 @@ export function DiagnosticsPage({
         </article>
 
         <article className="panel">
-          <h2>Revisions &amp; generations</h2>
-          <h3>Revisions</h3>
+          <h2>Версии и генерации</h2>
+          <h3>Версии</h3>
           {revisions.length === 0 && <p className="muted">версий пока нет</p>}
           {revisions.slice(0, 12).map((item) => (
             <div className="row" key={item.revision_id}>
@@ -161,7 +161,7 @@ export function DiagnosticsPage({
             </div>
           ))}
 
-          <h3>Generations</h3>
+          <h3>Генерации</h3>
           {generations.length === 0 && <p className="muted">генераций пока нет</p>}
           {generations.slice(0, 12).map((item) => (
             <div className="row" key={item.id}>

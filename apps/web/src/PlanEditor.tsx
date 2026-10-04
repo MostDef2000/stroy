@@ -16,6 +16,7 @@ import {
   PlanWall
 } from "./api";
 import { computePlanStages } from "./plan-steps";
+import { statusLabel } from "./copy";
 
 type Selection =
   | { kind: "wall"; wallId: string }
@@ -228,14 +229,14 @@ export function PlanEditor({
       .then((response) => {
         if (cancelled) return;
         if (!response) {
-          setError("Analysis finished but no draft was found.");
+          setError("Анализ завершён, но черновик не найден.");
           return;
         }
         setDraft(response.draft);
         setDraftVersion(response.version);
         setDraftStatus(response.status);
         setPhase("editor");
-        setInfo(`Draft v${response.version} ready.`);
+        setInfo(`Черновик v${response.version} готов.`);
       })
       .catch((reason) => {
         if (!cancelled) setError(parseApiError(reason).message);
@@ -260,7 +261,7 @@ export function PlanEditor({
       const response = await api.analyzePlan(projectId, selectedIds);
       setAnalyzeJobId(response.job_id);
       setAnalyzeStartedAt(Date.now());
-      setInfo("Analyzing…");
+      setInfo("Анализ запущен…");
     } catch (reason) {
       setError(parseApiError(reason).message);
     } finally {
@@ -340,7 +341,7 @@ export function PlanEditor({
     if (!floor) return;
     const displayLength = Math.hypot(b.x - a.x, b.y - a.y) / imagePerDisplay();
     if (displayLength < 1) {
-      setError("Wall is too short — pick two distinct points.");
+      setError("Стена слишком короткая — выберите две разные точки.");
       return;
     }
     const existing = new Set<string>([
@@ -422,7 +423,7 @@ export function PlanEditor({
       }
     });
     if (prunedRooms > 0) {
-      setInfo(`Removed ${prunedRooms} room(s) that lost their boundary.`);
+      setInfo(`Удалено комнат без границы: ${prunedRooms}.`);
     }
     setSelection(null);
   }
@@ -456,7 +457,7 @@ export function PlanEditor({
     setScaleInput("");
     setMode("select");
     setScaleBannerFocus(false);
-    setInfo(`Scale set: ${newMmPerPx.toFixed(3)} mm/px.`);
+    setInfo(`Масштаб задан: ${newMmPerPx.toFixed(3)} мм/px.`);
   }
 
   function handleSvgPointerDown(event: ReactPointerEvent<SVGSVGElement>) {
@@ -540,7 +541,7 @@ export function PlanEditor({
       const response = await api.savePlanDraft(projectId, draft);
       setDraftVersion(response.version);
       setDraftStatus(response.status);
-      setInfo(`Saved draft v${response.version}.`);
+      setInfo(`Черновик v${response.version} сохранён.`);
     } catch (reason) {
       setError(parseApiError(reason).message);
     } finally {
@@ -558,15 +559,15 @@ export function PlanEditor({
       setDraftStatus("committed");
       await onChanged();
       setPhase("entry");
-      setInfo("Scene revision created.");
+      setInfo("Ревизия сцены создана.");
     } catch (reason) {
       const parsed = parseApiError(reason);
       if (parsed.code === "scale_unknown") {
-        setError("Set the plan scale before building 3D.");
+        setError("Задайте масштаб плана перед созданием 3D.");
         setScaleBannerFocus(true);
         scaleBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       } else if (parsed.code === "draft_already_committed") {
-        setInfo("This draft was already committed.");
+        setInfo("Этот черновик уже применён.");
       } else {
         setError(parsed.message);
       }
@@ -634,7 +635,7 @@ export function PlanEditor({
       <article className="panel pl-panel">
         <div className="panel-heading">
           <h2>План → 3D</h2>
-          {draftVersion !== null && <span className="muted">draft v{draftVersion}</span>}
+          {draftVersion !== null && <span className="muted">черновик v{draftVersion}</span>}
         </div>
         {stageStrip}
         <p className="hint">
@@ -678,8 +679,8 @@ export function PlanEditor({
 
         {analyzeJobId && (
           <p className={activeJob?.status === "failed" ? "error" : "muted"}>
-            Анализ… {activeJob?.status ?? "queued"} · план разбирается на GPU-воркере, обычно 1–4
-            минуты (лимит 15)
+            Анализ: {statusLabel(activeJob?.status ?? "queued")} · план разбирается на GPU-воркере,
+            обычно 1–4 минуты (лимит 15)
           </p>
         )}
         {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
@@ -697,7 +698,7 @@ export function PlanEditor({
           className="muted"
           title={
             draftVersion !== null
-              ? `draft v${draftVersion}${draftStatus ? " · " + draftStatus : ""}`
+              ? `черновик v${draftVersion}${draftStatus ? " · " + draftStatus : ""}`
               : undefined
           }
         >
@@ -755,9 +756,9 @@ export function PlanEditor({
               >
                 Применить масштаб
               </button>
-              <button type="button" className="secondary" onClick={() => { setScalePoints([]); setScaleInput(""); }}>
-                Cancel
-              </button>
+                <button type="button" className="secondary" onClick={() => { setScalePoints([]); setScaleInput(""); }}>
+                  Отменить
+                </button>
             </div>
           )}
         </div>
@@ -768,7 +769,7 @@ export function PlanEditor({
           <div className="pl-image-wrap">
             <img
               src={api.assetUrl(planAssetId)}
-              alt="Plan underlay"
+              alt="Подложка плана"
               draggable={false}
               onLoad={(event) =>
                 setNatural({ w: event.currentTarget.naturalWidth, h: event.currentTarget.naturalHeight })
@@ -919,7 +920,7 @@ export function PlanEditor({
         >
           Добавить проём
         </button>
-        <button type="button" className="secondary" onClick={removeSelected} disabled={!selection}>
+        <button type="button" className="danger" onClick={removeSelected} disabled={!selection}>
           Удалить выбранное
         </button>
       </div>

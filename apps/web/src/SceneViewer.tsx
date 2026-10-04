@@ -726,7 +726,7 @@ export function SceneViewer({
           className={cameraId === "overview" ? "secondary active" : "secondary"}
           onClick={() => setCameraId("overview")}
         >
-          Overview
+          Общий вид
         </button>
         {(scene?.cameras ?? []).map((camera) => (
           <button
@@ -742,15 +742,15 @@ export function SceneViewer({
           className="secondary"
           onClick={() => setViewResetKey((value) => value + 1)}
           disabled={cameraId !== "overview"}
-          title={cameraId === "overview" ? "Reset overview camera" : "Switch to Overview to reset view"}
+          title={cameraId === "overview" ? "Сбросить общий вид" : "Переключитесь на общий вид, чтобы сбросить камеру"}
         >
-          Reset view
+          Сбросить вид
         </button>
         <button
           className={debugLocks ? "secondary active" : "secondary"}
           onClick={() => setDebugLocks((value) => !value)}
         >
-          Geometry locks
+          Блокировки геометрии
         </button>
       </div>
 
@@ -803,9 +803,9 @@ export function SceneViewer({
               <strong>{selected.id}</strong>
               <span>
                 {selected.kind}
-                {selected.locks?.geometry ? " · geometry locked" : ""}
-                {selected.locks?.transform ? " · transform locked" : ""}
-                {selected.locks?.material ? " · material locked" : ""}
+                {selected.locks?.geometry ? " · геометрия заблокирована" : ""}
+                {selected.locks?.transform ? " · перемещение заблокировано" : ""}
+                {selected.locks?.material ? " · материал заблокирован" : ""}
               </span>
               {liveTranslation && (
                 <span>
@@ -813,7 +813,7 @@ export function SceneViewer({
                   {liveTranslation[1].toFixed(0)} · z{" "}
                   {liveTranslation[2].toFixed(0)} mm
                   {liveRotation ? ` · rz ${liveRotation[2].toFixed(0)}°` : ""}
-                  {canDragEntity(selected) ? " · drag to move · Shift-drag to rotate" : ""}
+                  {canDragEntity(selected) ? " · перетащите, чтобы переместить · Shift — поворот" : ""}
                 </span>
               )}
               {selected.kind === "furniture" && (
@@ -833,7 +833,7 @@ export function SceneViewer({
                   </button>
                   <button
                     type="button"
-                    className="secondary"
+                    className="danger"
                     onClick={() => void handleRemoveSelected()}
                     disabled={Boolean(
                       selected.locks?.geometry || dragActive || pendingOperation
@@ -864,7 +864,7 @@ export function SceneViewer({
               </span>
             </>
           ) : (
-            "drag to orbit · wheel to zoom · right-drag to pan · click an entity to inspect"
+            "вращение — левая кнопка · зум — колесо · панорама — правая кнопка · клик по объекту — карточка"
           )}
         </div>
       </div>

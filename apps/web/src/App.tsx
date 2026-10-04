@@ -326,7 +326,7 @@ export default function App() {
     const text = instruction.trim();
     setInstruction("");
     await api.designInstruction(selected, text);
-    setMessage("AI edit queued");
+    setMessage("Правка фото поставлена в обработку");
     await refreshProject(selected);
   }
 
@@ -388,7 +388,7 @@ export default function App() {
     }
     try {
       await api.analyzeStyle(selected, references.map((asset) => asset.id));
-      setMessage("Style analysis queued");
+      setMessage("Анализ стиля поставлен в обработку");
       await refreshProject(selected);
     } catch (err) {
       setMessage(`Не удалось запустить анализ стиля: ${err instanceof Error ? err.message : String(err)}`);

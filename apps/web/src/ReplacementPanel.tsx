@@ -33,6 +33,7 @@ export function ReplacementPanel({
   const [targetId, setTargetId] = useState("");
   const [referenceId, setReferenceId] = useState("");
   const [cameraId, setCameraId] = useState("");
+  // Model-facing prompt value — deliberately English; do not translate.
   const [prompt, setPrompt] = useState(
     "replace selected furniture with the reference object while preserving the room"
   );
@@ -77,10 +78,10 @@ export function ReplacementPanel({
 
   return (
     <article className="panel replacement-panel">
-      <h2>Replace from reference</h2>
+      <h2>Замена по референсу</h2>
       <form onSubmit={submit} className="replacement-form">
         <label>
-          Target furniture
+          Объект
           <select value={resolvedTarget} onChange={(event) => setTargetId(event.target.value)}>
             {furniture.map((entity) => (
               <option key={entity.id} value={entity.id}>
@@ -91,7 +92,7 @@ export function ReplacementPanel({
         </label>
 
         <label>
-          Reference image
+          Референс
           <select
             value={resolvedReference}
             onChange={(event) => setReferenceId(event.target.value)}
@@ -105,7 +106,7 @@ export function ReplacementPanel({
         </label>
 
         <label>
-          Camera
+          Камера
           <select value={resolvedCamera} onChange={(event) => setCameraId(event.target.value)}>
             {cameras.map((camera) => (
               <option key={camera.id} value={camera.id}>
@@ -116,20 +117,20 @@ export function ReplacementPanel({
         </label>
 
         <label>
-          Edit instruction
+          Инструкция правки
           <input value={prompt} onChange={(event) => setPrompt(event.target.value)} />
         </label>
 
         <button
           disabled={!resolvedTarget || !resolvedReference || !resolvedCamera || !prompt.trim()}
         >
-          Replace object
+          Заменить объект
         </button>
 
         {references.length === 0 && (
-          <p className="muted">Upload an image with role “reference” first.</p>
+          <p className="muted">Сначала загрузите изображение с ролью reference в разделе Файлы.</p>
         )}
-        {furniture.length === 0 && <p className="muted">No editable furniture in scene.</p>}
+        {furniture.length === 0 && <p className="muted">В сцене нет редактируемой мебели — добавьте объект на странице Дизайн.</p>}
         {result && <p className="replacement-result">{result}</p>}
         {error && <div className="error">{error}</div>}
       </form>
