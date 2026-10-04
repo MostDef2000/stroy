@@ -15,6 +15,7 @@ import {
   PlanRoom,
   PlanWall
 } from "./api";
+import { computePlanStages } from "./plan-steps";
 
 type Selection =
   | { kind: "wall"; wallId: string }
@@ -603,19 +604,46 @@ export function PlanEditor({
         .join(" · ")
     : "";
 
+  const planStages = computePlanStages({
+    apartmentImageCount: apartmentImages.length,
+    hasDraft: draft !== null,
+    scaleKnown,
+    committed: draftStatus === "committed"
+  });
+  const currentStage = planStages.find((stage) => stage.state === "current") ?? null;
+
+  const stageStrip = (
+    <>
+      <ol className="pl-steps">
+        {planStages.map((stage) => (
+          <li
+            key={stage.id}
+            className={stage.state}
+            aria-current={stage.state === "current" ? "step" : undefined}
+          >
+            {stage.label}
+          </li>
+        ))}
+      </ol>
+      {currentStage && <p className="pl-step-hint">{currentStage.hint}</p>}
+    </>
+  );
+
   if (phase === "entry") {
     return (
       <article className="panel pl-panel">
         <div className="panel-heading">
-          <h2>Plan → 3D</h2>
+          <h2>План → 3D</h2>
           {draftVersion !== null && <span className="muted">draft v{draftVersion}</span>}
         </div>
+        {stageStrip}
         <p className="hint">
-          Upload plan images, let the AI read the geometry, then correct it before building the 3D scene.
+          Загрузите план квартиры — ИИ прочитает геометрию, а вы проверите и исправите её перед
+          созданием 3D-сцены.
         </p>
 
         {apartmentImages.length === 0 && (
-          <p className="muted">Upload an apartment plan image (role «apartment») to start.</p>
+          <p className="muted">Загрузите изображение плана квартиры, чтобы начать.</p>
         )}
 
         {apartmentImages.length > 0 && (
@@ -639,21 +667,19 @@ export function PlanEditor({
 
         <div className="pl-actions">
           <button type="button" onClick={() => void analyze()} disabled={busy || selectedIds.length === 0}>
-            Analyze with AI
+            Проанализировать план
           </button>
           {draft && (
             <button type="button" className="secondary" onClick={() => setPhase("editor")}>
-              Open draft v{draftVersion}
+              Продолжить работу с планом
             </button>
           )}
         </div>
 
         {analyzeJobId && (
           <p className={activeJob?.status === "failed" ? "error" : "muted"}>
-            Analyzing… {activeJob?.status ?? "queued"}
-            {progressText ? ` · ${progressText}` : ""}
-            {analyzeElapsed ? ` · ${analyzeElapsed} elapsed` : ""} · plan parsing on
-            the GPU box typically takes 1–4 minutes (hard cap 15)
+            Анализ… {activeJob?.status ?? "queued"} · план разбирается на GPU-воркере, обычно 1–4
+            минуты (лимит 15)
           </p>
         )}
         {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
@@ -666,43 +692,55 @@ export function PlanEditor({
   return (
     <article className="panel pl-panel">
       <div className="panel-heading">
-        <h2>Plan editor</h2>
-        <span className="muted">
-          {draftVersion !== null ? `draft v${draftVersion}` : "unsaved"}
-          {draftStatus ? ` · ${draftStatus}` : ""}
+        <h2>План квартиры</h2>
+        <span
+          className="muted"
+          title={
+            draftVersion !== null
+              ? `draft v${draftVersion}${draftStatus ? " · " + draftStatus : ""}`
+              : undefined
+          }
+        >
+          {draftStatus === "committed"
+            ? "3D-сцена создана"
+            : draftStatus
+              ? "План сохранён"
+              : "Есть несохранённые правки"}
         </span>
       </div>
+      {stageStrip}
 
       {!scaleKnown && (
         <div
           ref={scaleBannerRef}
           className={scaleBannerFocus ? "pl-scale-banner focus" : "pl-scale-banner"}
         >
-          <strong>Scale unknown.</strong> Real dimensions are disabled until you set the scale.
+          <strong>Масштаб не задан.</strong> Реальные размеры недоступны, пока не задан масштаб.
           <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
-            Set scale
+            Задать масштаб
           </button>
         </div>
       )}
 
       {scaleKnown && draft?.scale.source === "plan_label" && (
-        <div className="pl-scale-banner">
-          Parsed scale: {mmPerPx?.toFixed(3)} mm/px.
+        <p className="muted">
+          Масштаб: {mmPerPx?.toFixed(3)} мм/px — распознан с плана{" "}
           <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
-            Override
+            Изменить масштаб
           </button>
-        </div>
+        </p>
       )}
 
       {mode === "set-scale" && (
         <div className="pl-scale-tool">
           <p className="hint">
-            Click two points on the plan ({scalePoints.length}/2), then enter the real distance between them.
+            Кликните две точки на плане ({scalePoints.length}/2), затем введите реальное расстояние
+            между ними.
           </p>
           {scalePoints.length === 2 && (
             <div className="pl-scale-input">
               <label>
-                Real length (mm)
+                Реальная длина (мм)
                 <input
                   type="number"
                   min={1}
@@ -715,7 +753,7 @@ export function PlanEditor({
                 onClick={() => applyScale(Number(scaleInput))}
                 disabled={!scaleInput || Number(scaleInput) <= 0}
               >
-                Apply scale
+                Применить масштаб
               </button>
               <button type="button" className="secondary" onClick={() => { setScalePoints([]); setScaleInput(""); }}>
                 Cancel
@@ -871,7 +909,7 @@ export function PlanEditor({
           className={mode === "add-wall" ? "secondary active" : "secondary"}
           onClick={() => { setMode(mode === "add-wall" ? "select" : "add-wall"); setPendingWallStart(null); }}
         >
-          Add wall
+          Добавить стену
         </button>
         <button
           type="button"
@@ -879,21 +917,10 @@ export function PlanEditor({
           onClick={addOpening}
           disabled={selection?.kind !== "wall"}
         >
-          Add opening
+          Добавить проём
         </button>
         <button type="button" className="secondary" onClick={removeSelected} disabled={!selection}>
-          Remove selected
-        </button>
-        <button
-          type="button"
-          className={mode === "set-scale" ? "secondary active" : "secondary"}
-          onClick={() => {
-            setMode(mode === "set-scale" ? "select" : "set-scale");
-            setScalePoints([]);
-            setSelection(null);
-          }}
-        >
-          Set scale
+          Удалить выбранное
         </button>
       </div>
 
@@ -901,9 +928,9 @@ export function PlanEditor({
         <div className="pl-inspector">
           {selectedWall && selection?.kind === "wall" && (
             <>
-              <h3>Wall {selectedWall.id}</h3>
+              <h3>Стена {selectedWall.id}</h3>
               <label>
-                Thickness ({unitLabel})
+                Толщина ({unitLabel})
                 <input
                   type="number"
                   min={1}
@@ -930,9 +957,9 @@ export function PlanEditor({
 
           {selectedOpening && selection?.kind === "opening" && (
             <>
-              <h3>Opening {selectedOpening.id}</h3>
+              <h3>Проём {selectedOpening.id}</h3>
               <label>
-                Kind
+                Тип
                 <select
                   value={selectedOpening.kind}
                   onChange={(event) =>
@@ -947,7 +974,7 @@ export function PlanEditor({
                 </select>
               </label>
               <label>
-                Position t · {selectedOpening.t.toFixed(2)}
+                Положение · {selectedOpening.t.toFixed(2)}
                 <input
                   type="range"
                   min={0}
@@ -961,7 +988,7 @@ export function PlanEditor({
               </label>
               <div className="pl-grid-2">
                 <label>
-                  Width ({unitLabel})
+                  Ширина ({unitLabel})
                   <input
                     type="number"
                     min={1}
@@ -973,7 +1000,7 @@ export function PlanEditor({
                   />
                 </label>
                 <label>
-                  Height ({unitLabel})
+                  Высота ({unitLabel})
                   <input
                     type="number"
                     min={1}
@@ -985,7 +1012,7 @@ export function PlanEditor({
                   />
                 </label>
                 <label>
-                  Sill ({unitLabel})
+                  Подоконник ({unitLabel})
                   <input
                     type="number"
                     min={0}
@@ -1004,9 +1031,9 @@ export function PlanEditor({
 
           {selectedRoom && selection?.kind === "room" && (
             <>
-              <h3>Room {selectedRoom.id}</h3>
+              <h3>Комната {selectedRoom.id}</h3>
               <label>
-                Name
+                Название
                 <input
                   value={selectedRoom.name}
                   onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })}
@@ -1019,15 +1046,21 @@ export function PlanEditor({
 
       <div className="pl-actions">
         <button type="button" onClick={() => void saveDraft()} disabled={busy || !draft}>
-          Save draft
+          Сохранить план
         </button>
-        <button type="button" onClick={() => void build3d()} disabled={busy || !draft}>
-          Build 3D
+        <button type="button" onClick={() => void build3d()} disabled={busy || !draft || !scaleKnown}>
+          Создать / обновить 3D
         </button>
         <button type="button" className="secondary" onClick={() => setPhase("entry")} disabled={busy}>
-          Back
+          Назад
         </button>
       </div>
+
+      {draft && !scaleKnown && (
+        <p className="hint">
+          Масштаб не задан — задайте его по двум точкам плана, чтобы создать 3D-сцену.
+        </p>
+      )}
 
       {error && <div className="error">{error}</div>}
       {info && <p className="muted">{info}</p>}
