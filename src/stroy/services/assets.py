@@ -15,6 +15,7 @@ class ObjectStore(Protocol):
     async def ready(self) -> bool: ...
     async def put_bytes(self, key: str, data: bytes, media_type: str) -> None: ...
     async def get_bytes(self, key: str) -> bytes: ...
+    async def delete_prefix(self, prefix: str) -> int: ...
     async def presign_get(self, key: str, expires_seconds: int = 900) -> str | None: ...
     async def presign_put(
         self, key: str, media_type: str, expires_seconds: int = 900
@@ -36,6 +37,12 @@ class MemoryObjectStore:
 
     async def get_bytes(self, key: str) -> bytes:
         return self.objects[key]
+
+    async def delete_prefix(self, prefix: str) -> int:
+        keys = [key for key in self.objects if key.startswith(prefix)]
+        for key in keys:
+            del self.objects[key]
+        return len(keys)
 
     async def presign_get(self, key: str, expires_seconds: int = 900) -> str | None:
         return None
@@ -82,6 +89,21 @@ class S3ObjectStore:
     async def get_bytes(self, key: str) -> bytes:
         response = await asyncio.to_thread(self.client.get_object, Bucket=self.bucket, Key=key)
         return await asyncio.to_thread(response["Body"].read)
+
+    async def delete_prefix(self, prefix: str) -> int:
+        def _delete() -> int:
+            paginator = self.client.get_paginator("list_objects_v2")
+            deleted = 0
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+                if keys:
+                    self.client.delete_objects(
+                        Bucket=self.bucket, Delete={"Objects": keys}
+                    )
+                    deleted += len(keys)
+            return deleted
+
+        return await asyncio.to_thread(_delete)
 
     async def presign_get(self, key: str, expires_seconds: int = 900) -> str:
         return await asyncio.to_thread(
