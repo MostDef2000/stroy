@@ -151,7 +151,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
 
   const renderStatus = useMemo(() => {
     if (!pendingJobId) return null;
-    if (!activeRenderJob) return "queued";
+    if (!activeRenderJob) return statusLabel("queued");
     const fraction =
       typeof activeRenderJob.progress["fraction"] === "number"
         ? Math.round((activeRenderJob.progress["fraction"] as number) * 100)
@@ -198,7 +198,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
 
   const variantStatus = useMemo(() => {
     if (!variantJobId) return null;
-    if (!activeVariantJob) return "queued";
+    if (!activeVariantJob) return statusLabel("queued");
     const fraction =
       typeof activeVariantJob.progress["fraction"] === "number"
         ? Math.round((activeVariantJob.progress["fraction"] as number) * 100)
