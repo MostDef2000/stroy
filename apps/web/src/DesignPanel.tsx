@@ -66,6 +66,25 @@ export function DesignPanel({
     return () => clearTimeout(timer);
   }, [confirmRestoreId]);
 
+  // Any click outside a restore button cancels the pending confirmation
+  // (capture phase so it sees clicks before they bubble anywhere).
+  useEffect(() => {
+    if (!confirmRestoreId) return;
+    function handleDocumentClick(event: MouseEvent) {
+      if (!(event.target as HTMLElement).closest?.("[data-restore-button]")) {
+        setConfirmRestoreId(null);
+      }
+    }
+    document.addEventListener("click", handleDocumentClick, true);
+    return () => document.removeEventListener("click", handleDocumentClick, true);
+  }, [confirmRestoreId]);
+
+  // A refreshed revision list or a changed current revision invalidates any
+  // pending restore confirmation.
+  useEffect(() => {
+    setConfirmRestoreId(null);
+  }, [revisions, currentRevisionId]);
+
   const before = generations.find((item) => item.id === beforeId);
   const after = generations.find((item) => item.id === afterId);
   const currentRevision = revisions.find(
@@ -189,17 +208,7 @@ export function DesignPanel({
           </div>
         )}
 
-        <details
-          className="rt-versions"
-          open
-          onClick={(event) => {
-            if (
-              !(event.target as HTMLElement).closest("[data-restore-button]")
-            ) {
-              setConfirmRestoreId(null);
-            }
-          }}
-        >
+        <details className="rt-versions" open>
           <summary>Версии</summary>
           <p className="rt-warning">
             Возврат откатит сцену к состоянию на выбранный момент; изменения
