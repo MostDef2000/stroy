@@ -1,4 +1,36 @@
 :root {
+  /* Design tokens (#109): single source for spacing, radius, type scale,
+     weights, colors and shadow. Existing classes keep their names and consume
+     these via var(); visual outcome stays close to before (polish, not a redesign). */
+  --st-space-1: 4px;
+  --st-space-2: 8px;
+  --st-space-3: 12px;
+  --st-space-4: 16px;
+  --st-space-5: 24px;
+  --st-space-6: 32px;
+  --st-radius-sm: 6px;
+  --st-radius: 10px;
+  --st-text-xs: 12px;
+  --st-text-sm: 13px;
+  --st-text-base: 14px;
+  --st-text-lg: 16px;
+  --st-text-xl: 20px;
+  --st-weight-medium: 500;
+  --st-weight-semibold: 600;
+  --st-color-border: #dedbd3;
+  --st-color-border-strong: #cbc8c0;
+  --st-color-muted-text: #8c8982;
+  --st-color-accent: #242424;
+  --st-color-accent-hover: #3c3d3c;
+  --st-color-danger: #8a3028;
+  --st-color-danger-bg: #f8ecea;
+  --st-color-warn: #b98a24;
+  --st-color-warn-bg: #fbf5e7;
+  --st-color-ok: #3f7d52;
+  --st-color-ok-bg: #edf2eb;
+  --st-focus-ring: #1f6feb;
+  --st-shadow: 0 12px 28px rgba(20, 20, 20, 0.16);
+
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #202124;
   background: #f3f2ef;
@@ -6,8 +38,57 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+body { margin: 0; min-width: 320px; min-height: 100vh; font-size: var(--st-text-base); }
 button, input { font: inherit; }
+
+/* Interaction states (#109). :where() contributes ZERO specificity for the
+   element list; the trailing pseudo-class still counts like one class, so
+   component rules of equal-or-higher specificity (e.g. .instruction-bar
+   :disabled) still override individual props. */
+:where(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--st-focus-ring);
+  outline-offset: 2px;
+}
+:where(button, input, select, textarea):disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* .ghost: tertiary/neutral button — transparent until hover. Defined for reuse by
+   toolbars; no JSX changes were needed to apply it in this task. */
+.ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+}
+.ghost:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* .skeleton / .skeleton-line: shimmer placeholders for async images and lists.
+   Defined for future use — applying them to <img> while loading is not possible
+   with CSS alone (an <img> with a src still paints its own pixels), so this task
+   does not wire them into DesignPanel's rt-preview. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  min-height: var(--st-space-4);
+  border-radius: var(--st-radius);
+  background: linear-gradient(90deg, #ece9e2 25%, #f5f3ee 37%, #ece9e2 63%);
+  background-size: 400% 100%;
+  animation: st-shimmer 1.4s ease infinite;
+}
+.skeleton-line {
+  min-height: var(--st-text-xs);
+  border-radius: 999px;
+}
+@keyframes st-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
 
 .loading, .login-page {
   min-height: 100vh;
@@ -17,7 +98,7 @@ button, input { font: inherit; }
 
 .login-card {
   width: min(380px, calc(100vw - 32px));
-  padding: 32px;
+  padding: var(--st-space-6);
   background: white;
   border: 1px solid #d9d7d1;
   border-radius: 18px;
@@ -28,11 +109,11 @@ button, input { font: inherit; }
 .brand {
   font-weight: 800;
   letter-spacing: 0.12em;
-  font-size: 20px;
+  font-size: var(--st-text-xl);
 }
 
 input {
-  border: 1px solid #cbc8c0;
+  border: 1px solid var(--st-color-border-strong);
   border-radius: 9px;
   padding: 11px 12px;
   background: white;
@@ -43,11 +124,11 @@ button, .upload {
   border-radius: 9px;
   padding: 10px 13px;
   cursor: pointer;
-  background: #242424;
+  background: var(--st-color-accent);
   color: white;
 }
 
-.error { color: #a12626; font-size: 13px; }
+.error { color: var(--st-color-danger); font-size: var(--st-text-sm); }
 
 .app-shell {
   min-height: 100vh;
@@ -58,7 +139,7 @@ button, .upload {
 .sidebar {
   background: #171817;
   color: white;
-  padding: 24px 18px;
+  padding: var(--st-space-5) 18px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -67,7 +148,7 @@ button, .upload {
 .worker {
   padding: 10px 12px;
   border-radius: 9px;
-  font-size: 13px;
+  font-size: var(--st-text-sm);
   background: #2b2c2b;
 }
 .worker.online { color: #a9e5bd; }
@@ -75,7 +156,7 @@ button, .upload {
 
 .new-project { display: flex; gap: 6px; }
 .new-project input { min-width: 0; flex: 1; }
-.new-project button { background: #3c3d3c; }
+.new-project button { background: var(--st-color-accent-hover); }
 
 nav { display: grid; gap: 6px; }
 .project {
@@ -94,10 +175,10 @@ nav { display: grid; gap: 6px; }
   gap: 4px;
 }
 
-.workspace { min-width: 0; padding: 24px; display: grid; gap: 18px; }
-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
-h1 { margin: 0 0 4px; font-size: 23px; }
-header span { color: #777; font-size: 13px; }
+.workspace { min-width: 0; padding: var(--st-space-5); display: grid; gap: 18px; }
+header { display: flex; justify-content: space-between; gap: var(--st-space-4); align-items: center; }
+h1 { margin: 0 0 4px; font-size: var(--st-text-xl); font-weight: var(--st-weight-semibold); }
+header span { color: #777; font-size: var(--st-text-sm); }
 .actions { display: flex; gap: 8px; }
 .upload input { display: none; }
 
@@ -132,13 +213,13 @@ header span { color: #777; font-size: 13px; }
 
 .status-panel {
   background: white;
-  border: 1px solid #dedbd3;
+  border: 1px solid var(--st-color-border);
   border-radius: 12px;
   padding: 14px;
   display: flex;
-  gap: 16px;
+  gap: var(--st-space-4);
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--st-text-sm);
 }
 
 @media (max-width: 800px) {
@@ -159,14 +240,14 @@ header span { color: #777; font-size: 13px; }
 .panel {
   min-width: 0;
   background: white;
-  border: 1px solid #dedbd3;
+  border: 1px solid var(--st-color-border);
   border-radius: 12px;
   padding: 14px;
 }
 
 .panel h2 {
   margin: 0 0 12px;
-  font-size: 14px;
+  font-size: var(--st-text-base);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #65635e;
@@ -177,7 +258,7 @@ header span { color: #777; font-size: 13px; }
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 5px 10px;
   align-items: center;
-  padding: 8px 0;
+  padding: var(--st-space-2) 0;
   border-top: 1px solid #efede8;
 }
 
@@ -219,20 +300,20 @@ header span { color: #777; font-size: 13px; }
 .secondary {
   background: #ece9e2;
   color: #333;
-  font-size: 12px;
+  font-size: var(--st-text-xs);
   padding: 6px 9px;
 }
 
 .muted {
-  color: #8c8982;
-  font-size: 13px;
+  color: var(--st-color-muted-text);
+  font-size: var(--st-text-sm);
 }
 
 .worker-notice {
   margin: 0 0 14px;
   padding: 10px 12px;
   border: 1px solid #e4d9c8;
-  border-radius: 10px;
+  border-radius: var(--st-radius);
   background: #faf6ee;
 }
 
@@ -243,7 +324,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .hint {
-  color: #8c8982;
+  color: var(--st-color-muted-text);
   font-size: 11px;
   margin: 0 0 8px 0;
   line-height: 1.4;
@@ -395,7 +476,7 @@ header span { color: #777; font-size: 13px; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--st-space-3);
 }
 
 .panel-heading select,
@@ -408,7 +489,7 @@ header span { color: #777; font-size: 13px; }
 
 .camera-form {
   display: grid;
-  gap: 12px;
+  gap: var(--st-space-3);
 }
 
 .camera-form > label,
@@ -428,7 +509,7 @@ header span { color: #777; font-size: 13px; }
 .camera-status,
 .camera-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--st-space-2);
   flex-wrap: wrap;
 }
 
@@ -441,7 +522,11 @@ header span { color: #777; font-size: 13px; }
 }
 
 .danger {
-  color: #8a3028;
+  color: var(--st-color-danger);
+}
+
+.danger:hover {
+  background: var(--st-color-danger-bg);
 }
 
 @media (max-width: 700px) {
@@ -537,24 +622,24 @@ header span { color: #777; font-size: 13px; }
 .compare-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: var(--st-space-3);
 }
 
 .compare-grid figure {
   margin: 0;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #dedbd3;
-  border-radius: 10px;
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius);
   background: #efede8;
 }
 
 .compare-grid figcaption {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--st-space-2);
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--st-text-xs);
 }
 
 .compare-grid figcaption span {
@@ -612,9 +697,9 @@ header span { color: #777; font-size: 13px; }
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
-  background: #edf2eb;
+  background: var(--st-color-ok-bg);
   color: #426049;
-  font-size: 12px;
+  font-size: var(--st-text-xs);
 }
 
 .palette {
@@ -652,7 +737,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .pe-stage {
-  padding: 12px;
+  padding: var(--st-space-3);
   border-radius: 14px;
   background: #dedbd3;
   display: grid;
@@ -750,7 +835,7 @@ header span { color: #777; font-size: 13px; }
 /* Twin-first plan editor (PlanEditor) */
 .pl-panel {
   display: grid;
-  gap: 12px;
+  gap: var(--st-space-3);
 }
 
 .pl-asset-list {
@@ -839,7 +924,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .pl-stage {
-  padding: 12px;
+  padding: var(--st-space-3);
   border-radius: 14px;
   background: #dedbd3;
   display: grid;
@@ -934,8 +1019,8 @@ header span { color: #777; font-size: 13px; }
 /* Camera calibration from photo (CameraPanel) */
 .cc-section {
   display: grid;
-  gap: 12px;
-  margin-top: 16px;
+  gap: var(--st-space-3);
+  margin-top: var(--st-space-4);
   padding-top: 14px;
   border-top: 1px solid #efede8;
 }
@@ -955,7 +1040,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .cc-stage {
-  padding: 12px;
+  padding: var(--st-space-3);
   border-radius: 14px;
   background: #dedbd3;
   display: grid;
@@ -1004,7 +1089,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .cc-marker.linked {
-  background: #3f7d52;
+  background: var(--st-color-ok);
 }
 
 .cc-rows {
@@ -1059,25 +1144,25 @@ header span { color: #777; font-size: 13px; }
 
 .cc-result {
   display: grid;
-  gap: 4px;
+  gap: var(--st-space-1);
   padding: 10px 12px;
-  border-radius: 10px;
-  background: #edf2eb;
+  border-radius: var(--st-radius);
+  background: var(--st-color-ok-bg);
   color: #426049;
-  font-size: 12px;
+  font-size: var(--st-text-xs);
 }
 
 .cc-error {
   padding: 8px 10px;
   border-radius: 8px;
-  background: #f8ecea;
+  background: var(--st-color-danger-bg);
 }
 
 
 /* Twin design — render + furniture (#72 stream 3) */
 .td-panel {
   display: grid;
-  gap: 12px;
+  gap: var(--st-space-3);
 }
 
 .td-heading {
@@ -1091,7 +1176,7 @@ header span { color: #777; font-size: 13px; }
 .td-section {
   display: grid;
   gap: 10px;
-  padding-top: 12px;
+  padding-top: var(--st-space-3);
   border-top: 1px solid #efede8;
 }
 
@@ -1163,7 +1248,7 @@ header span { color: #777; font-size: 13px; }
 .td-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: var(--st-space-2);
 }
 
 .td-actions {
@@ -1179,15 +1264,15 @@ header span { color: #777; font-size: 13px; }
 .td-error {
   padding: 8px 10px;
   border-radius: 8px;
-  background: #f8ecea;
+  background: var(--st-color-danger-bg);
 }
 
 .td-result {
   padding: 10px 12px;
-  border-radius: 10px;
-  background: #edf2eb;
+  border-radius: var(--st-radius);
+  background: var(--st-color-ok-bg);
   color: #426049;
-  font-size: 12px;
+  font-size: var(--st-text-xs);
 }
 
 .td-list {
@@ -1330,18 +1415,18 @@ header span { color: #777; font-size: 13px; }
   z-index: 20;
   min-width: 200px;
   display: grid;
-  gap: 8px;
+  gap: var(--st-space-2);
   padding: 10px;
   background: white;
-  border: 1px solid #dedbd3;
+  border: 1px solid var(--st-color-border);
   border-radius: 12px;
-  box-shadow: 0 12px 28px rgba(20, 20, 20, 0.16);
+  box-shadow: var(--st-shadow);
 }
 
 .overflow-dropdown button {
   text-align: left;
   background: #f8f0ef;
-  color: #8a3028;
+  color: var(--st-color-danger);
 }
 
 /* Overview readiness cards (#101) */
@@ -1353,11 +1438,11 @@ header span { color: #777; font-size: 13px; }
 
 .readiness-card {
   display: grid;
-  gap: 8px;
+  gap: var(--st-space-2);
   align-content: start;
   padding: 14px;
-  border: 1px solid #dedbd3;
-  border-left: 4px solid #cbc8c0;
+  border: 1px solid var(--st-color-border);
+  border-left: 4px solid var(--st-color-border-strong);
   border-radius: 12px;
   background: white;
 }
@@ -1390,7 +1475,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .readiness-card.ok {
-  border-left-color: #3f7d52;
+  border-left-color: var(--st-color-ok);
 }
 .readiness-card.ok .readiness-badge {
   background: #e3f2e8;
@@ -1398,7 +1483,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .readiness-card.pending {
-  border-left-color: #b98a24;
+  border-left-color: var(--st-color-warn);
 }
 .readiness-card.pending .readiness-badge {
   background: #fdf3e3;
@@ -1409,8 +1494,8 @@ header span { color: #777; font-size: 13px; }
   border-left-color: #b04a3a;
 }
 .readiness-card.attention .readiness-badge {
-  background: #f8ecea;
-  color: #8a3028;
+  background: var(--st-color-danger-bg);
+  color: var(--st-color-danger);
 }
 
 .readiness-card > button {
@@ -1420,12 +1505,12 @@ header span { color: #777; font-size: 13px; }
 /* Per-page uploads + empty states (#101) */
 .page-upload-row {
   display: flex;
-  gap: 12px;
+  gap: var(--st-space-3);
   align-items: center;
   flex-wrap: wrap;
-  padding: 12px;
+  padding: var(--st-space-3);
   background: white;
-  border: 1px solid #dedbd3;
+  border: 1px solid var(--st-color-border);
   border-radius: 12px;
 }
 
@@ -1440,7 +1525,7 @@ header span { color: #777; font-size: 13px; }
   justify-items: start;
   padding: 28px;
   background: white;
-  border: 1px dashed #cbc8c0;
+  border: 1px dashed var(--st-color-border-strong);
   border-radius: 14px;
 }
 
@@ -1493,7 +1578,7 @@ header span { color: #777; font-size: 13px; }
 }
 
 .design-advanced {
-  border: 1px solid #dedbd3;
+  border: 1px solid var(--st-color-border);
   border-radius: 12px;
   background: white;
 }
@@ -1736,7 +1821,7 @@ header span { color: #777; font-size: 13px; }
 .camera-readiness.calibrated {
   border-color: #b9d8bf;
   background: #edf6ee;
-  color: #3f7d52;
+  color: var(--st-color-ok);
 }
 
 /* #106 direct-manipulation furniture placement: contextual caption actions
@@ -1756,15 +1841,15 @@ header span { color: #777; font-size: 13px; }
    previews, two-step restore confirmation and the before/after panel. */
 .rt-header {
   display: flex;
-  gap: 8px;
+  gap: var(--st-space-2);
   align-items: center;
   flex-wrap: wrap;
   padding: 8px 10px;
-  margin-bottom: 12px;
-  border: 1px solid #dedbd3;
-  border-radius: 10px;
+  margin-bottom: var(--st-space-3);
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius);
   background: #faf9f6;
-  font-size: 12px;
+  font-size: var(--st-text-xs);
 }
 
 .rt-feed {
@@ -1811,8 +1896,8 @@ header span { color: #777; font-size: 13px; }
   display: block;
   width: 100%;
   max-width: 320px;
-  border-radius: 10px;
-  border: 1px solid #dedbd3;
+  border-radius: var(--st-radius);
+  border: 1px solid var(--st-color-border);
   background: #d9d6cf;
 }
 
@@ -1844,7 +1929,7 @@ header span { color: #777; font-size: 13px; }
   padding: 8px 10px;
   border: 1px solid #e6cfa1;
   border-radius: 9px;
-  background: #fbf5e7;
+  background: var(--st-color-warn-bg);
   color: #8a6b22;
 }
 
@@ -1860,5 +1945,76 @@ header span { color: #777; font-size: 13px; }
 
 .rt-confirm:hover {
   background: #f0d3d3;
+}
+
+/* Form focus emphasis + validation state. Kept here (last in the cascade) so
+   they win over the equal-specificity component rules above that set a
+   `border` shorthand on inputs/selects/textareas. */
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--st-color-accent);
+}
+input.invalid,
+select.invalid,
+textarea.invalid {
+  border-color: var(--st-color-danger);
+}
+
+/* ===== Responsive layout + workspace scroll capping (#109) =====
+   Additive only: the existing breakpoints above are untouched. The layout is
+   laptop-first — the 3D/photo canvas stays the dominant, tall element while
+   long side-panel lists get their own internal scroll region. */
+
+/* Long, unbounded lists inside DesignPage's advanced section scroll instead of
+   stretching the page (renders list, camera correspondences). */
+.td-list,
+.cc-rows {
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+}
+
+/* Desktop: keep the canvas large (~55vh, never below the previous 560px floor). */
+@media (min-width: 901px) {
+  .canvas-panel,
+  .viewer,
+  .viewer-shell {
+    min-height: max(560px, 55vh);
+  }
+}
+
+@media (max-width: 1100px) {
+  /* Multi-column dashboards collapse to one column so the canvas and the
+     advanced panels stack vertically. */
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Tighten page padding through the spacing token (one override cascades to
+     .workspace, .sidebar and anything else consuming --st-space-5). */
+  :root {
+    --st-space-5: 16px;
+  }
+  /* Let the project header wrap instead of overflowing; the nav already wraps. */
+  .project-header,
+  header {
+    flex-wrap: wrap;
+  }
+  .project-header-controls {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  /* Base body text stays at the 14px token; interactive controls get
+     touch-sized targets. */
+  body {
+    font-size: var(--st-text-base);
+  }
+  :where(button, .upload) {
+    min-height: 36px;
+  }
 }
 
