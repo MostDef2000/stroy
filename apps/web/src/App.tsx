@@ -136,10 +136,6 @@ function Login({ onLogin }: { onLogin: () => void }) {
   );
 }
 
-function shortId(value: string | null | undefined) {
-  return value ? value.slice(0, 8) : "—";
-}
-
 export default function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -248,6 +244,7 @@ export default function App() {
   }
 
   const onlineWorkers = workers.filter((worker) => worker.online);
+  const workersOnline = onlineWorkers.length > 0;
   const currentProject = projects.find((project) => project.id === selected);
 
   const readiness: ReadinessInput = {
@@ -314,7 +311,7 @@ export default function App() {
         role,
         setUploadProgress
       );
-      setMessage(`Asset ${asset.id} uploaded as ${asset.role}`);
+      setMessage(`Файл загружен (роль: ${asset.role})`);
       await refreshProject(selected);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -341,14 +338,14 @@ export default function App() {
       ["image_generation"],
       revision ? { scene_revision_id: revision.revision_id } : {}
     );
-    setMessage("Generation job queued");
+    setMessage("Тестовая генерация запущена");
     await refreshProject(selected);
   }
 
   async function cancel(jobId: string) {
     if (!selected) return;
     await api.cancelJob(jobId);
-    setMessage(`Job ${shortId(jobId)} cancelled`);
+    setMessage("Задача отменена");
     await refreshProject(selected);
   }
 
@@ -365,14 +362,14 @@ export default function App() {
       cameraId,
       "re-render selected design revision"
     );
-    setMessage(`Generation queued for revision ${shortId(targetRevisionId)}`);
+    setMessage("Генерация запущена");
     await refreshProject(selected);
   }
 
   async function restore(targetRevisionId: string) {
     if (!selected || !revision || targetRevisionId === revision.revision_id) return;
     await api.revert(selected, revision.revision_id, targetRevisionId);
-    setMessage(`Restored revision ${shortId(targetRevisionId)}`);
+    setMessage("Версия восстановлена");
     await refreshProject(selected);
   }
 
@@ -402,7 +399,7 @@ export default function App() {
     <AppShell
       projects={projects}
       selected={selected}
-      workersOnline={onlineWorkers.length > 0}
+      workersOnline={workersOnline}
       newProject={newProject}
       onNewProjectChange={setNewProject}
       onCreateProject={createProject}
@@ -412,9 +409,7 @@ export default function App() {
       }}
       onLogout={() => void api.logout().then(() => setAuthenticated(false))}
       projectName={currentProject?.name ?? "Проект"}
-      revisionLabel={
-        revision ? `revision ${shortId(revision.revision_id)}` : "scene not initialized"
-      }
+      revisionLabel={revision ? "Сцена готова" : "Сцена ещё не создана"}
       page={page}
       onPageChange={setPage}
       canDelete={Boolean(selected)}
@@ -438,6 +433,7 @@ export default function App() {
           projectId={selected}
           assets={assets}
           jobs={jobs}
+          workersOnline={workersOnline}
           onChanged={() => refreshProject(selected)}
           onUpload={upload}
           uploadProgress={uploadProgress}
@@ -451,6 +447,7 @@ export default function App() {
           assets={assets}
           jobs={jobs}
           generations={generations}
+          workersOnline={workersOnline}
           onChanged={() => refreshProject(selected)}
           onUpload={upload}
           uploadProgress={uploadProgress}
@@ -478,6 +475,8 @@ export default function App() {
         <DiagnosticsPage
           workers={workers}
           jobs={jobs}
+          revisions={revisions}
+          generations={generations}
           styleProfiles={styleProfiles}
           assets={assets}
           onCancel={(jobId) => void cancel(jobId)}

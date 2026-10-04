@@ -265,9 +265,9 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
         rotationZdeg: numeric(rotZ),
         color
       });
-      const response = await api.applySceneCommand(projectId, command);
+      await api.applySceneCommand(projectId, command);
       setFurnitureInfo(
-        `Добавлено ${entityId} · revision ${response.revision_id.slice(0, 8)}. Render to see the object.`
+        `Добавлено ${entityId}. Render to see the object.`
       );
       setLabel("");
       await onChanged();

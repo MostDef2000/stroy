@@ -57,7 +57,7 @@ export function ReplacementPanel({
       );
       const [x0, y0, x1, y1] = response.affected_region.bbox_px;
       setResult(
-        `revision ${response.revision_id.slice(0, 8)} · bbox ${x0},${y0}–${x1},${y1}`
+        `Область заменена · bbox ${x0},${y0}–${x1},${y1}`
       );
       await onChanged();
     } catch (reason) {
