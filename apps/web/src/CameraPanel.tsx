@@ -119,6 +119,38 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
   );
   const solveReady = linkedRows.length >= 3;
 
+  // Guided calibration wizard (#105), mirroring the plan-stage strip (#104):
+  // a step is done from its own rule and the first not-done step is current.
+  const stepDone = [
+    Boolean(draft.source_asset_id),
+    rows.length > 0,
+    linkedRows.length >= 3,
+    solveResult !== null
+  ];
+  const stepLabels = [
+    "Выберите фото квартиры",
+    "Отметьте углы на фото",
+    "Сопоставьте углы со сценой",
+    "Решение камеры"
+  ];
+  const stepHints: Array<string | null> = [
+    "Выберите фото, снятое из точки съёмки комнаты.",
+    "Кликайте по видимым углам стен, дверей и окон на фото.",
+    null,
+    null
+  ];
+  const currentStepIndex = stepDone.findIndex((done) => !done);
+  const activeHint = currentStepIndex >= 0 ? stepHints[currentStepIndex] : null;
+  const dimLabels: Record<"width_px" | "height_px", string> = {
+    width_px: "Ширина (px)",
+    height_px: "Высота (px)"
+  };
+
+  function stepClass(index: number): string {
+    if (stepDone[index]) return "done";
+    return index === currentStepIndex ? "current" : "todo";
+  }
+
   function resetCalibration() {
     setRows([]);
     setNatural(null);
@@ -279,7 +311,7 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
   return (
     <article className="panel camera-panel">
       <div className="panel-heading">
-        <h2>Camera calibration</h2>
+        <h2>Калибровка камеры</h2>
         <select
           value={selectedId}
           onChange={(event) => {
@@ -292,20 +324,27 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
           {cameras.map((camera) => (
             <option key={camera.id} value={camera.id}>{camera.id}</option>
           ))}
-          <option value="new">+ new camera</option>
+          <option value="new">+ новая камера</option>
         </select>
       </div>
 
-      <form className="camera-form" onSubmit={save}>
-        <label>
-          ID
-          <input
-            value={draft.id}
-            onChange={(event) => setDraft({ ...draft, id: event.target.value })}
-          />
-        </label>
-        <label>
-          Source photo
+      <ol className="cw-steps">
+        {stepLabels.map((label, index) => (
+          <li
+            key={label}
+            className={stepClass(index)}
+            aria-current={index === currentStepIndex ? "step" : undefined}
+          >
+            {label}
+          </li>
+        ))}
+      </ol>
+      {activeHint && <p className="cw-step-hint">{activeHint}</p>}
+
+      {/* Step 1 — pick the apartment photo shot from the camera position. */}
+      <div className="cw-step">
+        <label className="cw-photo-pick">
+          Выберите фото квартиры…
           <select
             value={draft.source_asset_id ?? ""}
             onChange={(event) => {
@@ -313,7 +352,7 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
               resetCalibration();
             }}
           >
-            <option value="">none</option>
+            <option value="">нет</option>
             {sourcePhotos.map((asset) => (
               <option key={asset.id} value={asset.id}>
                 {asset.original_name ?? asset.id.slice(0, 8)}
@@ -321,216 +360,239 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
             ))}
           </select>
         </label>
+      </div>
 
-        <div className="camera-grid">
-          {(["width_px", "height_px"] as const).map((key) => (
-            <label key={key}>
-              {key}
-              <input
-                type="number"
-                value={draft[key]}
-                onChange={(event) =>
-                  setDraft({ ...draft, [key]: numeric(event.target.value, 1) })
-                }
+      {/* Step 2 — mark matching wall / door / window corners on the photo. */}
+      <div className="cw-step">
+        {draft.source_asset_id ? (
+          <div className="cc-stage">
+            <div className="cc-image-wrap">
+              <img
+                ref={imgRef}
+                src={api.assetUrl(draft.source_asset_id)}
+                alt="Фото для калибровки"
+                draggable={false}
+                onLoad={(event) => {
+                  const w = event.currentTarget.naturalWidth;
+                  const h = event.currentTarget.naturalHeight;
+                  setNatural({ w, h });
+                  // Keep camera pixel dimensions in sync with the photo so the
+                  // solver and the image agree without manual editing.
+                  setDraft((current) => ({
+                    ...current,
+                    width_px: Math.max(1, Math.round(w)),
+                    height_px: Math.max(1, Math.round(h))
+                  }));
+                }}
+                onError={() => setNatural(null)}
               />
-            </label>
-          ))}
-          {(["fx", "fy", "cx", "cy"] as const).map((key) => (
-            <label key={key}>
-              {key}
-              <input
-                type="number"
-                step="0.01"
-                value={draft.intrinsics[key]}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    intrinsics: {
-                      ...draft.intrinsics,
-                      [key]: numeric(event.target.value)
-                    }
-                  })
-                }
-              />
-            </label>
-          ))}
-        </div>
-
-        <div className="camera-grid">
-          {["x", "y", "z"].map((axis, index) => (
-            <label key={`p-${axis}`}>
-              pos {axis} mm
-              <input
-                type="number"
-                value={draft.transform.translation_mm[index]}
-                onChange={(event) => updateVector("translation_mm", index, event.target.value)}
-              />
-            </label>
-          ))}
-          {["x", "y", "z"].map((axis, index) => (
-            <label key={`r-${axis}`}>
-              rot {axis}°
-              <input
-                type="number"
-                step="0.1"
-                value={draft.transform.rotation_deg[index]}
-                onChange={(event) => updateVector("rotation_deg", index, event.target.value)}
-              />
-            </label>
-          ))}
-        </div>
-
-        <div className="camera-status">
-          {draft.calibration?.residual != null && (
-            <span>residual {draft.calibration.residual.toFixed(2)} px</span>
-          )}
-          {draft.calibration?.quality != null && (
-            <span>quality {Math.round(draft.calibration.quality * 100)}%</span>
-          )}
-        </div>
-
-        <div className="camera-actions">
-          <button type="submit">Save camera</button>
-          {selectedId !== "new" && (
-            <button className="danger secondary" type="button" onClick={() => void remove()}>
-              Delete
-            </button>
-          )}
-        </div>
-        {error && <div className="error">{error}</div>}
-      </form>
-
-      <section className="cc-section">
-        <div className="cc-head">
-          <h3>Calibrate from photo</h3>
-        </div>
-
-        {!draft.source_asset_id && (
-          <p className="muted">
-            Choose an apartment photo, then click matching wall, door and window corners on it.
-          </p>
-        )}
-
-        {draft.source_asset_id && (
-          <>
-            <div className="cc-stage">
-              <div className="cc-image-wrap">
-                <img
-                  ref={imgRef}
-                  src={api.assetUrl(draft.source_asset_id)}
-                  alt="Calibration photo"
-                  draggable={false}
-                  onLoad={(event) =>
-                    setNatural({
-                      w: event.currentTarget.naturalWidth,
-                      h: event.currentTarget.naturalHeight
-                    })
-                  }
-                  onError={() => setNatural(null)}
-                />
-                <div className="cc-overlay" onPointerDown={addCorrespondence}>
-                  {natural &&
-                    rows.map((row, index) => (
-                      <span
-                        key={row.key}
-                        className={row.anchorId ? "cc-marker linked" : "cc-marker"}
-                        style={{
-                          left: `${(row.imagePx[0] / natural.w) * 100}%`,
-                          top: `${(row.imagePx[1] / natural.h) * 100}%`
-                        }}
-                      >
-                        {index + 1}
-                      </span>
-                    ))}
-                </div>
+              <div className="cc-overlay" onPointerDown={addCorrespondence}>
+                {natural &&
+                  rows.map((row, index) => (
+                    <span
+                      key={row.key}
+                      className={row.anchorId ? "cc-marker linked" : "cc-marker"}
+                      style={{
+                        left: `${(row.imagePx[0] / natural.w) * 100}%`,
+                        top: `${(row.imagePx[1] / natural.h) * 100}%`
+                      }}
+                    >
+                      {index + 1}
+                    </span>
+                  ))}
               </div>
             </div>
+          </div>
+        ) : (
+          <p className="muted">Сначала выберите фото квартиры.</p>
+        )}
+      </div>
 
-            <p className="hint">
-              {linkedRows.length} of {rows.length} points linked · ≥3 required, 5+ recommended.
-              {natural ? ` Photo ${natural.w}×${natural.h}px.` : ""}
-            </p>
+      {/* Step 3 — link every marked corner to a scene anchor. */}
+      <div className="cw-step">
+        <p className="hint">
+          {linkedRows.length} из {rows.length} точек сопоставлено · минимум 3, лучше 5+
+        </p>
 
-            <ol className="cc-rows">
-              {rows.map((row, index) => (
-                <li key={row.key} className="cc-row">
-                  <span className="cc-index">{index + 1}</span>
-                  <span className="cc-px">
-                    {row.imagePx[0]}, {row.imagePx[1]} px
-                  </span>
-                  <select
-                    aria-label={`Anchor for point ${index + 1}`}
-                    value={row.anchorId}
-                    onChange={(event) => setRowAnchor(row.key, event.target.value)}
-                  >
-                    <option value="">Select a corner…</option>
-                    {anchors.map((group) => (
-                      <optgroup key={group.objectId} label={group.label}>
-                        {group.points.map((point) => (
-                          <option key={point.id} value={point.id}>
-                            {point.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => removeRow(row.key)}
-                  >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ol>
-
-            {anchors.length === 0 && (
-              <p className="muted">No wall, door or window geometry in this revision.</p>
-            )}
-
-            <div className="cc-actions">
-              <button
-                type="button"
-                onClick={() => void solve()}
-                disabled={!solveReady || solving}
+        <ol className="cc-rows">
+          {rows.map((row, index) => (
+            <li key={row.key} className="cc-row">
+              <span className="cc-index">{index + 1}</span>
+              <span className="cc-px">
+                {row.imagePx[0]}, {row.imagePx[1]} px
+              </span>
+              <select
+                aria-label={`Угол для точки ${index + 1}`}
+                value={row.anchorId}
+                onChange={(event) => setRowAnchor(row.key, event.target.value)}
               >
-                {solving ? "Solving…" : "Solve camera"}
-              </button>
+                <option value="">Выберите угол…</option>
+                {anchors.map((group) => (
+                  <optgroup key={group.objectId} label={group.label}>
+                    {group.points.map((point) => (
+                      <option key={point.id} value={point.id}>
+                        {point.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
               <button
                 type="button"
                 className="secondary"
-                onClick={resetCalibration}
-                disabled={rows.length === 0 && !solveResult && !solveError}
+                onClick={() => removeRow(row.key)}
               >
-                Clear
+                Убрать
               </button>
-            </div>
+            </li>
+          ))}
+        </ol>
 
-            {solveError && <div className="error cc-error">{solveError}</div>}
-
-            {solveResult && (
-              <div className="cc-result">
-                <strong>Pose solved</strong>
-                <span>
-                  {solveResult.count} correspondences · residual{" "}
-                  {solveResult.residual != null
-                    ? `${solveResult.residual.toFixed(2)} px`
-                    : "n/a"}
-                  {" · "}quality{" "}
-                  {solveResult.quality != null
-                    ? `${Math.round(solveResult.quality * 100)}%`
-                    : "n/a"}
-                </span>
-                <span>
-                  position ({formatTriple(solveResult.transform.translation_mm, 1)} mm) ·
-                  rotation ({formatTriple(solveResult.transform.rotation_deg, 2)}°)
-                </span>
-              </div>
-            )}
-          </>
+        {anchors.length === 0 && (
+          <p className="muted">В этой ревизии нет геометрии стен, дверей или окон.</p>
         )}
-      </section>
+      </div>
+
+      {/* Step 4 — solve the camera pose. */}
+      <div className="cw-step">
+        <div className="cc-actions">
+          <button
+            type="button"
+            onClick={() => void solve()}
+            disabled={!solveReady || solving}
+          >
+            {solving ? "Решение…" : "Определить позу камеры"}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={resetCalibration}
+            disabled={rows.length === 0 && !solveResult && !solveError}
+          >
+            Очистить
+          </button>
+        </div>
+
+        {solveError && <div className="error cc-error">{solveError}</div>}
+
+        {solveResult && (
+          <div className="cc-result">
+            <strong>Поза камеры определена</strong>
+            <span>
+              {solveResult.count} точек · качество{" "}
+              {solveResult.quality != null
+                ? `${Math.round(solveResult.quality * 100)}%`
+                : "n/a"}
+              {" · "}residual{" "}
+              {solveResult.residual != null
+                ? `${solveResult.residual.toFixed(2)} px`
+                : "n/a"}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Advanced raw parameters — hidden unless a power user needs them. */}
+      <details className="camera-advanced">
+        <summary>Параметры камеры</summary>
+        <form className="camera-form" onSubmit={save}>
+          <label>
+            Идентификатор
+            <input
+              value={draft.id}
+              onChange={(event) => setDraft({ ...draft, id: event.target.value })}
+            />
+          </label>
+
+          <div className="camera-grid">
+            {(["width_px", "height_px"] as const).map((key) => (
+              <label key={key}>
+                {dimLabels[key]}
+                <input
+                  type="number"
+                  value={draft[key]}
+                  onChange={(event) =>
+                    setDraft({ ...draft, [key]: numeric(event.target.value, 1) })
+                  }
+                />
+              </label>
+            ))}
+            {(["fx", "fy", "cx", "cy"] as const).map((key) => (
+              <label key={key}>
+                {key}
+                <input
+                  type="number"
+                  step="0.01"
+                  value={draft.intrinsics[key]}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      intrinsics: {
+                        ...draft.intrinsics,
+                        [key]: numeric(event.target.value)
+                      }
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="camera-grid">
+            {["x", "y", "z"].map((axis, index) => (
+              <label key={`p-${axis}`}>
+                Позиция {axis.toUpperCase()} (мм)
+                <input
+                  type="number"
+                  value={draft.transform.translation_mm[index]}
+                  onChange={(event) => updateVector("translation_mm", index, event.target.value)}
+                />
+              </label>
+            ))}
+            {["x", "y", "z"].map((axis, index) => (
+              <label key={`r-${axis}`}>
+                Поворот {axis.toUpperCase()} (°)
+                <input
+                  type="number"
+                  step="0.1"
+                  value={draft.transform.rotation_deg[index]}
+                  onChange={(event) => updateVector("rotation_deg", index, event.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="camera-status">
+            {draft.calibration?.residual != null && (
+              <span>residual {draft.calibration.residual.toFixed(2)} px</span>
+            )}
+            {draft.calibration?.quality != null && (
+              <span>quality {Math.round(draft.calibration.quality * 100)}%</span>
+            )}
+          </div>
+
+          {solveResult && (
+            <div className="camera-status">
+              <span>
+                position ({formatTriple(solveResult.transform.translation_mm, 1)} mm)
+              </span>
+              <span>
+                rotation ({formatTriple(solveResult.transform.rotation_deg, 2)}°)
+              </span>
+            </div>
+          )}
+
+          <div className="camera-actions">
+            <button type="submit">Сохранить параметры</button>
+            {selectedId !== "new" && (
+              <button className="danger secondary" type="button" onClick={() => void remove()}>
+                Удалить камеру
+              </button>
+            )}
+          </div>
+          {error && <div className="error">{error}</div>}
+        </form>
+      </details>
     </article>
   );
 }
