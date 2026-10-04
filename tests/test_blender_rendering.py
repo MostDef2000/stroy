@@ -1,4 +1,6 @@
+import importlib.util
 import json
+import math
 from pathlib import Path
 
 import jsonschema
@@ -14,6 +16,7 @@ from stroy.rendering import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+BENCH_SCENE = ROOT / "fixtures" / "bare-twin-bench.scene.json"
 
 
 def golden_scene() -> Scene:
@@ -129,6 +132,82 @@ def test_blender_command_is_headless_and_explicit() -> None:
 def test_blender_script_compiles_without_importing_bpy() -> None:
     source = (ROOT / "blender" / "stroy_blender.py").read_text(encoding="utf-8")
     compile(source, "stroy_blender.py", "exec")
+
+
+def bare_twin_scene() -> Scene:
+    return Scene.model_validate_json(BENCH_SCENE.read_text(encoding="utf-8"))
+
+
+def test_bare_twin_bench_fixture_validates() -> None:
+    scene = bare_twin_scene()
+    assert len(scene.cameras) >= 3
+    assert scene.metadata.get("synthetic") is True
+    assert [camera.id for camera in scene.cameras] == [
+        "camera.entry",
+        "camera.living.diagonal",
+        "camera.kitchen.corridor",
+    ]
+
+
+def test_bare_twin_bench_geometry_sane() -> None:
+    scene = bare_twin_scene()
+    walls = [entity for entity in scene.entities if entity.kind.value == "wall"]
+    doors = [entity for entity in scene.entities if entity.kind.value == "door"]
+    windows = [entity for entity in scene.entities if entity.kind.value == "window"]
+
+    assert len(walls) >= 12
+    assert len(doors) >= 5
+    assert len(windows) >= 2
+
+    for entity in scene.entities:
+        for value in entity.transform.translation_mm:
+            assert value is not None
+            assert math.isfinite(value)
+        dimensions = entity.geometry.get("dimensions_mm")
+        if dimensions is not None:
+            assert len(dimensions) == 3
+            assert all(value > 0 for value in dimensions)
+
+
+def load_blender_script_module():
+    spec = importlib.util.spec_from_file_location(
+        "stroy_blender_under_test",
+        ROOT / "blender" / "stroy_blender.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_renderer_profiles_known() -> None:
+    module = load_blender_script_module()
+    profiles = module.RENDERER_PROFILES
+
+    assert set(profiles) >= {
+        "blender-eevee-v0",
+        "blender-cycles-v0",
+        "blender-cycles-gpu-v0",
+    }
+    assert profiles["blender-eevee-v0"]["samples"] == 16
+    assert profiles["blender-eevee-v0"]["denoise"] is False
+    assert profiles["blender-cycles-v0"]["engine"] == "CYCLES"
+    assert profiles["blender-cycles-v0"]["device"] == "CPU"
+    assert profiles["blender-cycles-v0"]["samples"] == 16
+    assert profiles["blender-cycles-gpu-v0"]["engine"] == "CYCLES"
+    assert profiles["blender-cycles-gpu-v0"]["device"] == "GPU"
+    assert profiles["blender-cycles-gpu-v0"]["samples"] == 32
+    assert profiles["blender-cycles-gpu-v0"]["denoise"] is True
+
+    assert module.resolve_renderer_profile("blender-cycles-v0")["engine"] == "CYCLES"
+    assert module.resolve_renderer_profile(None) == profiles["blender-cycles-v0"]
+    with pytest.raises(RuntimeError, match="unknown renderer_profile"):
+        module.resolve_renderer_profile("blender-unknown-v0")
+
+
+def test_benchmark_script_compiles() -> None:
+    source = (ROOT / "scripts" / "benchmark_bare_twin.py").read_text(encoding="utf-8")
+    compile(source, "benchmark_bare_twin.py", "exec")
 
 
 def test_render_manifest_matches_versioned_schema() -> None:

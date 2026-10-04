@@ -6,7 +6,49 @@ import os
 import sys
 from pathlib import Path
 
-import bpy
+try:  # Blender's bundled Python provides bpy; the guard keeps the module testable.
+    import bpy
+except ImportError:  # pragma: no cover - only outside Blender
+    bpy = None  # type: ignore[assignment]
+
+
+DEFAULT_RENDERER_PROFILE = "blender-cycles-v0"
+
+# The plan carries only the requested profile name, and this script is executed
+# by Blender's bundled Python (no STROY/third-party packages available), so the
+# registry lives here and must stay import-free. Profiles are explicit; the
+# fallback (no profile in the plan) reproduces the original hardcoded CPU Cycles
+# behaviour so existing callers are unaffected.
+RENDERER_PROFILES: dict[str, dict[str, object]] = {
+    "blender-eevee-v0": {
+        "engine": "EEVEE",
+        "engine_ids": ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"),
+        "samples": 16,
+        "denoise": False,
+    },
+    "blender-cycles-v0": {
+        "engine": "CYCLES",
+        "device": "CPU",
+        "samples": 16,
+        "denoise": False,
+    },
+    "blender-cycles-gpu-v0": {
+        "engine": "CYCLES",
+        "device": "GPU",
+        "compute_device_type": ("OPTIX", "CUDA"),
+        "samples": 32,
+        "denoise": True,
+    },
+}
+
+
+def resolve_renderer_profile(profile: str | None = None) -> dict[str, object]:
+    """Return settings for *profile* or raise RuntimeError when unknown."""
+    name = profile or DEFAULT_RENDERER_PROFILE
+    try:
+        return RENDERER_PROFILES[name]
+    except KeyError:
+        raise RuntimeError(f"unknown renderer_profile: {profile}") from None
 
 
 def _args() -> argparse.Namespace:
@@ -33,15 +75,77 @@ def _reset() -> None:
             collection.remove(datablock)
 
 
-def _engine(scene) -> str:
-    # Object/Material Index passes are required control outputs and are
-    # consistently available in Cycles. CPU fallback works headlessly.
-    scene.render.engine = "CYCLES"
-    if hasattr(scene, "cycles"):
-        scene.cycles.device = "CPU"
-        scene.cycles.samples = int(os.getenv("STROY_BLENDER_SAMPLES", "16"))
-        scene.cycles.use_denoising = False
-    return "CYCLES"
+def _enum_items(datablock, property_name: str) -> set[str]:
+    try:
+        return {
+            item.identifier
+            for item in datablock.bl_rna.properties[property_name].enum_items
+        }
+    except (AttributeError, KeyError, TypeError):
+        return set()
+
+
+def _pick_engine(scene, candidates: tuple[str, ...]) -> str:
+    available = _enum_items(scene.render, "engine")
+    if available:
+        for candidate in candidates:
+            if candidate in available:
+                return candidate
+    return candidates[-1]
+
+
+def _pick_compute_device_type(cycles, candidates: tuple[str, ...]) -> str:
+    available = _enum_items(cycles, "compute_device_type")
+    for candidate in candidates:
+        if candidate in available:
+            return candidate
+    return "NONE"
+
+
+def _enable_all_devices() -> None:
+    try:
+        addon = bpy.context.preferences.addons.get("cycles")
+    except AttributeError:
+        return
+    if addon is None:
+        return
+    preferences = addon.preferences
+    preferences.get_devices()
+    for device in preferences.devices:
+        device.use = True
+
+
+def _engine(scene, profile: str | None = None) -> str:
+    config = resolve_renderer_profile(profile)
+    engine_kind = str(config["engine"])
+    samples = int(os.getenv("STROY_BLENDER_SAMPLES", str(config["samples"])))
+
+    if engine_kind == "EEVEE":
+        engine = _pick_engine(scene, config["engine_ids"])  # type: ignore[arg-type]
+        scene.render.engine = engine
+        eevee = getattr(scene, "eevee", None)
+        if eevee is not None and hasattr(eevee, "taa_render_samples"):
+            eevee.taa_render_samples = samples
+        return engine
+
+    if engine_kind == "CYCLES":
+        # Object/Material Index passes are required control outputs and are
+        # consistently available in Cycles.
+        scene.render.engine = "CYCLES"
+        cycles = getattr(scene, "cycles", None)
+        if cycles is not None:
+            cycles.device = str(config.get("device", "CPU"))
+            cycles.samples = samples
+            cycles.use_denoising = bool(config.get("denoise", False))
+            if config.get("device") == "GPU":
+                cycles.compute_device_type = _pick_compute_device_type(
+                    cycles,
+                    config["compute_device_type"],  # type: ignore[arg-type]
+                )
+                _enable_all_devices()
+        return "CYCLES"
+
+    raise RuntimeError(f"unknown renderer engine: {engine_kind}")
 
 
 def _material(entity: dict):
@@ -210,7 +314,7 @@ def _metadata(plan: dict, engine: str) -> dict:
         "scene_revision_id": plan["scene_revision_id"],
         "design_revision_id": plan.get("design_revision_id"),
         "scene_id": plan["scene_id"],
-        "renderer_profile": plan["renderer_profile"],
+        "renderer_profile": plan.get("renderer_profile", DEFAULT_RENDERER_PROFILE),
         "engine": engine,
         "camera": plan["camera"],
         "objects": [
@@ -241,7 +345,7 @@ def main() -> int:
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
     scene.unit_settings.scale_length = 1.0
-    engine = _engine(scene)
+    engine = _engine(scene, plan.get("renderer_profile"))
     scene.render.film_transparent = False
     scene.world.color = (0.055, 0.055, 0.055)
 
