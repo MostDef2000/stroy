@@ -19,6 +19,7 @@ import { PlanEditor } from "./PlanEditor";
 import { ReplacementPanel } from "./ReplacementPanel";
 import { SceneViewer } from "./SceneViewer";
 import { TwinDesignPanel } from "./TwinDesignPanel";
+import { deleteConfirmText, nextStateAfterDelete } from "./projectDelete";
 import "./styles.css";
 
 // Advanced panels (camera calibration, twin design, geometry diagnostics,
@@ -161,6 +162,7 @@ export default function App() {
   const [uploadRole, setUploadRole] = useState<AssetRole>("apartment");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [message, setMessage] = useState("");
+  const [deleteError, setDeleteError] = useState("");
   const [sceneReadyFor, setSceneReadyFor] = useState<string | null>(null);
   const [preparingScene, setPreparingScene] = useState(false);
   const sceneInitAttempted = useRef<Set<string>>(new Set());
@@ -261,6 +263,31 @@ export default function App() {
     setNewProject("");
     await refreshProjectsAndWorkers();
     setSelected(project.id);
+  }
+
+  async function removeProject() {
+    if (!selected || !currentProject) return;
+    if (!window.confirm(deleteConfirmText(currentProject.name))) return;
+    setDeleteError("");
+    try {
+      const outcome = await api.deleteProject(selected);
+      // 409/generic errors keep the current selection; no refetch needed.
+      if (outcome === "busy" || outcome === "error") {
+        const decision = nextStateAfterDelete(outcome);
+        if (decision.status === "error") setDeleteError(decision.message);
+        return;
+      }
+      // Successful delete (204) or already-deleted (404): refetch the list
+      // FIRST and decide from the FRESH list. Deciding from the in-render
+      // `projects` could race a concurrent change (5s poll, another tab) and
+      // strand the UI in the empty state while projects still exist.
+      const projectList = await api.projects();
+      setProjects(projectList);
+      const decision = nextStateAfterDelete(outcome, projectList);
+      setSelected(decision.status === "empty" ? null : projectList[0]?.id ?? null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function createDemoScene() {
@@ -386,7 +413,10 @@ export default function App() {
             <button
               key={project.id}
               className={selected === project.id ? "project active" : "project"}
-              onClick={() => setSelected(project.id)}
+              onClick={() => {
+                setSelected(project.id);
+                setDeleteError("");
+              }}
             >
               {project.name}
             </button>
@@ -408,6 +438,18 @@ export default function App() {
             <span>
               {revision ? `revision ${shortId(revision.revision_id)}` : "scene not initialized"}
             </span>
+            {selected && (
+              <div className="project-delete">
+                <button
+                  type="button"
+                  className="danger secondary"
+                  onClick={() => void removeProject()}
+                >
+                  Удалить проект
+                </button>
+                {deleteError && <div className="error">{deleteError}</div>}
+              </div>
+            )}
           </div>
           <div className="actions">
             {!revision && selected && (
