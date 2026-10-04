@@ -12,22 +12,16 @@ import {
   StyleProfile,
   Worker
 } from "./api";
-import { CameraPanel } from "./CameraPanel";
-import { DesignPanel } from "./DesignPanel";
-import { PhotoEditPanel } from "./PhotoEditPanel";
-import { PlanEditor } from "./PlanEditor";
-import { ReplacementPanel } from "./ReplacementPanel";
-import { SceneViewer } from "./SceneViewer";
-import { TwinDesignPanel } from "./TwinDesignPanel";
+import { AppShell } from "./AppShell";
 import { deleteConfirmText, nextStateAfterDelete } from "./projectDelete";
+import { type PageId } from "./nav";
+import { type ReadinessInput } from "./overview";
+import { DesignPage } from "./pages/DesignPage";
+import { DiagnosticsPage } from "./pages/DiagnosticsPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { PlanPage } from "./pages/PlanPage";
+import { ResultsPage } from "./pages/ResultsPage";
 import "./styles.css";
-
-// Advanced panels (camera calibration, twin design, geometry diagnostics,
-// style analysis) are visible since phase B (#72) closed: the calibration
-// and design flows are backend-proven (PRs #91-#95) and await visual
-// acceptance in the running app. SceneViewer itself stays visible after a
-// canonical scene revision exists.
-const SHOW_ADVANCED_PANELS = true;
 
 function goldenRoom(projectId: string): SceneDocument {
   return {
@@ -159,12 +153,12 @@ export default function App() {
   const [styleProfiles, setStyleProfiles] = useState<StyleProfile[]>([]);
   const [newProject, setNewProject] = useState("");
   const [instruction, setInstruction] = useState("");
-  const [uploadRole, setUploadRole] = useState<AssetRole>("apartment");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [sceneReadyFor, setSceneReadyFor] = useState<string | null>(null);
   const [preparingScene, setPreparingScene] = useState(false);
+  const [page, setPage] = useState<PageId>("overview");
   const sceneInitAttempted = useRef<Set<string>>(new Set());
 
   const refreshProjectsAndWorkers = useCallback(async () => {
@@ -256,6 +250,19 @@ export default function App() {
   const onlineWorkers = workers.filter((worker) => worker.online);
   const currentProject = projects.find((project) => project.id === selected);
 
+  const readiness: ReadinessInput = {
+    hasScene: revision !== null,
+    sceneCameraCount: revision?.scene.cameras.length ?? 0,
+    calibratedCameraCount:
+      revision?.scene.cameras.filter((camera) => camera.calibration != null).length ?? 0,
+    apartmentAssetCount: assets.filter((asset) => asset.role === "apartment").length,
+    referenceAssetCount: assets.filter((asset) => asset.role === "reference").length,
+    revisionCount: revisions.length,
+    activeJobCount: jobs.filter(
+      (job) => !["succeeded", "failed", "cancelled"].includes(job.status)
+    ).length
+  };
+
   async function createProject(event: FormEvent) {
     event.preventDefault();
     if (!newProject.trim()) return;
@@ -296,7 +303,7 @@ export default function App() {
     await refreshProject(selected);
   }
 
-  async function upload(file: File | null) {
+  async function upload(file: File | null, role: AssetRole) {
     if (!file || !selected) return;
     try {
       setUploadProgress(0);
@@ -304,7 +311,7 @@ export default function App() {
       const asset = await api.upload(
         selected,
         file,
-        uploadRole,
+        role,
         setUploadProgress
       );
       setMessage(`Asset ${asset.id} uploaded as ${asset.role}`);
@@ -392,294 +399,91 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">STROY</div>
-        <div className={onlineWorkers.length ? "worker online" : "worker offline"}>
-          GPU worker: {onlineWorkers.length ? "online" : "offline"}
-        </div>
+    <AppShell
+      projects={projects}
+      selected={selected}
+      workersOnline={onlineWorkers.length > 0}
+      newProject={newProject}
+      onNewProjectChange={setNewProject}
+      onCreateProject={createProject}
+      onSelectProject={(id) => {
+        setSelected(id);
+        setDeleteError("");
+      }}
+      onLogout={() => void api.logout().then(() => setAuthenticated(false))}
+      projectName={currentProject?.name ?? "Проект"}
+      revisionLabel={
+        revision ? `revision ${shortId(revision.revision_id)}` : "scene not initialized"
+      }
+      page={page}
+      onPageChange={setPage}
+      canDelete={Boolean(selected)}
+      deleteError={deleteError}
+      onDelete={() => void removeProject()}
+      message={message}
+    >
+      {selected && page === "overview" && (
+        <OverviewPage
+          readiness={readiness}
+          hasProject={Boolean(currentProject)}
+          hasScene={revision !== null}
+          preparingScene={preparingScene}
+          onCreateDemoScene={() => void createDemoScene()}
+          onNavigate={setPage}
+        />
+      )}
 
-        <form onSubmit={createProject} className="new-project">
-          <input
-            placeholder="Новый проект"
-            value={newProject}
-            onChange={(event) => setNewProject(event.target.value)}
-          />
-          <button>+</button>
-        </form>
+      {selected && page === "plan" && (
+        <PlanPage
+          projectId={selected}
+          assets={assets}
+          jobs={jobs}
+          onChanged={() => refreshProject(selected)}
+          onUpload={upload}
+          uploadProgress={uploadProgress}
+        />
+      )}
 
-        <nav>
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              className={selected === project.id ? "project active" : "project"}
-              onClick={() => {
-                setSelected(project.id);
-                setDeleteError("");
-              }}
-            >
-              {project.name}
-            </button>
-          ))}
-        </nav>
+      {selected && page === "design" && (
+        <DesignPage
+          projectId={selected}
+          revision={revision}
+          assets={assets}
+          jobs={jobs}
+          generations={generations}
+          onChanged={() => refreshProject(selected)}
+          onUpload={upload}
+          uploadProgress={uploadProgress}
+          instruction={instruction}
+          onInstructionChange={setInstruction}
+          onSubmitInstruction={submitInstruction}
+          onAnalyzeStyle={() => void analyzeStyleFromReferences()}
+          onNavigate={setPage}
+        />
+      )}
 
-        <button
-          className="logout"
-          onClick={() => void api.logout().then(() => setAuthenticated(false))}
-        >
-          Выйти
-        </button>
-      </aside>
+      {selected && page === "results" && (
+        <ResultsPage
+          revisions={revisions}
+          jobs={jobs}
+          generations={generations}
+          currentRevisionId={revision?.revision_id ?? null}
+          cameraId={revision?.scene.cameras[0]?.id ?? null}
+          onRestore={restore}
+          onRerender={rerenderRevision}
+        />
+      )}
 
-      <main className="workspace">
-        <header>
-          <div>
-            <h1>{currentProject?.name ?? "Проект"}</h1>
-            <span>
-              {revision ? `revision ${shortId(revision.revision_id)}` : "scene not initialized"}
-            </span>
-            {selected && (
-              <div className="project-delete">
-                <button
-                  type="button"
-                  className="danger secondary"
-                  onClick={() => void removeProject()}
-                >
-                  Удалить проект
-                </button>
-                {deleteError && <div className="error">{deleteError}</div>}
-              </div>
-            )}
-          </div>
-          <div className="actions">
-            {!revision && selected && (
-              <button onClick={() => void createDemoScene()}>Golden room</button>
-            )}
-            {selected && (
-              <>
-                <button onClick={() => void queueFakeGeneration()}>Test generation</button>
-                {SHOW_ADVANCED_PANELS && (
-                  <div className="style-analyze-group">
-                    <button onClick={() => void analyzeStyleFromReferences()}>Анализ стиля</button>
-                    <p className="hint" id="style-hint">
-                      Анализ стиля требует 3–5 изображений с ролью «reference». Сейчас: {assets.filter(a => a.role === "reference" && a.media_type.startsWith("image/")).length}.
-                    </p>
-                  </div>
-                )}
-                <div className="upload-controls">
-                  <select
-                    value={uploadRole}
-                    onChange={(event) => setUploadRole(event.target.value as AssetRole)}
-                    aria-label="Asset role"
-                  >
-                    <option value="apartment">Квартира</option>
-                    <option value="reference">Референс</option>
-                  </select>
-                  <label className="upload">
-                    Загрузить файл
-                    <input
-                      type="file"
-                      onChange={(event) => void upload(event.target.files?.[0] ?? null)}
-                    />
-                  </label>
-                </div>
-              </>
-            )}
-          </div>
-        </header>
-
-        {uploadProgress !== null && (
-          <div className="upload-progress" aria-label="Upload progress">
-            <div style={{ width: `${uploadProgress}%` }} />
-            <span>{uploadProgress}%</span>
-          </div>
-        )}
-
-        {preparingScene && <section className="status-panel muted">Preparing workspace…</section>}
-
-        {selected && (
-          <PlanEditor
-            projectId={selected}
-            assets={assets}
-            jobs={jobs}
-            onChanged={() => refreshProject(selected)}
-          />
-        )}
-
-        {selected && revision && (
-          <PhotoEditPanel
-            projectId={selected}
-            revision={revision}
-            assets={assets}
-            jobs={jobs}
-            generations={generations}
-            onChanged={() => refreshProject(selected)}
-          />
-        )}
-
-        {selected && revision && (
-          <section className="canvas-panel">
-            <SceneViewer
-              scene={revision.scene}
-              projectId={selected}
-              onChanged={() => refreshProject(selected)}
-            />
-          </section>
-        )}
-
-        <form className="instruction-bar" onSubmit={submitInstruction}>
-          <input
-            value={instruction}
-            onChange={(event) => setInstruction(event.target.value)}
-            placeholder="Например: сделай диван бежевым и убери стол"
-            disabled={!revision}
-          />
-          <button disabled={!revision || !instruction.trim()}>Применить через AI</button>
-        </form>
-
-        <section className="dashboard-grid">
-          {SHOW_ADVANCED_PANELS && selected && revision && (
-            <CameraPanel
-              projectId={selected}
-              revision={revision}
-              assets={assets}
-              onChanged={() => refreshProject(selected)}
-            />
-          )}
-
-          {SHOW_ADVANCED_PANELS && selected && revision && (
-            <TwinDesignPanel
-              projectId={selected}
-              revision={revision}
-              jobs={jobs}
-              onChanged={() => refreshProject(selected)}
-            />
-          )}
-
-          {selected && revision && (
-            <ReplacementPanel
-              projectId={selected}
-              revision={revision}
-              assets={assets}
-              onChanged={() => refreshProject(selected)}
-            />
-          )}
-
-          <article className="panel">
-            <h2>Compute</h2>
-            {workers.length === 0 && <p className="muted">worker ещё не зарегистрирован</p>}
-            {workers.map((worker) => (
-              <div className="row" key={worker.id}>
-                <span>{worker.display_name ?? worker.id}</span>
-                <span className={worker.online ? "tag online" : "tag offline"}>
-                  {worker.online ? "online" : "offline"}
-                </span>
-                <small>{worker.models.join(", ")}</small>
-              </div>
-            ))}
-          </article>
-
-          <article className="panel">
-            <h2>Jobs</h2>
-            {jobs.length === 0 && <p className="muted">очередь пуста</p>}
-            {jobs.slice(0, 8).map((job) => {
-              const fraction =
-                typeof job.progress["fraction"] === "number"
-                  ? Math.round((job.progress["fraction"] as number) * 100)
-                  : null;
-              const phase =
-                typeof job.progress["phase"] === "string"
-                  ? (job.progress["phase"] as string)
-                  : null;
-              const cancellable = !["succeeded", "failed", "cancelled"].includes(job.status);
-              return (
-                <div className="row" key={job.id}>
-                  <span>{job.job_type}</span>
-                  <span className="tag">{job.status}</span>
-                  <small>
-                    #{shortId(job.id)} · attempt {job.attempt}
-                    {phase ? ` · ${phase}` : ""}
-                    {fraction !== null ? ` · ${fraction}%` : ""}
-                  </small>
-                  {cancellable && (
-                    <button className="secondary" onClick={() => void cancel(job.id)}>
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </article>
-
-          <article className="panel">
-            <h2>Style profiles</h2>
-            {styleProfiles.length === 0 && (
-              <p className="muted">
-                профилей пока нет — запустите анализ стиля по reference-фото
-              </p>
-            )}
-            {styleProfiles.slice(0, 6).map((item) => (
-              <div className="row" key={item.id}>
-                <span>
-                  {item.profile.labels.join(", ") || "без меток"}
-                </span>
-                <span className="palette">
-                  {item.profile.palette.map((entry) => (
-                    <i
-                      key={entry.hex}
-                      title={`${entry.role}: ${entry.hex}`}
-                      style={{ backgroundColor: entry.hex }}
-                    />
-                  ))}
-                </span>
-                <small>
-                  {item.profile.materials.length} materials ·{" "}
-                  {item.profile.lighting?.temperature_k ?? "—"}K ·{" "}
-                  {new Date(item.created_at).toLocaleDateString()}
-                </small>
-              </div>
-            ))}
-          </article>
-
-          <article className="panel">
-            <h2>Assets</h2>
-            {assets.length === 0 && <p className="muted">файлов пока нет</p>}
-            {(["apartment", "reference", "derived"] as AssetRole[]).map((role) => {
-              const group = assets.filter((asset) => asset.role === role);
-              if (group.length === 0) return null;
-              return (
-                <div className="asset-group" key={role}>
-                  <h3>{role}</h3>
-                  {group.slice(0, 8).map((asset) => (
-                    <div className="row" key={asset.id}>
-                      <span>{asset.original_name ?? shortId(asset.id)}</span>
-                      <span className="tag">{asset.provenance}</span>
-                      <small>
-                        {asset.media_type} · {Math.ceil(asset.size_bytes / 1024)} KB
-                        {asset.duplicate_of_asset_id
-                          ? ` · duplicate of ${shortId(asset.duplicate_of_asset_id)}`
-                          : ""}
-                      </small>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </article>
-
-          <DesignPanel
-            revisions={revisions}
-            jobs={jobs}
-            generations={generations}
-            currentRevisionId={revision?.revision_id ?? null}
-            cameraId={revision?.scene.cameras[0]?.id ?? null}
-            onRestore={restore}
-            onRerender={rerenderRevision}
-          />
-        </section>
-
-        {message && <section className="status-panel">{message}</section>}
-      </main>
-    </div>
+      {selected && page === "diagnostics" && (
+        <DiagnosticsPage
+          workers={workers}
+          jobs={jobs}
+          styleProfiles={styleProfiles}
+          assets={assets}
+          onCancel={(jobId) => void cancel(jobId)}
+          onTestGeneration={() => void queueFakeGeneration()}
+        />
+      )}
+    </AppShell>
   );
 }
