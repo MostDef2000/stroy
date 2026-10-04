@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Generation, Job, RevisionSummary } from "./api";
+import { statusLabel } from "./copy";
 import {
   buildTimelineEntries,
   comparePairFor,
@@ -15,12 +16,6 @@ function timeLabel(value: string) {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function statusLabel(status: string) {
-  if (status === "succeeded") return "выполнено";
-  if (status === "failed") return "ошибка";
-  return status;
 }
 
 export function DesignPanel({

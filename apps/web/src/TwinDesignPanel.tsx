@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Asset, Job, RenderRecord, SceneRevision } from "./api";
+import { statusLabel } from "./copy";
 import {
   apiErrorText,
   buildAddFurnitureCommand,
@@ -135,7 +136,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
   useEffect(() => {
     if (!pendingJobId || activeRenderJob?.status !== "succeeded") return;
     setPendingJobId(null);
-    setRenderInfo("Render finished.");
+    setRenderInfo("Рендер готов.");
     void loadRenders();
   }, [activeRenderJob, pendingJobId, loadRenders]);
 
@@ -145,17 +146,18 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
       return;
     }
     setPendingJobId(null);
-    setRenderError(`Render job ${activeRenderJob.status}.`);
+    setRenderError(`Задача рендера: ${statusLabel(activeRenderJob.status)}.`);
   }, [activeRenderJob, pendingJobId]);
 
   const renderStatus = useMemo(() => {
     if (!pendingJobId) return null;
-    if (!activeRenderJob) return "queued";
+    if (!activeRenderJob) return statusLabel("queued");
     const fraction =
       typeof activeRenderJob.progress["fraction"] === "number"
         ? Math.round((activeRenderJob.progress["fraction"] as number) * 100)
         : null;
-    return fraction === null ? activeRenderJob.status : `${activeRenderJob.status} · ${fraction}%`;
+    const label = statusLabel(activeRenderJob.status);
+    return fraction === null ? label : `${label} · ${fraction}%`;
   }, [activeRenderJob, pendingJobId]);
 
   const orderedRenders = useMemo(() => sortedRendersNewestFirst(renders), [renders]);
@@ -178,7 +180,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
     const resultAssetId = redesignResultAssetId(activeVariantJob);
     if (resultAssetId) {
       setVariantResultAssetId(resultAssetId);
-      setVariantInfo("Design variant ready.");
+      setVariantInfo("Вариант дизайна готов.");
     } else {
       setVariantError("Задача завершилась без выходного изображения.");
     }
@@ -191,19 +193,18 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
       return;
     }
     setVariantJobId(null);
-    setVariantError(`Design variant job ${activeVariantJob.status}.`);
+    setVariantError(`Вариант дизайна: ${statusLabel(activeVariantJob.status)}.`);
   }, [activeVariantJob, variantJobId]);
 
   const variantStatus = useMemo(() => {
     if (!variantJobId) return null;
-    if (!activeVariantJob) return "queued";
+    if (!activeVariantJob) return statusLabel("queued");
     const fraction =
       typeof activeVariantJob.progress["fraction"] === "number"
         ? Math.round((activeVariantJob.progress["fraction"] as number) * 100)
         : null;
-    return fraction === null
-      ? activeVariantJob.status
-      : `${activeVariantJob.status} · ${fraction}%`;
+    const label = statusLabel(activeVariantJob.status);
+    return fraction === null ? label : `${label} · ${fraction}%`;
   }, [activeVariantJob, variantJobId]);
 
   async function startRender() {
@@ -322,12 +323,12 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
   return (
     <article className="panel td-panel">
       <div className="panel-heading td-heading">
-        <h2>Twin design</h2>
+        <h2>Дизайн двойника</h2>
       </div>
 
       <section className="td-section">
         <div className="td-head">
-          <h3>Render view</h3>
+          <h3>Рендер вида</h3>
         </div>
         {cameras.length === 0 ? (
           <p className="muted">
@@ -337,7 +338,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
           <>
             <div className="td-controls">
               <label>
-                Camera
+                Камера
                 <select
                   value={cameraId}
                   onChange={(event) => setCameraId(event.target.value)}
@@ -354,13 +355,13 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 onClick={() => void startRender()}
                 disabled={pendingJobId !== null}
               >
-                {pendingJobId ? "Rendering…" : "Render view"}
+                {pendingJobId ? "Рендер…" : "Отрендерить вид"}
               </button>
             </div>
             <p className="hint">
-              renderer {RENDERER_PROFILE} · latest scene revision.
+              Рендерер {RENDERER_PROFILE} · последняя версия сцены.
             </p>
-            {renderStatus && <p className="muted td-status">Render job: {renderStatus}</p>}
+            {renderStatus && <p className="muted td-status">Задача рендера: {renderStatus}</p>}
             {renderError && <div className="error td-error">{renderError}</div>}
             {renderInfo && <div className="td-result">{renderInfo}</div>}
           </>
@@ -369,9 +370,9 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
 
       <section className="td-section">
         <div className="td-head">
-          <h3>Renders</h3>
+          <h3>Рендеры</h3>
           <button type="button" className="secondary" onClick={() => void loadRenders()}>
-            Refresh
+            Обновить
           </button>
         </div>
         {rendersError && <div className="error td-error">{rendersError}</div>}
@@ -408,7 +409,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
         {selectedRender && (
           <div className="td-preview">
             {selectedRgbId ? (
-              <img src={api.assetUrl(selectedRgbId)} alt={`Render ${selectedRender.id}`} />
+              <img src={api.assetUrl(selectedRgbId)} alt={`Рендер ${selectedRender.id}`} />
             ) : (
               <p className="muted">У выбранного рендера нет rgb-пасса.</p>
             )}
@@ -419,7 +420,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
       {selectedRender && (
         <section className="td-section">
           <div className="td-head">
-            <h3>Design variant</h3>
+            <h3>Вариант дизайна</h3>
           </div>
           {!selectedRgbId ? (
             <p className="muted">
@@ -428,10 +429,10 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
           ) : (
             <div className="td-form">
               <p className="hint">
-                img2img по rgb-пассу рендера #{selectedRender.id.slice(0, 8)} · latest scene revision.
+                img2img по rgb-пассу рендера #{selectedRender.id.slice(0, 8)} · последняя версия сцены.
               </p>
               <label>
-                Prompt
+                Инструкция
                 <textarea
                   rows={3}
                   value={variantPrompt}
@@ -440,7 +441,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 />
               </label>
               <label>
-                Strength · {variantStrength.toFixed(2)}
+                Сила · {variantStrength.toFixed(2)}
                 <input
                   type="range"
                   min={REDESIGN_STRENGTH_MIN}
@@ -453,12 +454,12 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 />
               </label>
               <label>
-                Style reference (optional)
+                Референс стиля (необязательно)
                 <select
                   value={variantReferenceId}
                   onChange={(event) => setVariantReferenceId(event.target.value)}
                 >
-                  <option value="">None — prompt only</option>
+                  <option value="">Нет — только инструкция</option>
                   {referenceAssets.map((asset) => (
                     <option key={asset.id} value={asset.id}>
                       {asset.original_name ?? asset.id.slice(0, 8)}
@@ -472,11 +473,11 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                   onClick={() => void runDesignVariant()}
                   disabled={variantJobId !== null || !variantPrompt.trim()}
                 >
-                  {variantJobId ? "Running…" : "Run variant"}
+                  {variantJobId ? "Выполняется…" : "Запустить вариант"}
                 </button>
               </div>
               {variantStatus && (
-                <p className="muted td-status">Design variant job: {variantStatus}</p>
+                <p className="muted td-status">Вариант дизайна: {variantStatus}</p>
               )}
               {variantError && <div className="error td-error">{variantError}</div>}
               {variantInfo && <div className="td-result">{variantInfo}</div>}
@@ -484,7 +485,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 <div className="td-preview">
                   <img
                     src={api.assetUrl(variantResultAssetId)}
-                    alt="Design variant result"
+                    alt="Результат варианта дизайна"
                   />
                 </div>
               )}
@@ -495,7 +496,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
 
       <section className="td-section">
         <div className="td-head">
-          <h3>Add furniture</h3>
+          <h3>Добавить мебель</h3>
         </div>
         <form className="td-form" onSubmit={(event) => void addFurniture(event)}>
           <div className="td-grid">

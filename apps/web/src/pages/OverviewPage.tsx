@@ -46,7 +46,7 @@ export function OverviewPage({
           <div className="pl-actions">
             <button onClick={onCreateDemoScene}>Golden room</button>
           </div>
-          {preparingScene && <p className="muted">Preparing workspace…</p>}
+          {preparingScene && <p className="muted">Готовим рабочее место…</p>}
         </section>
       )}
 
