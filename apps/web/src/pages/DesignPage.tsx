@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { Asset, AssetRole, Generation, Job, SceneRevision } from "../api";
+import { computeCameraReadiness } from "../cameraReadiness";
 import { CameraPanel } from "../CameraPanel";
 import { PhotoEditPanel } from "../PhotoEditPanel";
 import { ReplacementPanel } from "../ReplacementPanel";
@@ -42,6 +43,7 @@ export function DesignPage({
   onNavigate: (page: PageId) => void;
 }) {
   const [mode, setMode] = useState<"3d" | "photo">("3d");
+  const advancedRef = useRef<HTMLDetailsElement | null>(null);
 
   if (!revision) {
     return (
@@ -58,6 +60,15 @@ export function DesignPage({
   const referenceImages = assets.filter(
     (asset) => asset.role === "reference" && asset.media_type.startsWith("image/")
   ).length;
+
+  const readiness = computeCameraReadiness(revision.scene.cameras);
+
+  function openAdvanced() {
+    const node = advancedRef.current;
+    if (!node) return;
+    node.open = true;
+    node.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 
   return (
     <>
@@ -121,6 +132,16 @@ export function DesignPage({
             />
           </section>
 
+          <div className={"camera-readiness " + readiness.state}>
+            <span>
+              {readiness.label}
+              {readiness.detail ? ` · ${readiness.detail}` : ""}
+            </span>
+            <button type="button" className="secondary" onClick={openAdvanced}>
+              Настроить камеру
+            </button>
+          </div>
+
           <form className="instruction-bar" onSubmit={onSubmitInstruction}>
             <input
               value={instruction}
@@ -147,7 +168,7 @@ export function DesignPage({
         />
       </div>
 
-      <details className="design-advanced">
+      <details className="design-advanced" ref={advancedRef}>
         <summary>Дополнительно</summary>
         <section className="dashboard-grid">
           <CameraPanel
