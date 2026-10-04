@@ -24,6 +24,41 @@ export type RenderLike = {
   created_at: string;
 };
 
+/** Backend-accepted redesign strength window (RedesignRequest, routes.py). */
+export const REDESIGN_STRENGTH_MIN = 0.2;
+export const REDESIGN_STRENGTH_MAX = 0.95;
+export const REDESIGN_STRENGTH_DEFAULT = 0.6;
+
+/** Minimal structural view of a project asset for reference filtering. */
+export type AssetLike = {
+  id: string;
+  role: string;
+  media_type: string;
+  original_name?: string | null;
+};
+
+/** Minimal structural view of a job for result-asset resolution. */
+export type JobLike = {
+  status?: string | null;
+  result?: Record<string, unknown> | null;
+};
+
+export type DesignVariantDraft = {
+  baseRevisionId: string;
+  baseAssetId: string;
+  prompt: string;
+  strength: number;
+  referenceAssetId?: string | null;
+};
+
+export type RedesignPayload = {
+  base_revision_id: string;
+  base_asset_id: string;
+  prompt: string;
+  strength: number;
+  reference_asset_id?: string;
+};
+
 export type AddFurnitureInput = {
   commandId: string;
   baseRevisionId: string;
@@ -64,6 +99,72 @@ export function renderRgbAssetId(
 ): string | null {
   const id = manifest?.passes?.["rgb"];
   return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+/**
+ * Clamp a redesign strength into the backend window [0.2, 0.95]; non-finite
+ * input falls back to the panel default so a stray empty field cannot 422.
+ */
+export function clampStrength(value: number): number {
+  if (!Number.isFinite(value)) return REDESIGN_STRENGTH_DEFAULT;
+  return Math.min(REDESIGN_STRENGTH_MAX, Math.max(REDESIGN_STRENGTH_MIN, value));
+}
+
+/**
+ * Build the POST /redesigns body from the panel draft. The prompt is trimmed
+ * and the strength clamped. The optional style reference is omitted entirely
+ * (not nulled) when absent so the backend takes its prompt-only placeholder
+ * path (`reference_asset_id=None` -> synthetic black reference).
+ */
+export function buildRedesignInput(draft: DesignVariantDraft): RedesignPayload {
+  const payload: RedesignPayload = {
+    base_revision_id: draft.baseRevisionId,
+    base_asset_id: draft.baseAssetId,
+    prompt: draft.prompt.trim(),
+    strength: clampStrength(draft.strength)
+  };
+  if (typeof draft.referenceAssetId === "string" && draft.referenceAssetId.length > 0) {
+    payload.reference_asset_id = draft.referenceAssetId;
+  }
+  return payload;
+}
+
+function firstUsableAssetId(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  for (const item of value) {
+    if (typeof item === "string" && item.length > 0) return item;
+  }
+  return null;
+}
+
+/**
+ * Resolve the result asset of a finished redesign job. The worker uploads
+ * outputs into top-level `result.output_asset_ids` (worker/runtime.py) and
+ * mirrors them in `result.generation_manifest.output_asset_ids`; read the first
+ * usable id. Returns null while the job is queued, running or has no output.
+ */
+export function redesignResultAssetId(
+  job: JobLike | null | undefined
+): string | null {
+  const direct = firstUsableAssetId(job?.result?.["output_asset_ids"]);
+  if (direct) return direct;
+  const manifest = job?.result?.["generation_manifest"];
+  if (manifest && typeof manifest === "object") {
+    return firstUsableAssetId((manifest as Record<string, unknown>)["output_asset_ids"]);
+  }
+  return null;
+}
+
+/**
+ * Project assets eligible as a redesign style reference — an image with
+ * role=reference, mirroring PhotoEditPanel's reference picker.
+ */
+export function referenceImageAssets<T extends AssetLike>(
+  assets: readonly T[]
+): T[] {
+  return assets.filter(
+    (asset) => asset.role === "reference" && asset.media_type.startsWith("image/")
+  );
 }
 
 /**
