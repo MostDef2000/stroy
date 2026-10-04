@@ -111,7 +111,7 @@ export function DesignPage({
         </div>
       </section>
 
-      {mode === "3d" ? (
+      {mode === "3d" && (
         <>
           <section className="canvas-panel">
             <SceneViewer
@@ -131,7 +131,12 @@ export function DesignPage({
             <button disabled={!revision || !instruction.trim()}>Применить через AI</button>
           </form>
         </>
-      ) : (
+      )}
+
+      {/* PhotoEditPanel stays mounted across mode switches so its local edit
+          state (photo, prompt, region, pending job, iteration, base override)
+          survives toggling to 3D and back. Hidden via CSS in 3D mode. */}
+      <div className={mode === "photo" ? "design-pane" : "design-pane pane-hidden"}>
         <PhotoEditPanel
           projectId={projectId}
           revision={revision}
@@ -140,7 +145,7 @@ export function DesignPage({
           generations={generations}
           onChanged={onChanged}
         />
-      )}
+      </div>
 
       <details className="design-advanced">
         <summary>Дополнительно</summary>

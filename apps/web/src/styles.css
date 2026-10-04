@@ -1558,3 +1558,13 @@ header span { color: #777; font-size: 13px; }
   padding-bottom: 10px;
 }
 
+/* Design pane keeps PhotoEditPanel mounted across mode switches; the hidden
+   variant removes it from layout without unmounting it. */
+.design-pane {
+  display: block;
+}
+
+.pane-hidden {
+  display: none;
+}
+
