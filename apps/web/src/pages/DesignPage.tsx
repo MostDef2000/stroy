@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { FormEvent } from "react";
 import type { Asset, AssetRole, Generation, Job, SceneRevision } from "../api";
 import { CameraPanel } from "../CameraPanel";
@@ -40,6 +41,8 @@ export function DesignPage({
   onAnalyzeStyle: () => void;
   onNavigate: (page: PageId) => void;
 }) {
+  const [mode, setMode] = useState<"3d" | "photo">("3d");
+
   if (!revision) {
     return (
       <section className="empty-state">
@@ -66,6 +69,24 @@ export function DesignPage({
       )}
 
       <section className="page-upload-row" aria-label="Загрузка референса">
+        <div className="mode-switch" role="group" aria-label="Режим редактирования">
+          <button
+            type="button"
+            className={mode === "3d" ? "active" : ""}
+            aria-pressed={mode === "3d"}
+            onClick={() => setMode("3d")}
+          >
+            3D
+          </button>
+          <button
+            type="button"
+            className={mode === "photo" ? "active" : ""}
+            aria-pressed={mode === "photo"}
+            onClick={() => setMode("photo")}
+          >
+            Фото
+          </button>
+        </div>
         <label className="upload">
           Загрузить референс
           <input
@@ -90,55 +111,62 @@ export function DesignPage({
         </div>
       </section>
 
-      <section className="canvas-panel">
-        <SceneViewer
-          scene={revision.scene}
-          projectId={projectId}
-          onChanged={onChanged}
-        />
-      </section>
+      {mode === "3d" ? (
+        <>
+          <section className="canvas-panel">
+            <SceneViewer
+              scene={revision.scene}
+              projectId={projectId}
+              onChanged={onChanged}
+            />
+          </section>
 
-      <PhotoEditPanel
-        projectId={projectId}
-        revision={revision}
-        assets={assets}
-        jobs={jobs}
-        generations={generations}
-        onChanged={onChanged}
-      />
-
-      <form className="instruction-bar" onSubmit={onSubmitInstruction}>
-        <input
-          value={instruction}
-          onChange={(event) => onInstructionChange(event.target.value)}
-          placeholder="Например: сделай диван бежевым и убери стол"
-          disabled={!revision}
-        />
-        <button disabled={!revision || !instruction.trim()}>Применить через AI</button>
-      </form>
-
-      <section className="dashboard-grid">
-        <CameraPanel
+          <form className="instruction-bar" onSubmit={onSubmitInstruction}>
+            <input
+              value={instruction}
+              onChange={(event) => onInstructionChange(event.target.value)}
+              placeholder="Например: сделай диван бежевым и убери стол"
+              disabled={!revision}
+            />
+            <button disabled={!revision || !instruction.trim()}>Применить через AI</button>
+          </form>
+        </>
+      ) : (
+        <PhotoEditPanel
           projectId={projectId}
           revision={revision}
           assets={assets}
-          onChanged={onChanged}
-        />
-
-        <TwinDesignPanel
-          projectId={projectId}
-          revision={revision}
           jobs={jobs}
+          generations={generations}
           onChanged={onChanged}
         />
+      )}
 
-        <ReplacementPanel
-          projectId={projectId}
-          revision={revision}
-          assets={assets}
-          onChanged={onChanged}
-        />
-      </section>
+      <details className="design-advanced">
+        <summary>Дополнительно</summary>
+        <section className="dashboard-grid">
+          <CameraPanel
+            projectId={projectId}
+            revision={revision}
+            assets={assets}
+            onChanged={onChanged}
+          />
+
+          <TwinDesignPanel
+            projectId={projectId}
+            revision={revision}
+            jobs={jobs}
+            onChanged={onChanged}
+          />
+
+          <ReplacementPanel
+            projectId={projectId}
+            revision={revision}
+            assets={assets}
+            onChanged={onChanged}
+          />
+        </section>
+      </details>
     </>
   );
 }

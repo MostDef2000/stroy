@@ -1466,3 +1466,95 @@ header span { color: #777; font-size: 13px; }
   }
 }
 
+/* Design workspace: 3D/Photo mode switch + collapsed advanced (#103) */
+.mode-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: #e9e6df;
+}
+
+.mode-switch button {
+  background: transparent;
+  color: #56544f;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.mode-switch button:hover {
+  background: #dedbd3;
+}
+
+.mode-switch button.active {
+  background: #242424;
+  color: white;
+}
+
+.design-advanced {
+  border: 1px solid #dedbd3;
+  border-radius: 12px;
+  background: white;
+}
+
+.design-advanced > summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #56544f;
+  list-style: none;
+}
+
+.design-advanced > summary::-webkit-details-marker,
+.pe-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.design-advanced > summary::before,
+.pe-advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 120ms ease;
+}
+
+.design-advanced[open] > summary::before,
+.pe-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.design-advanced > summary:hover {
+  background: #faf9f6;
+  border-radius: 12px;
+}
+
+.design-advanced .dashboard-grid {
+  padding: 0 14px 14px;
+}
+
+.pe-advanced {
+  border: 1px solid #ece9e2;
+  border-radius: 10px;
+  background: #faf9f6;
+  padding: 0 10px;
+}
+
+.pe-advanced > summary {
+  cursor: pointer;
+  padding: 9px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #56544f;
+  list-style: none;
+}
+
+.pe-advanced > summary:hover {
+  color: #242424;
+}
+
+.pe-advanced label {
+  padding-bottom: 10px;
+}
+
