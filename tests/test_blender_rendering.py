@@ -458,6 +458,93 @@ def test_is_compositor_group_discriminates_scene_trees() -> None:
     assert module._is_compositor_group(scene, object()) is False
 
 
+def file_output_stub_harness(module, *, with_items: bool):
+    """Run ``_file_output`` against a fake node and record what it touched."""
+    record: dict = {"items": [], "links": [], "nodes": [], "source": None}
+
+    class FakeItems:
+        def __init__(self, node):
+            self._node = node
+
+        def new(self, socket_type: str, name: str):
+            record["items"].append((socket_type, name))
+            self._node.inputs[name] = ("input", name)
+
+    class FakeNode:
+        def __init__(self):
+            self.format = types.SimpleNamespace()
+            if with_items:
+                self.inputs: dict = {}
+                self.file_output_items = FakeItems(self)
+            else:
+                self.inputs = {0: ("slot", 0)}
+                self.base_path = None
+                self.file_slots = [types.SimpleNamespace(path=None)]
+
+    class FakeNodes:
+        def new(self, type_name: str):
+            assert type_name == "CompositorNodeOutputFile"
+            node = FakeNode()
+            record["nodes"].append(node)
+            return node
+
+    class FakeLinks:
+        def new(self, source, target):
+            record["links"].append((source, target))
+
+    source = object()
+    record["source"] = source
+    module._file_output(
+        FakeNodes(),
+        FakeLinks(),
+        source,
+        Path("/tmp/out"),
+        "depth",
+        color_mode="RGB",
+    )
+    return record
+
+
+def test_uses_file_output_items_detects_blender_5_api() -> None:
+    module = load_blender_script_module()
+    assert module._uses_file_output_items(
+        types.SimpleNamespace(file_output_items=object())
+    )
+    assert not module._uses_file_output_items(
+        types.SimpleNamespace(base_path="/tmp", file_slots=[])
+    )
+    assert not module._uses_file_output_items(types.SimpleNamespace())
+
+
+def test_file_output_5_api_sets_directory_file_name_and_item() -> None:
+    module = load_blender_script_module()
+    record = file_output_stub_harness(module, with_items=True)
+    node = record["nodes"][0]
+
+    assert node.directory == "/tmp/out"
+    assert node.file_name == "depth_"
+    assert record["items"] == [("RGBA", "depth")]
+    assert record["links"] == [(record["source"], ("input", "depth"))]
+    # 5.0 must not touch the removed legacy attributes / node format enum.
+    assert not hasattr(node, "base_path")
+    assert not hasattr(node, "file_slots")
+    assert not hasattr(node.format, "file_format")
+
+
+def test_file_output_legacy_api_uses_base_path_and_file_slots() -> None:
+    module = load_blender_script_module()
+    record = file_output_stub_harness(module, with_items=False)
+    node = record["nodes"][0]
+
+    assert node.base_path == "/tmp/out"
+    assert node.file_slots[0].path == "depth_"
+    assert node.format.file_format == "OPEN_EXR"
+    assert node.format.color_depth == "32"
+    assert node.format.color_mode == "RGB"
+    assert record["items"] == []
+    assert record["links"] == [(record["source"], ("slot", 0))]
+
+
 def test_parse_blender_version_extracts_token() -> None:
     module = load_benchmark_module()
     assert module.parse_blender_version("Blender 5.0.1") == "5.0.1"

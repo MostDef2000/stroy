@@ -265,8 +265,40 @@ def _camera(scene, plan: dict):
     return obj
 
 
+def _uses_file_output_items(node) -> bool:
+    """True when *node* exposes the Blender 5.0 file-output API.
+
+    Blender 5.0 removed ``base_path``/``file_slots`` from
+    ``CompositorNodeOutputFile`` in favour of ``directory``/``file_name`` plus a
+    ``file_output_items`` collection. Probing the created node mirrors the
+    ``hasattr`` version detection used for the compositing tree and avoids
+    depending on a version string.
+    """
+    return hasattr(node, "file_output_items")
+
+
 def _file_output(nodes, links, source_socket, output_dir: Path, prefix: str, *, color_mode: str):
     node = nodes.new("CompositorNodeOutputFile")
+    if _uses_file_output_items(node):
+        # Blender 5.0: base_path/file_slots are gone. ``directory`` + ``file_name``
+        # replace base_path + slot path, and one named item supplies the input
+        # socket. The node's format enum only offers OPEN_EXR_MULTILAYER, so the
+        # pass files are written as EXR; do NOT force PNG here (rgb.png is still
+        # written through scene.render, which does support PNG).
+        #
+        # Naming: 4.x wrote ``<output_dir>/<prefix>_<frame>.exr`` from
+        # base_path + the slot path ``<prefix>_``. 5.0 writes ``<output_dir>/
+        # <file_name>...``; keeping ``file_name`` = ``<prefix>_`` and the item
+        # named ``<prefix>`` leaves the ``<prefix>`` stem intact, so
+        # ``_normalize_output`` (``<prefix>_*.exr`` / ``<prefix>*.exr``) still
+        # normalises the pass artifact to ``<prefix>.exr``.
+        node.directory = str(output_dir)
+        node.file_name = prefix + "_"
+        node.file_output_items.new("RGBA", prefix)
+        links.new(source_socket, node.inputs[prefix])
+        return
+
+    # Blender 4.x legacy compositor tree: base_path + file_slots (unchanged).
     node.base_path = str(output_dir)
     node.format.file_format = "OPEN_EXR"
     node.format.color_depth = "32"
