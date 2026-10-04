@@ -1,0 +1,782 @@
+{
+  "schema_version": "0.1.0",
+  "scene_id": "scene.bare-twin-bench",
+  "project_id": "project.benchmark",
+  "units": "mm",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "Z"
+  },
+  "entities": [
+    {
+      "id": "room.living",
+      "kind": "room",
+      "display_name": "Living room"
+    },
+    {
+      "id": "room.bedroom",
+      "kind": "room",
+      "display_name": "Bedroom"
+    },
+    {
+      "id": "room.office",
+      "kind": "room",
+      "display_name": "Office"
+    },
+    {
+      "id": "room.bath",
+      "kind": "room",
+      "display_name": "Bathroom"
+    },
+    {
+      "id": "room.kitchen",
+      "kind": "room",
+      "display_name": "Kitchen"
+    },
+    {
+      "id": "room.corridor",
+      "kind": "room",
+      "display_name": "Corridor"
+    },
+    {
+      "id": "surface.floor.living",
+      "kind": "floor",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [4000, 5100, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 4200, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.living",
+      "kind": "ceiling",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [4000, 5100, 2750],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 4200, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.floor.bedroom",
+      "kind": "floor",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [-1800, 7100, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3600, 3400, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.bedroom",
+      "kind": "ceiling",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [-1800, 7100, 2750],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3600, 3400, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.floor.office",
+      "kind": "floor",
+      "room_id": "room.office",
+      "transform": {
+        "translation_mm": [-1500, 3900, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3000, 3000, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.office",
+      "kind": "ceiling",
+      "room_id": "room.office",
+      "transform": {
+        "translation_mm": [-1500, 3900, 2750],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3000, 3000, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.floor.bath",
+      "kind": "floor",
+      "room_id": "room.bath",
+      "transform": {
+        "translation_mm": [-1100, 1200, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [2200, 2400, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.bath",
+      "kind": "ceiling",
+      "room_id": "room.bath",
+      "transform": {
+        "translation_mm": [-1100, 1200, 2750],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [2200, 2400, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.floor.kitchen",
+      "kind": "floor",
+      "room_id": "room.kitchen",
+      "transform": {
+        "translation_mm": [3100, 1500, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3200, 3000, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.kitchen",
+      "kind": "ceiling",
+      "room_id": "room.kitchen",
+      "transform": {
+        "translation_mm": [3100, 1500, 2750],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3200, 3000, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.floor.corridor",
+      "kind": "floor",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [750, 3500, -50],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [1500, 7000, 100]
+      },
+      "material_ref": "material.floor.oak",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.ceiling.corridor",
+      "kind": "ceiling",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [750, 3500, 2750],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [1500, 7000, 100]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.corridor.west",
+      "kind": "wall",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [0, 4400, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 8800, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.corridor.east",
+      "kind": "wall",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [1500, 3600, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 7200, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.corridor.north",
+      "kind": "wall",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [750, 7000, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [1500, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.south",
+      "kind": "wall",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [1250, 0, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [6900, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.bath.west",
+      "kind": "wall",
+      "room_id": "room.bath",
+      "transform": {
+        "translation_mm": [-2200, 1200, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 2400, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.office.south",
+      "kind": "wall",
+      "room_id": "room.office",
+      "transform": {
+        "translation_mm": [-1500, 2400, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3000, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.office.west",
+      "kind": "wall",
+      "room_id": "room.office",
+      "transform": {
+        "translation_mm": [-3000, 3900, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 3000, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.bedroom.south",
+      "kind": "wall",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [-1800, 5400, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3600, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.bedroom.west",
+      "kind": "wall",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [-3600, 7100, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 3400, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.bedroom.north",
+      "kind": "wall",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [-1800, 8800, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [3600, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.kitchen.east",
+      "kind": "wall",
+      "room_id": "room.kitchen",
+      "transform": {
+        "translation_mm": [4700, 1500, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 3000, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.living.south",
+      "kind": "wall",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [4000, 3000, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.living.east",
+      "kind": "wall",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [6500, 5100, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [120, 4200, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "surface.wall.living.north",
+      "kind": "wall",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [4000, 7200, 1350],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [5000, 120, 2700]
+      },
+      "material_ref": "material.paint.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.door.entry",
+      "kind": "door",
+      "room_id": "room.corridor",
+      "transform": {
+        "translation_mm": [750, 0, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [900, 40, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.door.corridor.bath",
+      "kind": "door",
+      "room_id": "room.bath",
+      "transform": {
+        "translation_mm": [0, 1200, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 900, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.door.corridor.office",
+      "kind": "door",
+      "room_id": "room.office",
+      "transform": {
+        "translation_mm": [0, 3900, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 900, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.door.corridor.bedroom",
+      "kind": "door",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [0, 6200, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 900, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.door.kitchen",
+      "kind": "door",
+      "room_id": "room.kitchen",
+      "transform": {
+        "translation_mm": [1500, 1500, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 900, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.door.living",
+      "kind": "door",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [1500, 5100, 1050],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 900, 2100]
+      },
+      "material_ref": "material.door.white",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": false
+      }
+    },
+    {
+      "id": "opening.window.living.east",
+      "kind": "window",
+      "room_id": "room.living",
+      "transform": {
+        "translation_mm": [6500, 5100, 1500],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 1400, 1200]
+      },
+      "material_ref": "material.glass.clear",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": true
+      }
+    },
+    {
+      "id": "opening.window.bedroom.west",
+      "kind": "window",
+      "room_id": "room.bedroom",
+      "transform": {
+        "translation_mm": [-3600, 7100, 1500],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [40, 1400, 1200]
+      },
+      "material_ref": "material.glass.clear",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": true
+      }
+    },
+    {
+      "id": "opening.window.kitchen.south",
+      "kind": "window",
+      "room_id": "room.kitchen",
+      "transform": {
+        "translation_mm": [3100, 0, 1500],
+        "rotation_deg": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "dimensions_mm": [1400, 40, 1200]
+      },
+      "material_ref": "material.glass.clear",
+      "locks": {
+        "geometry": true,
+        "transform": true,
+        "material": true
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": "camera.entry",
+      "width_px": 1024,
+      "height_px": 1024,
+      "intrinsics": {
+        "fx": 900,
+        "fy": 900,
+        "cx": 512,
+        "cy": 512
+      },
+      "transform": {
+        "translation_mm": [750, 800, 1600],
+        "rotation_deg": [85, 0, 0]
+      },
+      "provenance": {
+        "source": "estimated",
+        "asset_ids": []
+      },
+      "calibration": {
+        "quality": 1.0,
+        "residual": 0.0
+      }
+    },
+    {
+      "id": "camera.living.diagonal",
+      "width_px": 1024,
+      "height_px": 1024,
+      "intrinsics": {
+        "fx": 900,
+        "fy": 900,
+        "cx": 512,
+        "cy": 512
+      },
+      "transform": {
+        "translation_mm": [2000, 3500, 1600],
+        "rotation_deg": [80, 0, -35]
+      },
+      "provenance": {
+        "source": "estimated",
+        "asset_ids": []
+      },
+      "calibration": {
+        "quality": 1.0,
+        "residual": 0.0
+      }
+    },
+    {
+      "id": "camera.kitchen.corridor",
+      "width_px": 1024,
+      "height_px": 1024,
+      "intrinsics": {
+        "fx": 900,
+        "fy": 900,
+        "cx": 512,
+        "cy": 512
+      },
+      "transform": {
+        "translation_mm": [4200, 1500, 1600],
+        "rotation_deg": [85, 0, 90]
+      },
+      "provenance": {
+        "source": "estimated",
+        "asset_ids": []
+      },
+      "calibration": {
+        "quality": 1.0,
+        "residual": 0.0
+      }
+    }
+  ],
+  "metadata": {
+    "synthetic": true,
+    "purpose": "manual blender benchmark (#21)"
+  }
+}

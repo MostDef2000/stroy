@@ -33,6 +33,24 @@ python3 scripts/render_golden_room.py --build-only
 
 The build-only path still launches Blender headlessly and writes deterministic `scene_metadata.json`.
 
+## Manual bare-twin benchmark (issue #21)
+
+`scripts/benchmark_bare_twin.py` is a manual, non-CI harness that measures bare
+apartment render cost across renderer profiles on the GPU box:
+
+```bash
+python3 scripts/benchmark_bare_twin.py --profiles blender-eevee-v0,blender-cycles-gpu-v0
+```
+
+It renders the synthetic `fixtures/bare-twin-bench.scene.json` (no owner
+geometry) for each profile x camera x run, recording wall time and peak
+`nvidia-smi` VRAM into `renders/bench/bare-twin/benchmark.{json,md}`. Run index
+0 is reported as cold and later runs as warm. Use `--build-only` to launch
+Blender without rendering. If Blender is not found the harness exits with a
+clear message; set `STROY_BLENDER_BIN=/path/to/blender` to point at it.
+`blender-cycles-gpu-v0` selects GPU Cycles (OPTIX with CUDA fallback), while
+`blender-cycles-v0` keeps the CPU Cycles behaviour used by production/CI.
+
 ## Control-pass contract
 
 All five render passes use the same canonical camera, resolution and scene state.
