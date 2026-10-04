@@ -245,6 +245,10 @@ class BlenderAdapter:
             self.blender_bin,
             "--background",
             "--factory-startup",
+            # Blender otherwise exits 0 even when the --python script raises;
+            # --python-exit-code is a global option and must precede "--".
+            "--python-exit-code",
+            "1",
             "--python",
             str(self.script_path),
             "--",

@@ -94,23 +94,43 @@ def _pick_engine(scene, candidates: tuple[str, ...]) -> str:
     return candidates[-1]
 
 
-def _pick_compute_device_type(cycles, candidates: tuple[str, ...]) -> str:
-    available = _enum_items(cycles, "compute_device_type")
+def _pick_compute_device_type(datablock, candidates: tuple[str, ...]) -> str:
+    available = _enum_items(datablock, "compute_device_type")
     for candidate in candidates:
         if candidate in available:
             return candidate
     return "NONE"
 
 
-def _enable_all_devices() -> None:
+def _cycles_preferences():
+    """Return the Cycles addon preferences, or None when unavailable."""
     try:
         addon = bpy.context.preferences.addons.get("cycles")
     except AttributeError:
-        return
+        return None
     if addon is None:
+        return None
+    return addon.preferences
+
+
+def _refresh_devices(preferences) -> None:
+    """Populate ``preferences.devices`` across Blender versions.
+
+    Blender 5.0 renamed ``get_devices`` to ``refresh_devices``; prefer the new
+    name and fall back to the legacy one.
+    """
+    for name in ("refresh_devices", "get_devices"):
+        refresh = getattr(preferences, name, None)
+        if callable(refresh):
+            refresh()
+            return
+
+
+def _enable_all_devices() -> None:
+    preferences = _cycles_preferences()
+    if preferences is None:
         return
-    preferences = addon.preferences
-    preferences.get_devices()
+    _refresh_devices(preferences)
     for device in preferences.devices:
         device.use = True
 
@@ -138,11 +158,18 @@ def _engine(scene, profile: str | None = None) -> str:
             cycles.samples = samples
             cycles.use_denoising = bool(config.get("denoise", False))
             if config.get("device") == "GPU":
-                cycles.compute_device_type = _pick_compute_device_type(
-                    cycles,
-                    config["compute_device_type"],  # type: ignore[arg-type]
-                )
-                _enable_all_devices()
+                # Blender 5.0 removed ``compute_device_type`` from
+                # scene.cycles; it lives on the Cycles addon preferences, which
+                # exposes the same enum on 4.x and 5.0.
+                preferences = _cycles_preferences()
+                if preferences is not None:
+                    _refresh_devices(preferences)
+                    preferences.compute_device_type = _pick_compute_device_type(
+                        preferences,
+                        config["compute_device_type"],  # type: ignore[arg-type]
+                    )
+                    _enable_all_devices()
+                cycles.device = "GPU"
         return "CYCLES"
 
     raise RuntimeError(f"unknown renderer engine: {engine_kind}")
@@ -248,6 +275,31 @@ def _file_output(nodes, links, source_socket, output_dir: Path, prefix: str, *, 
     links.new(source_socket, node.inputs[0])
 
 
+def _compositing_tree(scene):
+    """Return the scene compositing node tree across Blender versions.
+
+    Blender 4.x materialises ``scene.node_tree`` by enabling ``scene.use_nodes``.
+    Blender 5.0 removed ``scene.node_tree`` in favour of
+    ``scene.compositing_node_group``, which starts out ``None`` at factory
+    startup and must be assigned a freshly created ``CompositorNodeTree``.
+    """
+    if hasattr(scene, "node_tree"):
+        if hasattr(scene, "use_nodes"):
+            scene.use_nodes = True
+        tree = scene.node_tree
+        if tree is not None:
+            return tree
+    if hasattr(scene, "compositing_node_group"):
+        if hasattr(scene, "use_nodes"):
+            # Still accepted on 5.0 (deprecated, removed in 6.0); setting it
+            # keeps the 4.x habit while 6.0 will simply skip this line.
+            scene.use_nodes = True
+        tree = bpy.data.node_groups.new("stroy-compositor", "CompositorNodeTree")
+        scene.compositing_node_group = tree
+        return tree
+    raise RuntimeError("unsupported Blender: no compositing tree API")
+
+
 def _setup_passes(scene, output_dir: Path) -> None:
     layer = scene.view_layers[0]
     layer.use_pass_z = True
@@ -255,8 +307,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
     layer.use_pass_object_index = True
     layer.use_pass_material_index = True
 
-    scene.use_nodes = True
-    tree = scene.node_tree
+    tree = _compositing_tree(scene)
     tree.nodes.clear()
     render_layers = tree.nodes.new("CompositorNodeRLayers")
     composite = tree.nodes.new("CompositorNodeComposite")
@@ -309,7 +360,7 @@ def _normalize_output(output_dir: Path, prefix: str) -> None:
 
 
 def _metadata(plan: dict, engine: str) -> dict:
-    return {
+    metadata = {
         "schema_version": "0.1.0",
         "scene_revision_id": plan["scene_revision_id"],
         "design_revision_id": plan.get("design_revision_id"),
@@ -333,6 +384,9 @@ def _metadata(plan: dict, engine: str) -> dict:
         ],
         "passes": list(plan["passes"]),
     }
+    if bpy is not None:
+        metadata["blender_version"] = bpy.app.version_string
+    return metadata
 
 
 def main() -> int:
