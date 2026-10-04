@@ -292,19 +292,22 @@ export function PhotoEditPanel({
 
             {rect ? (
               <>
-                {referenceId && (
+                <details className="pe-advanced">
+                  <summary>Параметры</summary>
+                  {referenceId && (
+                    <label>
+                      IP-Adapter weight · {ipaWeight.toFixed(2)}
+                      <input type="range" min={0} max={1} step={0.05} value={ipaWeight} onChange={(event) => setIpaWeight(Number(event.target.value))} />
+                    </label>
+                  )}
                   <label>
-                    IP-Adapter weight · {ipaWeight.toFixed(2)}
-                    <input type="range" min={0} max={1} step={0.05} value={ipaWeight} onChange={(event) => setIpaWeight(Number(event.target.value))} />
+                    Mask shape
+                    <select value={shape} onChange={(event) => setShape(event.target.value as "rectangle" | "silhouette")}>
+                      <option value="rectangle">Rectangle</option>
+                      <option value="silhouette">Silhouette</option>
+                    </select>
                   </label>
-                )}
-                <label>
-                  Mask shape
-                  <select value={shape} onChange={(event) => setShape(event.target.value as "rectangle" | "silhouette")}>
-                    <option value="rectangle">Rectangle</option>
-                    <option value="silhouette">Silhouette</option>
-                  </select>
-                </label>
+                </details>
                 <div className="pe-actions">
                   <button type="button" onClick={() => void submitRegion()} disabled={busy || !prompt.trim()}>Run region edit</button>
                   <button type="button" className="secondary" onClick={() => setRect(null)} disabled={busy}>Clear selection</button>
@@ -312,10 +315,13 @@ export function PhotoEditPanel({
               </>
             ) : (
               <>
-                <label>
-                  Redesign strength · {strength.toFixed(2)}
-                  <input type="range" min={0.2} max={0.95} step={0.05} value={strength} onChange={(event) => setStrength(Number(event.target.value))} />
-                </label>
+                <details className="pe-advanced">
+                  <summary>Параметры</summary>
+                  <label>
+                    Redesign strength · {strength.toFixed(2)}
+                    <input type="range" min={0.2} max={0.95} step={0.05} value={strength} onChange={(event) => setStrength(Number(event.target.value))} />
+                  </label>
+                </details>
                 <button type="button" onClick={() => void submitFullFrame()} disabled={busy || !prompt.trim()}>Run redesign</button>
               </>
             )}
