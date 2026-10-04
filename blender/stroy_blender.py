@@ -380,9 +380,19 @@ def _is_compositor_group(scene, tree) -> bool:
 
 
 def _rlayers_output(render_layers, new_name: str, legacy_name: str):
-    """Blender 5.0 renamed pass sockets to full names (IndexOB -> 'Object Index')."""
+    """Return a render-layer pass socket, or ``None`` when it is unavailable.
+
+    Blender 5.0 renamed pass sockets to full names (IndexOB -> 'Object Index'),
+    so prefer *new_name* and fall back to *legacy_name*. EEVEE exposes neither
+    name for the Object/Material Index passes (Cycles-only), hence ``None``
+    rather than a KeyError so callers can skip the missing artifact.
+    """
     outputs = render_layers.outputs
-    return outputs[new_name] if new_name in outputs else outputs[legacy_name]
+    if new_name in outputs:
+        return outputs[new_name]
+    if legacy_name in outputs:
+        return outputs[legacy_name]
+    return None
 
 
 def _setup_passes(scene, output_dir: Path) -> None:
@@ -433,22 +443,29 @@ def _setup_passes(scene, output_dir: Path) -> None:
         "normals",
         color_mode="RGB",
     )
-    _file_output(
-        tree.nodes,
-        tree.links,
-        _rlayers_output(render_layers, "Object Index", "IndexOB"),
-        output_dir,
-        "object_ids",
-        color_mode="RGB",
-    )
-    _file_output(
-        tree.nodes,
-        tree.links,
-        _rlayers_output(render_layers, "Material Index", "IndexMA"),
-        output_dir,
-        "material_ids",
-        color_mode="RGB",
-    )
+    # Index passes are Cycles-only: EEVEE (Blender 5.0) exposes neither the
+    # new nor the legacy socket. Engines without index passes simply render
+    # without the object_ids/material_ids artifacts.
+    object_index_socket = _rlayers_output(render_layers, "Object Index", "IndexOB")
+    if object_index_socket is not None:
+        _file_output(
+            tree.nodes,
+            tree.links,
+            object_index_socket,
+            output_dir,
+            "object_ids",
+            color_mode="RGB",
+        )
+    material_index_socket = _rlayers_output(render_layers, "Material Index", "IndexMA")
+    if material_index_socket is not None:
+        _file_output(
+            tree.nodes,
+            tree.links,
+            material_index_socket,
+            output_dir,
+            "material_ids",
+            color_mode="RGB",
+        )
 
 
 def _normalize_output(output_dir: Path, prefix: str) -> None:

@@ -584,7 +584,11 @@ class BlenderExecutor:
             design_revision_id=payload.get("design_revision_id"),
             camera_id=camera_id,
             renderer_profile=str(
-                payload.get("renderer_profile", "blender-eevee-v0")
+                # Cycles is the safe default: API routes/services send it
+                # explicitly, and EEVEE (Blender 5.0) has no index passes, so an
+                # eevee default would drop object_ids/material_ids.exr required
+                # by the 4-pass consumer contract (#21 attempt 5).
+                payload.get("renderer_profile", "blender-cycles-v0")
             ),
         )
 

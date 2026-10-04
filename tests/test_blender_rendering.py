@@ -476,11 +476,12 @@ def test_rlayers_output_falls_back_to_legacy_name() -> None:
     )
 
 
-def test_rlayers_output_raises_when_neither_name_present() -> None:
+def test_rlayers_output_returns_none_when_neither_name_present() -> None:
     module = load_blender_script_module()
     render_layers = types.SimpleNamespace(outputs={})
-    with pytest.raises(KeyError):
-        module._rlayers_output(render_layers, "Object Index", "IndexOB")
+    assert (
+        module._rlayers_output(render_layers, "Object Index", "IndexOB") is None
+    )
 
 
 def file_output_stub_harness(module, *, with_items: bool):
@@ -568,6 +569,108 @@ def test_file_output_legacy_api_uses_base_path_and_file_slots() -> None:
     assert node.format.color_mode == "RGB"
     assert record["items"] == []
     assert record["links"] == [(record["source"], ("slot", 0))]
+
+
+def run_setup_passes(module, monkeypatch, *, outputs: dict) -> list[str]:
+    """Run ``_setup_passes`` on a fake legacy compositor tree.
+
+    ``_file_output`` is replaced with a recorder so the test asserts only which
+    pass artifacts ``_setup_passes`` decides to wire for a given set of
+    render-layer sockets.
+    """
+    recorded: list[str] = []
+
+    def fake_file_output(
+        nodes, links, source_socket, output_dir, prefix, *, color_mode
+    ) -> None:
+        recorded.append(prefix)
+
+    monkeypatch.setattr(module, "_file_output", fake_file_output)
+
+    class FakeNodes:
+        def __init__(self) -> None:
+            self._rl = types.SimpleNamespace(outputs=outputs)
+            self._composite = types.SimpleNamespace(inputs={"Image": object()})
+
+        def clear(self) -> None:
+            pass
+
+        def new(self, type_name: str):
+            if type_name == "CompositorNodeRLayers":
+                return self._rl
+            assert type_name == "CompositorNodeComposite"
+            return self._composite
+
+    class FakeLinks:
+        def new(self, source, target) -> None:
+            pass
+
+    tree = types.SimpleNamespace(nodes=FakeNodes(), links=FakeLinks())
+    scene = types.SimpleNamespace(
+        view_layers=[types.SimpleNamespace()],
+        node_tree=tree,
+        use_nodes=False,
+        compositing_node_group=None,
+    )
+    module._setup_passes(scene, Path("/tmp/out"))
+    return recorded
+
+
+def test_setup_passes_skips_index_outputs_when_sockets_absent(monkeypatch) -> None:
+    module = load_blender_script_module()
+    outputs = {"Image": object(), "Depth": object(), "Normal": object()}
+
+    recorded = run_setup_passes(module, monkeypatch, outputs=outputs)
+
+    # EEVEE (Blender 5.0): no index sockets -> only depth/normals artifacts.
+    assert recorded == ["depth", "normals"]
+
+
+def test_setup_passes_wires_index_outputs_when_sockets_present(monkeypatch) -> None:
+    module = load_blender_script_module()
+    outputs = {
+        "Image": object(),
+        "Depth": object(),
+        "Normal": object(),
+        "Object Index": object(),
+        "Material Index": object(),
+    }
+
+    recorded = run_setup_passes(module, monkeypatch, outputs=outputs)
+
+    assert recorded == ["depth", "normals", "object_ids", "material_ids"]
+
+
+async def test_blender_executor_defaults_to_cycles_profile(tmp_path) -> None:
+    from stroy.worker.executors import BlenderExecutor
+
+    captured: dict = {}
+
+    class FakeAdapter:
+        async def run(self, plan, *, output_dir, render=True):
+            captured["plan"] = plan
+            outputs = {}
+            for name in ("rgb", "depth", "normals", "object_ids", "material_ids"):
+                path = tmp_path / f"{name}.bin"
+                path.write_bytes(b"x")
+                outputs[name] = path
+            metadata = tmp_path / "scene_metadata.json"
+            metadata.write_text("{}", encoding="utf-8")
+            outputs["metadata"] = metadata
+            return outputs
+
+    payload = {
+        "scene": bare_twin_scene().model_dump(mode="json"),
+        "scene_revision_id": "revision.test",
+        "camera_id": "camera.entry",
+        "render_id": "render.test",
+    }
+
+    await BlenderExecutor(FakeAdapter()).execute({"payload": payload})
+
+    # No renderer_profile in the payload -> Cycles default (index passes exist,
+    # so the 4-pass consumer contract holds; #21 attempt 5).
+    assert captured["plan"].renderer_profile == "blender-cycles-v0"
 
 
 def test_parse_blender_version_extracts_token() -> None:
