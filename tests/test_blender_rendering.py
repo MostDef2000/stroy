@@ -458,6 +458,31 @@ def test_is_compositor_group_discriminates_scene_trees() -> None:
     assert module._is_compositor_group(scene, object()) is False
 
 
+def test_rlayers_output_prefers_new_name_when_present() -> None:
+    module = load_blender_script_module()
+    render_layers = types.SimpleNamespace(
+        outputs={"Object Index": "new", "IndexOB": "legacy"}
+    )
+    assert (
+        module._rlayers_output(render_layers, "Object Index", "IndexOB") == "new"
+    )
+
+
+def test_rlayers_output_falls_back_to_legacy_name() -> None:
+    module = load_blender_script_module()
+    render_layers = types.SimpleNamespace(outputs={"IndexOB": "legacy"})
+    assert (
+        module._rlayers_output(render_layers, "Object Index", "IndexOB") == "legacy"
+    )
+
+
+def test_rlayers_output_raises_when_neither_name_present() -> None:
+    module = load_blender_script_module()
+    render_layers = types.SimpleNamespace(outputs={})
+    with pytest.raises(KeyError):
+        module._rlayers_output(render_layers, "Object Index", "IndexOB")
+
+
 def file_output_stub_harness(module, *, with_items: bool):
     """Run ``_file_output`` against a fake node and record what it touched."""
     record: dict = {"items": [], "links": [], "nodes": [], "source": None}

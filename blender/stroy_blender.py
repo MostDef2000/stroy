@@ -379,6 +379,12 @@ def _is_compositor_group(scene, tree) -> bool:
     return tree is not None and tree is getattr(scene, "compositing_node_group", None)
 
 
+def _rlayers_output(render_layers, new_name: str, legacy_name: str):
+    """Blender 5.0 renamed pass sockets to full names (IndexOB -> 'Object Index')."""
+    outputs = render_layers.outputs
+    return outputs[new_name] if new_name in outputs else outputs[legacy_name]
+
+
 def _setup_passes(scene, output_dir: Path) -> None:
     layer = scene.view_layers[0]
     layer.use_pass_z = True
@@ -430,7 +436,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
     _file_output(
         tree.nodes,
         tree.links,
-        render_layers.outputs["IndexOB"],
+        _rlayers_output(render_layers, "Object Index", "IndexOB"),
         output_dir,
         "object_ids",
         color_mode="RGB",
@@ -438,7 +444,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
     _file_output(
         tree.nodes,
         tree.links,
-        render_layers.outputs["IndexMA"],
+        _rlayers_output(render_layers, "Material Index", "IndexMA"),
         output_dir,
         "material_ids",
         color_mode="RGB",
