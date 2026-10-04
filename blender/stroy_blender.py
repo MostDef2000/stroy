@@ -300,6 +300,53 @@ def _compositing_tree(scene):
     raise RuntimeError("unsupported Blender: no compositing tree API")
 
 
+def _declare_group_output_socket(tree, name: str, socket_type: str) -> str:
+    """Declare an output socket on a compositor node group and return its name.
+
+    Two API generations exist. Blender 5.0 exposes
+    ``tree.interface.new_socket(name=..., in_out='OUTPUT', socket_type=...)``;
+    the legacy node-group API is ``tree.outputs.new(name, socket_type)``. The
+    type must be a valid ``NodeSocket`` identifier (RGBA colour is
+    ``"NodeSocketColor"``). Errors are surfaced with the original message
+    instead of being swallowed.
+    """
+    interface = getattr(tree, "interface", None)
+    if interface is not None and hasattr(interface, "new_socket"):
+        try:
+            socket = interface.new_socket(
+                name=name, in_out="OUTPUT", socket_type=socket_type
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any Blender rejection
+            raise RuntimeError(
+                f"tree.interface.new_socket(name={name!r}, in_out='OUTPUT', "
+                f"socket_type={socket_type!r}) failed: {exc}. Expected a valid "
+                "NodeSocket identifier such as 'NodeSocketColor'."
+            ) from exc
+        return getattr(socket, "name", name)
+
+    outputs = getattr(tree, "outputs", None)
+    if outputs is not None and hasattr(outputs, "new"):
+        try:
+            socket = outputs.new(name, socket_type)
+        except Exception as exc:  # noqa: BLE001 - surface any Blender rejection
+            raise RuntimeError(
+                f"tree.outputs.new({name!r}, {socket_type!r}) failed: {exc}. "
+                "Expected a valid NodeSocket identifier such as 'NodeSocketColor'."
+            ) from exc
+        return getattr(socket, "name", name)
+
+    available = sorted(attr for attr in dir(tree) if not attr.startswith("_"))
+    raise RuntimeError(
+        "no node-group socket API: tree has neither interface.new_socket nor "
+        f"outputs.new; available attributes: {available}"
+    )
+
+
+def _is_compositor_group(scene, tree) -> bool:
+    """True when *tree* is the Blender 5.0 compositing node group."""
+    return tree is not None and tree is getattr(scene, "compositing_node_group", None)
+
+
 def _setup_passes(scene, output_dir: Path) -> None:
     layer = scene.view_layers[0]
     layer.use_pass_z = True
@@ -310,8 +357,27 @@ def _setup_passes(scene, output_dir: Path) -> None:
     tree = _compositing_tree(scene)
     tree.nodes.clear()
     render_layers = tree.nodes.new("CompositorNodeRLayers")
-    composite = tree.nodes.new("CompositorNodeComposite")
-    tree.links.new(render_layers.outputs["Image"], composite.inputs["Image"])
+
+    if _is_compositor_group(scene, tree):
+        # Blender 5.0: the compositing tree is a node group and the legacy
+        # CompositorNodeComposite no longer exists. The scene renders whatever
+        # is wired into NodeGroupOutput, so declare an Image output socket and
+        # feed the render layer's Image into it.
+        socket_name = _declare_group_output_socket(tree, "Image", "NodeSocketColor")
+        group_output = tree.nodes.new("NodeGroupOutput")
+        try:
+            target = group_output.inputs[socket_name]
+        except (KeyError, IndexError) as exc:
+            available = [socket.name for socket in group_output.inputs]
+            raise RuntimeError(
+                f"NodeGroupOutput is missing declared socket {socket_name!r}; "
+                f"available inputs: {available}"
+            ) from exc
+        tree.links.new(render_layers.outputs["Image"], target)
+    else:
+        # Blender 4.x legacy compositor tree: keep the Composite node.
+        composite = tree.nodes.new("CompositorNodeComposite")
+        tree.links.new(render_layers.outputs["Image"], composite.inputs["Image"])
 
     _file_output(
         tree.nodes,

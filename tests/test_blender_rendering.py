@@ -336,6 +336,7 @@ def test_benchmark_report_marks_nonzero_return_code_as_failure(
         scene="fixtures/bare-twin-bench.scene.json",
         resolution=1024,
         blender_bin="blender",
+        blender_version="5.0.1",
         profiles=["blender-cycles-v0"],
         runs=[run],
         warnings=["blender-cycles-v0/camera.entry/run-0 exited 1"],
@@ -345,8 +346,10 @@ def test_benchmark_report_marks_nonzero_return_code_as_failure(
     report = (tmp_path / "benchmark.md").read_text(encoding="utf-8")
     assert "| rc=1 |" in report
     assert "| ok |" not in report
+    assert "- Blender version: 5.0.1" in report
     payload = json.loads((tmp_path / "benchmark.json").read_text(encoding="utf-8"))
     assert payload["runs"][0]["return_code"] == 1
+    assert payload["blender_version"] == "5.0.1"
 
 
 def test_render_manifest_matches_versioned_schema() -> None:
@@ -390,3 +393,73 @@ def test_render_manifest_rejects_missing_aligned_pass() -> None:
                 "object_ids": "asset-object",
             },
         )
+
+
+def test_declare_group_output_socket_uses_interface_new_socket() -> None:
+    module = load_blender_script_module()
+    calls: list[tuple[str, str, str]] = []
+
+    class FakeInterface:
+        def new_socket(self, *, name: str, in_out: str, socket_type: str):
+            calls.append((name, in_out, socket_type))
+            return types.SimpleNamespace(name=name)
+
+    tree = types.SimpleNamespace(interface=FakeInterface())
+    assert (
+        module._declare_group_output_socket(tree, "Image", "NodeSocketColor") == "Image"
+    )
+    assert calls == [("Image", "OUTPUT", "NodeSocketColor")]
+
+
+def test_declare_group_output_socket_falls_back_to_outputs_new() -> None:
+    module = load_blender_script_module()
+    calls: list[tuple[str, str]] = []
+
+    class FakeOutputs:
+        def new(self, name: str, socket_type: str):
+            calls.append((name, socket_type))
+            return types.SimpleNamespace(name=name)
+
+    tree = types.SimpleNamespace(outputs=FakeOutputs())
+    assert (
+        module._declare_group_output_socket(tree, "Image", "NodeSocketColor") == "Image"
+    )
+    assert calls == [("Image", "NodeSocketColor")]
+
+
+def test_declare_group_output_socket_rejects_bad_socket_type() -> None:
+    module = load_blender_script_module()
+
+    class FakeInterface:
+        def new_socket(self, *, name: str, in_out: str, socket_type: str):
+            raise TypeError(f"unknown socket type: {socket_type}")
+
+    with pytest.raises(RuntimeError, match="NodeSocketColor"):
+        module._declare_group_output_socket(
+            types.SimpleNamespace(interface=FakeInterface()), "Image", "NotASocket"
+        )
+
+
+def test_declare_group_output_socket_raises_when_no_api() -> None:
+    module = load_blender_script_module()
+    with pytest.raises(RuntimeError, match="available attributes"):
+        module._declare_group_output_socket(
+            types.SimpleNamespace(alpha=1), "Image", "NodeSocketColor"
+        )
+
+
+def test_is_compositor_group_discriminates_scene_trees() -> None:
+    module = load_blender_script_module()
+    group = object()
+    assert module._is_compositor_group(types.SimpleNamespace(), group) is False
+    assert module._is_compositor_group(types.SimpleNamespace(), None) is False
+    scene = types.SimpleNamespace(compositing_node_group=group)
+    assert module._is_compositor_group(scene, group) is True
+    assert module._is_compositor_group(scene, object()) is False
+
+
+def test_parse_blender_version_extracts_token() -> None:
+    module = load_benchmark_module()
+    assert module.parse_blender_version("Blender 5.0.1") == "5.0.1"
+    assert module.parse_blender_version("Blender 4.2") == "4.2"
+    assert module.parse_blender_version("no version here") is None
