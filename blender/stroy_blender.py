@@ -395,7 +395,15 @@ def _rlayers_output(render_layers, new_name: str, legacy_name: str):
     return None
 
 
-def _setup_passes(scene, output_dir: Path) -> None:
+def _setup_passes(scene, output_dir: Path) -> set[str]:
+    """Wire the compositor passes and return the prefixes actually wired.
+
+    ``depth``/``normals`` are wired unconditionally; the Cycles-only index
+    passes are only added when the render layer exposes their socket, so the
+    returned set lets post-render validation skip artifacts a given engine
+    (e.g. EEVEE on Blender 5.0) never produces.
+    """
+    wired: set[str] = set()
     layer = scene.view_layers[0]
     layer.use_pass_z = True
     layer.use_pass_normal = True
@@ -435,6 +443,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
         "depth",
         color_mode="RGB",
     )
+    wired.add("depth")
     _file_output(
         tree.nodes,
         tree.links,
@@ -443,6 +452,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
         "normals",
         color_mode="RGB",
     )
+    wired.add("normals")
     # Index passes are Cycles-only: EEVEE (Blender 5.0) exposes neither the
     # new nor the legacy socket. Engines without index passes simply render
     # without the object_ids/material_ids artifacts.
@@ -456,6 +466,7 @@ def _setup_passes(scene, output_dir: Path) -> None:
             "object_ids",
             color_mode="RGB",
         )
+        wired.add("object_ids")
     material_index_socket = _rlayers_output(render_layers, "Material Index", "IndexMA")
     if material_index_socket is not None:
         _file_output(
@@ -466,9 +477,21 @@ def _setup_passes(scene, output_dir: Path) -> None:
             "material_ids",
             color_mode="RGB",
         )
+        wired.add("material_ids")
+    return wired
 
 
-def _normalize_output(output_dir: Path, prefix: str) -> None:
+def _normalize_output(output_dir: Path, prefix: str, wired_prefixes: set[str]) -> None:
+    """Normalize one rendered pass artifact to ``<prefix>.exr``.
+
+    Only prefixes that ``_setup_passes`` actually wired are validated. Engines
+    without the Cycles-only index passes (EEVEE on Blender 5.0) never emit
+    ``object_ids``/``material_ids`` artifacts; requiring them here would fail a
+    render whose files are already on disk. A genuinely missing *wired* output
+    still raises.
+    """
+    if prefix not in wired_prefixes:
+        return
     candidates = sorted(output_dir.glob(prefix + "_*.exr"))
     if not candidates:
         candidates = sorted(output_dir.glob(prefix + "*.exr"))
@@ -529,13 +552,13 @@ def main() -> int:
     _camera(scene, plan["camera"])
 
     if args.render:
-        _setup_passes(scene, output_dir)
+        wired_prefixes = _setup_passes(scene, output_dir)
         scene.render.image_settings.file_format = "PNG"
         scene.render.image_settings.color_mode = "RGB"
         scene.render.filepath = str(output_dir / "rgb.png")
         bpy.ops.render.render(write_still=True)
         for name in ("depth", "normals", "object_ids", "material_ids"):
-            _normalize_output(output_dir, name)
+            _normalize_output(output_dir, name, wired_prefixes)
 
     metadata = _metadata(plan, engine)
     (output_dir / "scene_metadata.json").write_text(
