@@ -23,6 +23,7 @@ type Props = {
   revision: SceneRevision;
   jobs: Job[];
   onChanged: () => Promise<void>;
+  onEntityAdded?: (entityId: string) => void;
 };
 
 const RENDERER_PROFILE = "blender-cycles-v0";
@@ -37,7 +38,7 @@ function numeric(value: string, fallback = 0) {
 // furniture objects through the canonical scene-command endpoint. The `revision`
 // prop is initial display data only: every mutation/request refetches the latest
 // revision first so a concurrent edit in another panel cannot make us stale.
-export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props) {
+export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntityAdded }: Props) {
   const cameras = revision.scene.cameras;
   const rooms = useMemo(
     () => revision.scene.entities.filter((entity) => entity.kind === "room"),
@@ -266,8 +267,9 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
         color
       });
       await api.applySceneCommand(projectId, command);
+      onEntityAdded?.(entityId);
       setFurnitureInfo(
-        `Добавлено ${entityId}. Render to see the object.`
+        "Объект добавлен и выбран в сцене — перетащите его, чтобы разместить."
       );
       setLabel("");
       await onChanged();
@@ -498,11 +500,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
         <form className="td-form" onSubmit={(event) => void addFurniture(event)}>
           <div className="td-grid">
             <label>
-              Kind
-              <input value="furniture" disabled />
-            </label>
-            <label>
-              Name / label
+              Название
               <input
                 value={label}
                 onChange={(event) => setLabel(event.target.value)}
@@ -510,9 +508,9 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
               />
             </label>
             <label>
-              Room
+              Комната
               <select value={roomId} onChange={(event) => setRoomId(event.target.value)}>
-                <option value="">none</option>
+                <option value="">без комнаты</option>
                 {rooms.map((room) => (
                   <option key={room.id} value={room.id}>
                     {room.display_name ?? room.id}
@@ -524,42 +522,50 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
 
           <div className="td-grid td-grid-3">
             <label>
-              width mm
+              Ширина (мм)
               <input type="number" value={dimW} onChange={(e) => setDimW(e.target.value)} />
             </label>
             <label>
-              depth mm
+              Глубина (мм)
               <input type="number" value={dimD} onChange={(e) => setDimD(e.target.value)} />
             </label>
             <label>
-              height mm
+              Высота (мм)
               <input type="number" value={dimH} onChange={(e) => setDimH(e.target.value)} />
-            </label>
-            <label>
-              pos x mm
-              <input type="number" value={posX} onChange={(e) => setPosX(e.target.value)} />
-            </label>
-            <label>
-              pos y mm
-              <input type="number" value={posY} onChange={(e) => setPosY(e.target.value)} />
-            </label>
-            <label>
-              pos z mm
-              <input type="number" value={posZ} onChange={(e) => setPosZ(e.target.value)} />
-            </label>
-            <label>
-              rotation z°
-              <input type="number" value={rotZ} onChange={(e) => setRotZ(e.target.value)} />
-            </label>
-            <label>
-              color
-              <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
             </label>
           </div>
 
+          <p className="muted">Тип: мебель</p>
+
+          <details className="td-advanced">
+            <summary>Точные параметры</summary>
+            <div className="td-grid td-grid-3">
+              <label>
+                Позиция X (мм)
+                <input type="number" value={posX} onChange={(e) => setPosX(e.target.value)} />
+              </label>
+              <label>
+                Позиция Y (мм)
+                <input type="number" value={posY} onChange={(e) => setPosY(e.target.value)} />
+              </label>
+              <label>
+                Позиция Z (мм)
+                <input type="number" value={posZ} onChange={(e) => setPosZ(e.target.value)} />
+              </label>
+              <label>
+                Поворот Z (°)
+                <input type="number" value={rotZ} onChange={(e) => setRotZ(e.target.value)} />
+              </label>
+              <label>
+                Цвет
+                <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
+              </label>
+            </div>
+          </details>
+
           <div className="td-actions">
             <button type="submit" disabled={busy}>
-              {busy ? "Добавляем…" : "Add furniture"}
+              {busy ? "Добавляем…" : "Добавить"}
             </button>
           </div>
           {furnitureError && <div className="error td-error">{furnitureError}</div>}

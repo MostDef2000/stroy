@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 
 import {
   buildMoveObjectCommand,
+  buildRemoveObjectCommand,
+  buildRotateZCommand,
   canDragEntity,
   pointerAngleRad,
   ROTATION_STEP_DEG,
@@ -182,6 +184,133 @@ test("buildMoveObjectCommand copies only provided transform fields", () => {
   assert.deepEqual(rotationOnly.parameters, { rotation_deg: [0, 0, 45] });
 });
 
+test("buildMoveObjectCommand accepts a rotation-only payload with no stale translation", () => {
+  // The contextual «Повернуть на 90°» action must not resend translation_mm:
+  // the backend only overwrites supplied keys, so a stale pre-drag translation
+  // would silently revert a just-committed drag.
+  const command = buildMoveObjectCommand({
+    commandId: "command-rotate-only",
+    baseRevisionId: "rev-42",
+    entity: furniture,
+    parameters: { rotation_deg: [0, 0, 90] }
+  });
+  assert.deepEqual(command.parameters, { rotation_deg: [0, 0, 90] });
+  assert.equal("translation_mm" in command.parameters, false);
+  assert.equal("scale" in command.parameters, false);
+});
+
+test("buildMoveObjectCommand rotation-only keeps the exact move_object envelope", () => {
+  const command = buildMoveObjectCommand({
+    commandId: "command-rotate-envelope",
+    baseRevisionId: "rev-7",
+    entity: furniture,
+    parameters: { rotation_deg: [0, 0, 180] }
+  });
+  assert.deepEqual(command, {
+    schema_version: "0.1.0",
+    command_id: "command-rotate-envelope",
+    base_revision_id: "rev-7",
+    operation: "move_object",
+    target_id: "object.sofa.main",
+    parameters: { rotation_deg: [0, 0, 180] },
+    reference_asset_ids: [],
+    origin: "user",
+    request_text: null
+  });
+});
+
+test("buildRotateZCommand ignores a stale translation and emits rotation only", () => {
+  // The selected entity prop can be one drag behind: here it still carries the
+  // pre-drag [500,0,0] translation while a drag to another spot has already
+  // committed. The builder must not read translation_mm, otherwise it would
+  // revert that drag at the payload level.
+  const stale = {
+    id: "object.sofa.main",
+    kind: "furniture",
+    transform: {
+      translation_mm: [500, 0, 0],
+      rotation_deg: [0, 0, 0]
+    },
+    locks: { geometry: false, transform: false }
+  };
+  const command = buildRotateZCommand({
+    commandId: "command-rotate-1",
+    baseRevisionId: "rev-11",
+    entity: stale
+  });
+  assert.deepEqual(command.parameters, { rotation_deg: [0, 0, 90] });
+  assert.equal("translation_mm" in command.parameters, false);
+  assert.equal("scale" in command.parameters, false);
+});
+
+test("buildRotateZCommand honours a custom degrees step", () => {
+  const zeroed = {
+    id: "object.sofa.main",
+    kind: "furniture",
+    transform: { rotation_deg: [0, 0, 0] }
+  };
+  const command = buildRotateZCommand({
+    commandId: "command-rotate-2",
+    baseRevisionId: "rev-11",
+    entity: zeroed,
+    degrees: 180
+  });
+  assert.deepEqual(command.parameters, { rotation_deg: [0, 0, 180] });
+  assert.equal("translation_mm" in command.parameters, false);
+});
+
+test("buildRotateZCommand defaults a missing transform to a 90 degree turn", () => {
+  const command = buildRotateZCommand({
+    commandId: "command-rotate-3",
+    baseRevisionId: "rev-11",
+    entity: { id: "object.chair.left", kind: "furniture" }
+  });
+  assert.deepEqual(command.parameters, { rotation_deg: [0, 0, 90] });
+});
+
+test("buildRotateZCommand adds to the entity's existing Z rotation", () => {
+  const command = buildRotateZCommand({
+    commandId: "command-rotate-4",
+    baseRevisionId: "rev-11",
+    entity: furniture
+  });
+  // furniture.rotation_deg is [0, 0, 10] -> +90 = 100.
+  assert.deepEqual(command.parameters, { rotation_deg: [0, 0, 100] });
+});
+
+test("buildRotateZCommand rejects empty or whitespace-only entity ids", () => {
+  for (const id of ["", "   ", "\t\n"]) {
+    assert.throws(
+      () =>
+        buildRotateZCommand({
+          commandId: "c",
+          baseRevisionId: "r",
+          entity: { ...furniture, id }
+        }),
+      /non-empty string/
+    );
+  }
+});
+
+test("buildRotateZCommand emits the exact move_object envelope", () => {
+  const command = buildRotateZCommand({
+    commandId: "command-rotate-envelope",
+    baseRevisionId: "rev-7",
+    entity: { id: "object.sofa.main", kind: "furniture" }
+  });
+  assert.deepEqual(command, {
+    schema_version: "0.1.0",
+    command_id: "command-rotate-envelope",
+    base_revision_id: "rev-7",
+    operation: "move_object",
+    target_id: "object.sofa.main",
+    parameters: { rotation_deg: [0, 0, 90] },
+    reference_asset_ids: [],
+    origin: "user",
+    request_text: null
+  });
+});
+
 test("buildMoveObjectCommand rejects non-furniture and locked entities", () => {
   assert.throws(
     () =>
@@ -246,4 +375,81 @@ test("buildMoveObjectCommand rejects empty or non-finite parameters", () => {
       }),
     /finite triplet/
   );
+});
+
+test("buildRemoveObjectCommand emits the exact remove_object payload", () => {
+  const command = buildRemoveObjectCommand({
+    commandId: "command-remove-1",
+    baseRevisionId: "rev-9",
+    targetId: "object.sofa.main"
+  });
+  assert.deepEqual(command, {
+    schema_version: "0.1.0",
+    command_id: "command-remove-1",
+    base_revision_id: "rev-9",
+    operation: "remove_object",
+    target_id: "object.sofa.main",
+    parameters: {},
+    reference_asset_ids: [],
+    origin: "user",
+    request_text: null
+  });
+});
+
+test("buildRemoveObjectCommand rejects empty or whitespace-only target ids", () => {
+  for (const targetId of ["", "   ", "\t\n"]) {
+    assert.throws(
+      () =>
+        buildRemoveObjectCommand({
+          commandId: "c",
+          baseRevisionId: "r",
+          targetId
+        }),
+      /non-empty string/
+    );
+  }
+});
+
+test("buildRemoveObjectCommand accepts a valid id unchanged", () => {
+  const command = buildRemoveObjectCommand({
+    commandId: "c",
+    baseRevisionId: "r",
+    targetId: "object.chair.left"
+  });
+  assert.equal(command.target_id, "object.chair.left");
+  assert.equal(command.operation, "remove_object");
+});
+
+test("buildRemoveObjectCommand does not leak parameters mutations between calls", () => {
+  const first = buildRemoveObjectCommand({
+    commandId: "c1",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  first.parameters.injected = true;
+  const second = buildRemoveObjectCommand({
+    commandId: "c2",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  assert.deepEqual(second.parameters, {});
+  assert.deepEqual(first.reference_asset_ids, []);
+  assert.deepEqual(second.reference_asset_ids, []);
+});
+
+test("buildRemoveObjectCommand returns fresh objects per call", () => {
+  const first = buildRemoveObjectCommand({
+    commandId: "c1",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  const second = buildRemoveObjectCommand({
+    commandId: "c1",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  assert.notEqual(first, second);
+  assert.notEqual(first.parameters, second.parameters);
+  assert.notEqual(first.reference_asset_ids, second.reference_asset_ids);
+  assert.deepEqual(first, second);
 });

@@ -13,6 +13,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { api, type SceneCamera, type SceneDocument, type SceneEntity } from "./api";
 import {
   buildMoveObjectCommand,
+  buildRemoveObjectCommand,
+  buildRotateZCommand,
   canDragEntity,
   pointerAngleRad,
   rotationFromPointerAngles,
@@ -386,13 +388,18 @@ function OverviewOrbitControls({
 export function SceneViewer({
   scene,
   projectId,
-  onChanged
+  onChanged,
+  selectedId,
+  onSelectEntity,
+  onRequestReplace
 }: {
   scene: SceneDocument | null;
   projectId: string | null;
   onChanged: () => Promise<void>;
+  selectedId: string | null;
+  onSelectEntity: (id: string | null) => void;
+  onRequestReplace: (id: string) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cameraId, setCameraId] = useState<string>("overview");
   const [debugLocks, setDebugLocks] = useState(false);
   const [viewResetKey, setViewResetKey] = useState(0);
@@ -400,6 +407,10 @@ export function SceneViewer({
   const [dragActive, setDragActive] = useState(false);
   const [hoverDraggable, setHoverDraggable] = useState(false);
   const [dragError, setDragError] = useState("");
+  // Shared pending-operation guard: held across the drag-commit pipeline
+  // (fetch -> applySceneCommand -> onChanged) AND the contextual command
+  // actions (rotate/remove), so neither can race the other's stale transform.
+  const [pendingOperation, setPendingOperation] = useState(false);
   const [three, setThree] = useState<ThreeContext | null>(null);
   const dragRef = useRef<DragSession | null>(null);
 
@@ -432,9 +443,9 @@ export function SceneViewer({
       setCameraId("overview");
     }
     if (selectedId && !entities.some((entity) => entity.id === selectedId)) {
-      setSelectedId(null);
+      onSelectEntity(null);
     }
-  }, [cameraId, entities, scene, selectedId]);
+  }, [cameraId, entities, onSelectEntity, scene, selectedId]);
 
   useEffect(() => {
     if (!three) return;
@@ -456,6 +467,10 @@ export function SceneViewer({
   const handleDragStart = useCallback(
     (event: ThreeEvent<PointerEvent>, entity: SceneEntity) => {
       if (!three || !canDragEntity(entity)) return;
+      // A contextual command or drag commit is in flight: ignore the pointer
+      // down without touching propagation so orbit/pan still work, matching
+      // the early-return style for non-draggable entities.
+      if (pendingOperation) return;
       if (event.nativeEvent.button !== 0) return;
       const startFloor = floorPointFromPointer(
         event.nativeEvent,
@@ -466,7 +481,7 @@ export function SceneViewer({
       // Keep orbit/pan from claiming this pointer sequence.
       event.stopPropagation();
       event.nativeEvent.stopImmediatePropagation();
-      setSelectedId(entity.id);
+      onSelectEntity(entity.id);
       setDragError("");
 
       const translation = entity.transform?.translation_mm ?? [0, 0, 0];
@@ -498,7 +513,7 @@ export function SceneViewer({
       };
       setDragActive(true);
     },
-    [three]
+    [onSelectEntity, pendingOperation, three]
   );
 
   const handlePointerMove = useCallback(
@@ -547,6 +562,9 @@ export function SceneViewer({
   const commitMove = useCallback(
     async (entity: SceneEntity, parameters: MoveObjectParameters) => {
       if (!projectId) return;
+      // Hold the shared guard for the whole in-flight commit so a contextual
+      // command cannot read a stale pre-drag transform while the refresh lands.
+      setPendingOperation(true);
       try {
         // The command base_revision_id must equal the current latest revision,
         // so never trust the prop's revision here (same rule as TwinDesignPanel).
@@ -583,10 +601,77 @@ export function SceneViewer({
           delete next[entity.id];
           return next;
         });
+        setPendingOperation(false);
       }
     },
     [onChanged, projectId]
   );
+
+  // Shared sender for the contextual actions: mirrors commitMove's
+  // fetch-fresh-scene + single 409 retry + applySceneCommand sequence exactly,
+  // but lets each action build its own command from the fresh revision.
+  const sendSceneCommand = useCallback(
+    async (build: (baseRevisionId: string) => Record<string, unknown>) => {
+      if (!projectId) throw new Error("Проект не выбран.");
+      const fresh = await api.scene(projectId);
+      if (!fresh) throw new Error("Сцена ещё не инициализирована.");
+      const send = (baseRevisionId: string) =>
+        api.applySceneCommand(projectId, build(baseRevisionId));
+      try {
+        await send(fresh.revision_id);
+      } catch (reason) {
+        if (!isConflictError(reason)) throw reason;
+        const retry = await api.scene(projectId);
+        if (!retry) throw reason;
+        await send(retry.revision_id);
+      }
+    },
+    [projectId]
+  );
+
+  const handleRotateSelected = useCallback(async () => {
+    if (!selected || pendingOperation) return;
+    setPendingOperation(true);
+    setDragError("");
+    try {
+      await sendSceneCommand((baseRevisionId) =>
+        // Rotation-only payload built by the pure, unit-tested helper: it never
+        // reads the selected prop's translation, so a stale pre-drag value
+        // cannot revert a just-committed move.
+        buildRotateZCommand({
+          commandId: uniqueId(),
+          baseRevisionId,
+          entity: selected
+        })
+      );
+      await onChanged();
+    } catch (reason) {
+      setDragError(apiErrorText(reason));
+    } finally {
+      setPendingOperation(false);
+    }
+  }, [onChanged, pendingOperation, selected, sendSceneCommand]);
+
+  const handleRemoveSelected = useCallback(async () => {
+    if (!selected || pendingOperation) return;
+    setPendingOperation(true);
+    setDragError("");
+    try {
+      await sendSceneCommand((baseRevisionId) =>
+        buildRemoveObjectCommand({
+          commandId: uniqueId(),
+          baseRevisionId,
+          targetId: selected.id
+        })
+      );
+      await onChanged();
+      onSelectEntity(null);
+    } catch (reason) {
+      setDragError(apiErrorText(reason));
+    } finally {
+      setPendingOperation(false);
+    }
+  }, [onChanged, onSelectEntity, pendingOperation, selected, sendSceneCommand]);
 
   const handlePointerUp = useCallback(() => {
     const drag = dragRef.current;
@@ -705,7 +790,7 @@ export function SceneViewer({
               selected={selectedId === entity.id}
               debugLocks={debugLocks}
               preview={preview[entity.id] ?? null}
-              onSelect={() => setSelectedId(entity.id)}
+              onSelect={() => onSelectEntity(entity.id)}
               onDragStart={handleDragStart}
               onHoverChange={handleHoverChange}
             />
@@ -730,6 +815,41 @@ export function SceneViewer({
                   {liveRotation ? ` · rz ${liveRotation[2].toFixed(0)}°` : ""}
                   {canDragEntity(selected) ? " · drag to move · Shift-drag to rotate" : ""}
                 </span>
+              )}
+              {selected.kind === "furniture" && (
+                <div className="caption-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleRotateSelected()}
+                    disabled={Boolean(
+                      selected.locks?.transform ||
+                        selected.locks?.geometry ||
+                        dragActive ||
+                        pendingOperation
+                    )}
+                  >
+                    Повернуть на 90°
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleRemoveSelected()}
+                    disabled={Boolean(
+                      selected.locks?.geometry || dragActive || pendingOperation
+                    )}
+                  >
+                    Удалить
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => onRequestReplace(selected.id)}
+                    disabled={dragActive || pendingOperation}
+                  >
+                    Заменить по референсу
+                  </button>
+                </div>
               )}
             </>
           ) : calibrated ? (

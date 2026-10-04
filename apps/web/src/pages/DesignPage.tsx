@@ -43,7 +43,10 @@ export function DesignPage({
   onNavigate: (page: PageId) => void;
 }) {
   const [mode, setMode] = useState<"3d" | "photo">("3d");
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
   const advancedRef = useRef<HTMLDetailsElement | null>(null);
+  const canvasRef = useRef<HTMLElement | null>(null);
 
   if (!revision) {
     return (
@@ -68,6 +71,12 @@ export function DesignPage({
     if (!node) return;
     node.open = true;
     node.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function closeAdvanced() {
+    const node = advancedRef.current;
+    if (node) node.open = false;
+    canvasRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   return (
@@ -124,11 +133,17 @@ export function DesignPage({
 
       {mode === "3d" && (
         <>
-          <section className="canvas-panel">
+          <section className="canvas-panel" ref={canvasRef}>
             <SceneViewer
               scene={revision.scene}
               projectId={projectId}
               onChanged={onChanged}
+              selectedId={selectedEntityId}
+              onSelectEntity={setSelectedEntityId}
+              onRequestReplace={(id) => {
+                setReplaceTargetId(id);
+                openAdvanced();
+              }}
             />
           </section>
 
@@ -183,6 +198,10 @@ export function DesignPage({
             revision={revision}
             jobs={jobs}
             onChanged={onChanged}
+            onEntityAdded={(id) => {
+              setSelectedEntityId(id);
+              closeAdvanced();
+            }}
           />
 
           <ReplacementPanel
@@ -190,6 +209,7 @@ export function DesignPage({
             revision={revision}
             assets={assets}
             onChanged={onChanged}
+            initialTargetId={replaceTargetId}
           />
         </section>
       </details>
