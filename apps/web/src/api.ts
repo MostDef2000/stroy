@@ -69,6 +69,47 @@ export type Generation = {
   };
 };
 
+export type RenderManifest = {
+  schema_version: "0.1.0";
+  render_id: string;
+  scene_revision_id: string;
+  design_revision_id?: string | null;
+  camera_id: string;
+  renderer_profile: string | null;
+  /** Pass name (rgb, depth, …) → derived asset id. */
+  passes: Record<string, string>;
+  /**
+   * Not in the v0 render schema (which forbids extra keys); accepted
+   * defensively so a future/experimental worker value still displays.
+   */
+  wall_seconds?: number | null;
+};
+
+export type RenderRecord = {
+  id: string;
+  job_id: string;
+  scene_revision_id: string;
+  design_revision_id: string | null;
+  camera_id: string;
+  created_at: string;
+  manifest: RenderManifest;
+};
+
+export type CreateRenderInput = {
+  camera_id: string;
+  scene_revision_id?: string;
+  design_revision_id?: string;
+  renderer_profile?: string;
+  idempotency_key?: string;
+};
+
+export type SceneCommandResponse = {
+  revision_id: string;
+  parent_revision_id: string | null;
+  content_hash: string;
+  scene: SceneDocument;
+};
+
 export type StylePaletteEntry = { hex: string; role: string };
 
 export type StyleProfile = {
@@ -521,6 +562,27 @@ export const api = {
 
   assetUrl(assetId: string) {
     return apiPath(`/api/v1/assets/${assetId}`);
+  },
+
+  createRender(projectId: string, body: CreateRenderInput) {
+    return request<Job>(`/api/v1/projects/${projectId}/renders`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  },
+
+  listRenders(projectId: string) {
+    return request<RenderRecord[]>(`/api/v1/projects/${projectId}/renders`);
+  },
+
+  applySceneCommand(projectId: string, command: Record<string, unknown>) {
+    return request<SceneCommandResponse>(
+      `/api/v1/projects/${projectId}/scene/commands`,
+      {
+        method: "POST",
+        body: JSON.stringify(command)
+      }
+    );
   },
 
   analyzePlan(projectId: string, assetIds: string[], hints: PlanAnalyzeHints = {}) {
