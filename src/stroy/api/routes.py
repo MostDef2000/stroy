@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -61,6 +62,7 @@ from stroy.services.plans import (
     get_latest_draft,
     save_draft,
 )
+from stroy.services.projects import ProjectHasActiveJobsError, delete_project
 from stroy.services.scenes import (
     apply_scene_command,
     create_noop_revision,
@@ -73,6 +75,9 @@ from stroy.services.scenes import (
 
 
 router = APIRouter()
+
+
+logger = logging.getLogger("stroy.api")
 
 
 def _domain_conflict(exc: ValueError) -> HTTPException:
@@ -419,6 +424,35 @@ async def projects(session: DbSession):
 async def project_create(payload: ProjectCreate, session: DbSession, owner: OwnerSession):
     row = await create_project(session, payload.name)
     return {"id": row.id, "name": row.name, "created_at": row.created_at}
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}",
+    status_code=204,
+    dependencies=[Depends(require_csrf)],
+)
+async def project_delete(
+    project_id: str,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        deleted = await delete_project(session, project_id)
+    except ProjectHasActiveJobsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "project_busy", "detail": str(exc)},
+        ) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="project not found")
+    # The database is authoritative: rows are already committed.  Stored files
+    # are best-effort cleanup and must never fail the request.
+    try:
+        await request.app.state.object_store.delete_prefix(f"projects/{project_id}/")
+    except Exception:
+        logger.exception("project file cleanup failed", extra={"project_id": project_id})
+    return Response(status_code=204)
 
 
 @router.post("/api/v1/projects/{project_id}/scene", status_code=201, dependencies=[Depends(require_csrf)])
