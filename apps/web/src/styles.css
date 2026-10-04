@@ -898,4 +898,146 @@ header span { color: #777; font-size: 13px; }
   gap: 10px;
 }
 
+/* Camera calibration from photo (CameraPanel) */
+.cc-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #efede8;
+}
+
+.cc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cc-head h3 {
+  margin: 0;
+  font-size: 13px;
+  color: #56544f;
+}
+
+.cc-stage {
+  padding: 12px;
+  border-radius: 14px;
+  background: #dedbd3;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.cc-image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+
+.cc-image-wrap img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  user-select: none;
+  pointer-events: none;
+}
+
+.cc-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.cc-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #242424;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+
+.cc-marker.linked {
+  background: #3f7d52;
+}
+
+.cc-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.cc-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cc-index {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #eeece6;
+  color: #56544f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cc-px {
+  flex: 0 0 auto;
+  color: #85827b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cc-row select {
+  flex: 1 1 200px;
+  min-width: 0;
+  border: 1px solid #cbc8c0;
+  border-radius: 9px;
+  padding: 7px 9px;
+  background: white;
+}
+
+.cc-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cc-result {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #edf2eb;
+  color: #426049;
+  font-size: 12px;
+}
+
+.cc-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8ecea;
+}
+
 

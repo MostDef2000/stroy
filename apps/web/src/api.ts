@@ -381,7 +381,8 @@ export const api = {
     projectId: string,
     cameraId: string,
     baseRevisionId: string,
-    camera: SceneCamera
+    camera: SceneCamera,
+    solve = false
   ) {
     return request<{
       revision_id: string;
@@ -392,7 +393,8 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({
         base_revision_id: baseRevisionId,
-        camera
+        camera,
+        solve
       })
     });
   },
