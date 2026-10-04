@@ -571,12 +571,13 @@ def test_file_output_legacy_api_uses_base_path_and_file_slots() -> None:
     assert record["links"] == [(record["source"], ("slot", 0))]
 
 
-def run_setup_passes(module, monkeypatch, *, outputs: dict) -> list[str]:
+def run_setup_passes(module, monkeypatch, *, outputs: dict) -> set[str]:
     """Run ``_setup_passes`` on a fake legacy compositor tree.
 
     ``_file_output`` is replaced with a recorder so the test asserts only which
     pass artifacts ``_setup_passes`` decides to wire for a given set of
-    render-layer sockets.
+    render-layer sockets. The returned set is the wired-prefix contract that
+    ``main`` forwards to ``_normalize_output``.
     """
     recorded: list[str] = []
 
@@ -612,18 +613,19 @@ def run_setup_passes(module, monkeypatch, *, outputs: dict) -> list[str]:
         use_nodes=False,
         compositing_node_group=None,
     )
-    module._setup_passes(scene, Path("/tmp/out"))
-    return recorded
+    wired = module._setup_passes(scene, Path("/tmp/out"))
+    assert wired == set(recorded)
+    return wired
 
 
 def test_setup_passes_skips_index_outputs_when_sockets_absent(monkeypatch) -> None:
     module = load_blender_script_module()
     outputs = {"Image": object(), "Depth": object(), "Normal": object()}
 
-    recorded = run_setup_passes(module, monkeypatch, outputs=outputs)
+    wired = run_setup_passes(module, monkeypatch, outputs=outputs)
 
     # EEVEE (Blender 5.0): no index sockets -> only depth/normals artifacts.
-    assert recorded == ["depth", "normals"]
+    assert wired == {"depth", "normals"}
 
 
 def test_setup_passes_wires_index_outputs_when_sockets_present(monkeypatch) -> None:
@@ -636,9 +638,45 @@ def test_setup_passes_wires_index_outputs_when_sockets_present(monkeypatch) -> N
         "Material Index": object(),
     }
 
-    recorded = run_setup_passes(module, monkeypatch, outputs=outputs)
+    wired = run_setup_passes(module, monkeypatch, outputs=outputs)
 
-    assert recorded == ["depth", "normals", "object_ids", "material_ids"]
+    assert wired == {"depth", "normals", "object_ids", "material_ids"}
+
+
+def test_normalize_output_skips_unwired_prefix(tmp_path: Path) -> None:
+    module = load_blender_script_module()
+
+    # EEVEE-like: object_ids/material_ids were not wired, so the absent
+    # artifacts must not fail post-render validation.
+    module._normalize_output(tmp_path, "object_ids", {"depth", "normals"})
+    module._normalize_output(tmp_path, "material_ids", {"depth", "normals"})
+
+
+def test_normalize_output_still_raises_for_missing_wired_prefix(
+    tmp_path: Path,
+) -> None:
+    module = load_blender_script_module()
+
+    with pytest.raises(RuntimeError, match="missing compositor output for depth"):
+        module._normalize_output(tmp_path, "depth", {"depth", "normals"})
+    with pytest.raises(
+        RuntimeError, match="missing compositor output for object_ids"
+    ):
+        module._normalize_output(
+            tmp_path, "object_ids", {"depth", "normals", "object_ids"}
+        )
+
+
+def test_normalize_output_renames_wired_prefix(tmp_path: Path) -> None:
+    module = load_blender_script_module()
+    rendered = tmp_path / "normals_0001.exr"
+    rendered.write_bytes(b"exr")
+
+    module._normalize_output(tmp_path, "normals", {"depth", "normals"})
+
+    assert (tmp_path / "normals.exr").read_bytes() == b"exr"
+    assert not rendered.exists()
+
 
 
 async def test_blender_executor_defaults_to_cycles_profile(tmp_path) -> None:
