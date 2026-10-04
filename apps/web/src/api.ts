@@ -1,3 +1,5 @@
+import { deleteOutcomeFromStatus, type ProjectDeleteOutcome } from "./projectDelete";
+
 export type Project = {
   id: string;
   name: string;
@@ -386,6 +388,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name })
     });
+  },
+
+  // Status-sensitive like scene()/getPlanDraft(): the delete flow must tell
+  // 204/404/409 apart, so it reads the raw status instead of request()'s throw.
+  // CSRF header is attached the same way request()/upload() do it.
+  async deleteProject(projectId: string): Promise<ProjectDeleteOutcome> {
+    const headers = new Headers();
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+    const response = await fetch(apiPath(`/api/v1/projects/${projectId}`), {
+      method: "DELETE",
+      headers,
+      credentials: "include"
+    });
+    return deleteOutcomeFromStatus(response.status);
   },
 
   async scene(projectId: string): Promise<SceneRevision | null> {
