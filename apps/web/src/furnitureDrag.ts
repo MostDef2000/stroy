@@ -235,6 +235,50 @@ export function buildMoveObjectCommand(
   };
 }
 
+export type RotateZInput = {
+  commandId: string;
+  baseRevisionId: string;
+  entity: DragEntityLike;
+  degrees?: number;
+};
+
+/**
+ * Build the authoritative `move_object` payload for the contextual rotate
+ * action. This is the exact construction `handleRotateSelected` calls, kept
+ * pure and unit-tested so the regression guard exercises the real payload
+ * rather than a hand-supplied one.
+ *
+ * The new rotation is `entity.transform.rotation_deg` (default `[0, 0, 0]`)
+ * with `degrees` (default 90) added to Z. `translation_mm` is deliberately
+ * never read here: the backend merges only the supplied transform keys, and the
+ * selected entity prop can be one in-flight drag behind, so resending a stale
+ * translation would revert a just-committed move. Emitting rotation only makes
+ * that revert impossible at the payload level.
+ */
+export function buildRotateZCommand(
+  input: RotateZInput
+): MoveObjectCommandPayload {
+  const entity = input.entity;
+  if (typeof entity?.id !== "string" || entity.id.trim().length === 0) {
+    throw new Error("move_object target_id must be a non-empty string");
+  }
+
+  const baseRotation = entity.transform?.rotation_deg ?? [0, 0, 0];
+  const degrees = input.degrees ?? 90;
+  const rotation: [number, number, number] = [
+    baseRotation[0],
+    baseRotation[1],
+    baseRotation[2] + degrees
+  ];
+
+  return buildMoveObjectCommand({
+    commandId: input.commandId,
+    baseRevisionId: input.baseRevisionId,
+    entity,
+    parameters: { rotation_deg: rotation }
+  });
+}
+
 /**
  * Build the authoritative `remove_object` DesignCommand payload. Mirrors the
  * `move_object` envelope field-for-field; the backend only reads `target_id`
