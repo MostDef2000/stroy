@@ -18,6 +18,7 @@ import { PhotoEditPanel } from "./PhotoEditPanel";
 import { PlanEditor } from "./PlanEditor";
 import { ReplacementPanel } from "./ReplacementPanel";
 import { SceneViewer } from "./SceneViewer";
+import { TwinDesignPanel } from "./TwinDesignPanel";
 import "./styles.css";
 
 // Camera calibration, geometry diagnostics and style-analysis panels remain
@@ -494,6 +495,15 @@ export default function App() {
               projectId={selected}
               revision={revision}
               assets={assets}
+              onChanged={() => refreshProject(selected)}
+            />
+          )}
+
+          {SHOW_ADVANCED_PANELS && selected && revision && (
+            <TwinDesignPanel
+              projectId={selected}
+              revision={revision}
+              jobs={jobs}
               onChanged={() => refreshProject(selected)}
             />
           )}
