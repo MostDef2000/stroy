@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -31,6 +32,8 @@ SCHEMA_VERSION = "0.1.0"
 SCENE_REVISION_ID = "revision.bare-twin-bench"
 FX = 900.0
 FY = 900.0
+
+BLENDER_VERSION_RE = re.compile(r"Blender\s+(\d+\.\d+(?:\.\d+)?)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +73,28 @@ def resolve_blender_bin(requested: str) -> str | None:
     if candidate.is_file():
         return str(candidate)
     return None
+
+
+def parse_blender_version(text: str) -> str | None:
+    """Extract the ``x.y[.z]`` token from ``blender --version`` output."""
+    match = BLENDER_VERSION_RE.search(text)
+    return match.group(1) if match else None
+
+
+def detect_blender_version(blender_bin: str) -> str | None:
+    """Query ``blender_bin --version`` once and return its version token."""
+    try:
+        result = subprocess.run(
+            [blender_bin, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    first_line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+    return parse_blender_version(first_line)
 
 
 class VramSampler:
@@ -188,12 +213,14 @@ def write_outputs(
     runs: list[dict[str, Any]],
     warnings: list[str],
     runs_per: int,
+    blender_version: str | None = None,
 ) -> None:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "scene": scene,
         "resolution": resolution,
         "blender_bin": blender_bin,
+        "blender_version": blender_version,
         "profiles": profiles,
         "runs": runs,
         "warnings": warnings,
@@ -208,6 +235,7 @@ def write_outputs(
         f"- Scene: `{scene}`",
         f"- Resolution: {resolution}",
         f"- Blender: `{blender_bin}`",
+        f"- Blender version: {blender_version or 'unknown'}",
         f"- Profiles: {', '.join(f'`{p}`' for p in profiles)}",
         f"- Runs per profile x camera: {runs_per}",
         "",
@@ -245,6 +273,10 @@ def main() -> int:
     script_path = os.getenv("STROY_BLENDER_SCRIPT", "blender/stroy_blender.py")
     if not Path(script_path).is_file():
         raise SystemExit(f"Blender script not found: {script_path}")
+
+    # Record the Blender version once; per-run metadata from the renderer only
+    # lands on successful renders, so the benchmark report needs its own copy.
+    blender_version = detect_blender_version(blender_bin)
 
     # Imported only after the fail-fast check so the harness reports a clear
     # message even when the project virtualenv is not active.
@@ -317,6 +349,7 @@ def main() -> int:
         scene=str(scene_path),
         resolution=args.resolution,
         blender_bin=blender_bin,
+        blender_version=blender_version,
         profiles=profiles,
         runs=records,
         warnings=warnings,
