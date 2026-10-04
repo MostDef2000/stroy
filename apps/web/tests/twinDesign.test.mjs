@@ -12,9 +12,13 @@ import assert from "node:assert/strict";
 import {
   apiErrorText,
   buildAddFurnitureCommand,
+  buildRedesignInput,
   cameraOptionLabel,
+  clampStrength,
   entityIdFromName,
   formatRenderSummary,
+  redesignResultAssetId,
+  referenceImageAssets,
   renderRgbAssetId,
   sortedRendersNewestFirst,
   uniqueId
@@ -134,6 +138,109 @@ test("uniqueId returns valid, unique UUID v4 strings (no prefix)", () => {
   assert.equal(ids.size, 64);
 });
 
+
+test("clampStrength bounds to [0.2, 0.95] and defaults non-finite input", () => {
+  assert.equal(clampStrength(0.6), 0.6);
+  assert.equal(clampStrength(0.1), 0.2);
+  assert.equal(clampStrength(0.99), 0.95);
+  assert.equal(clampStrength(Number.NaN), 0.6);
+  assert.equal(clampStrength(Number.POSITIVE_INFINITY), 0.6);
+});
+
+test("buildRedesignInput trims the prompt and clamps strength", () => {
+  const payload = buildRedesignInput({
+    baseRevisionId: "rev-1",
+    baseAssetId: "asset-rgb",
+    prompt: "  warm scandinavian living room  ",
+    strength: 0.7
+  });
+  assert.deepEqual(payload, {
+    base_revision_id: "rev-1",
+    base_asset_id: "asset-rgb",
+    prompt: "warm scandinavian living room",
+    strength: 0.7
+  });
+  assert.equal("reference_asset_id" in payload, false);
+});
+
+test("buildRedesignInput includes a present reference and omits null/empty", () => {
+  const withReference = buildRedesignInput({
+    baseRevisionId: "rev-2",
+    baseAssetId: "asset-rgb",
+    prompt: "restyle",
+    strength: 0.4,
+    referenceAssetId: "asset-ref"
+  });
+  assert.equal(withReference.reference_asset_id, "asset-ref");
+  assert.equal(withReference.strength, 0.4);
+
+  const nullReference = buildRedesignInput({
+    baseRevisionId: "rev-2",
+    baseAssetId: "asset-rgb",
+    prompt: "restyle",
+    strength: 0.4,
+    referenceAssetId: null
+  });
+  assert.equal("reference_asset_id" in nullReference, false);
+
+  const emptyReference = buildRedesignInput({
+    baseRevisionId: "rev-2",
+    baseAssetId: "asset-rgb",
+    prompt: "restyle",
+    strength: 0.4,
+    referenceAssetId: ""
+  });
+  assert.equal("reference_asset_id" in emptyReference, false);
+});
+
+test("buildRedesignInput clamps out-of-range strength", () => {
+  assert.equal(
+    buildRedesignInput({
+      baseRevisionId: "rev-3",
+      baseAssetId: "asset-rgb",
+      prompt: "x",
+      strength: 0.05
+    }).strength,
+    0.2
+  );
+  assert.equal(
+    buildRedesignInput({
+      baseRevisionId: "rev-3",
+      baseAssetId: "asset-rgb",
+      prompt: "x",
+      strength: 1.5
+    }).strength,
+    0.95
+  );
+});
+
+test("redesignResultAssetId reads top-level output_asset_ids first", () => {
+  assert.equal(
+    redesignResultAssetId({ status: "succeeded", result: { output_asset_ids: ["out-1", "out-2"] } }),
+    "out-1"
+  );
+  assert.equal(
+    redesignResultAssetId({
+      status: "succeeded",
+      result: { output_asset_ids: [], generation_manifest: { output_asset_ids: ["manifest-out"] } }
+    }),
+    "manifest-out"
+  );
+  assert.equal(redesignResultAssetId({ status: "running", result: null }), null);
+  assert.equal(redesignResultAssetId({ status: "succeeded", result: {} }), null);
+  assert.equal(redesignResultAssetId(null), null);
+});
+
+test("referenceImageAssets keeps only image assets with role=reference", () => {
+  const assets = [
+    { id: "a", role: "reference", media_type: "image/png" },
+    { id: "b", role: "reference", media_type: "application/pdf" },
+    { id: "c", role: "apartment", media_type: "image/jpeg" },
+    { id: "d", role: "derived", media_type: "image/png" }
+  ];
+  assert.deepEqual(referenceImageAssets(assets).map((asset) => asset.id), ["a"]);
+  assert.deepEqual(referenceImageAssets([]), []);
+});
 
 test("apiErrorText unwraps the backend detail envelope", () => {
   assert.equal(

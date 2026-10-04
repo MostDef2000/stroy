@@ -1,11 +1,18 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { api, Job, RenderRecord, SceneRevision } from "./api";
+import { api, Asset, Job, RenderRecord, SceneRevision } from "./api";
 import {
   apiErrorText,
   buildAddFurnitureCommand,
+  buildRedesignInput,
   cameraOptionLabel,
+  clampStrength,
   entityIdFromName,
   formatRenderSummary,
+  redesignResultAssetId,
+  REDESIGN_STRENGTH_DEFAULT,
+  REDESIGN_STRENGTH_MAX,
+  REDESIGN_STRENGTH_MIN,
+  referenceImageAssets,
   renderRgbAssetId,
   sortedRendersNewestFirst,
   uniqueId
@@ -46,6 +53,18 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
   const [rendersError, setRendersError] = useState("");
   const [selectedRenderId, setSelectedRenderId] = useState<string | null>(null);
 
+  // Design variant (whole-frame redesign from a render's rgb pass). The panel
+  // does not receive the project asset list, so reference photos are fetched
+  // here with the same role/media filter PhotoEditPanel uses.
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [variantPrompt, setVariantPrompt] = useState("");
+  const [variantStrength, setVariantStrength] = useState(REDESIGN_STRENGTH_DEFAULT);
+  const [variantReferenceId, setVariantReferenceId] = useState("");
+  const [variantJobId, setVariantJobId] = useState<string | null>(null);
+  const [variantError, setVariantError] = useState("");
+  const [variantInfo, setVariantInfo] = useState("");
+  const [variantResultAssetId, setVariantResultAssetId] = useState<string | null>(null);
+
   const [label, setLabel] = useState("");
   const [roomId, setRoomId] = useState("");
   const [dimW, setDimW] = useState("2000");
@@ -73,6 +92,13 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
     setFurnitureError("");
     setFurnitureInfo("");
     setSelectedRenderId(null);
+    setVariantPrompt("");
+    setVariantStrength(REDESIGN_STRENGTH_DEFAULT);
+    setVariantReferenceId("");
+    setVariantJobId(null);
+    setVariantError("");
+    setVariantInfo("");
+    setVariantResultAssetId(null);
   }, [projectId]);
 
   const loadRenders = useCallback(async () => {
@@ -85,9 +111,20 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
     }
   }, [projectId]);
 
+  const loadAssets = useCallback(async () => {
+    try {
+      setAssets(await api.assets(projectId));
+    } catch {
+      // Reference selection is optional; a failed asset fetch must not break
+      // the render/furniture flows, so leave the list empty.
+      setAssets([]);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     void loadRenders();
-  }, [loadRenders]);
+    void loadAssets();
+  }, [loadRenders, loadAssets]);
 
   const activeRenderJob = useMemo(
     () => (pendingJobId ? jobs.find((job) => job.id === pendingJobId) ?? null : null),
@@ -126,6 +163,47 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
     [orderedRenders, selectedRenderId]
   );
   const selectedRgbId = selectedRender ? renderRgbAssetId(selectedRender.manifest) : null;
+
+  const referenceAssets = useMemo(() => referenceImageAssets(assets), [assets]);
+
+  const activeVariantJob = useMemo(
+    () => (variantJobId ? jobs.find((job) => job.id === variantJobId) ?? null : null),
+    [jobs, variantJobId]
+  );
+
+  useEffect(() => {
+    if (!variantJobId || activeVariantJob?.status !== "succeeded") return;
+    setVariantJobId(null);
+    const resultAssetId = redesignResultAssetId(activeVariantJob);
+    if (resultAssetId) {
+      setVariantResultAssetId(resultAssetId);
+      setVariantInfo("Design variant ready.");
+    } else {
+      setVariantError("Задача завершилась без выходного изображения.");
+    }
+    void loadAssets();
+  }, [activeVariantJob, variantJobId, loadAssets]);
+
+  useEffect(() => {
+    if (!variantJobId) return;
+    if (activeVariantJob?.status !== "failed" && activeVariantJob?.status !== "cancelled") {
+      return;
+    }
+    setVariantJobId(null);
+    setVariantError(`Design variant job ${activeVariantJob.status}.`);
+  }, [activeVariantJob, variantJobId]);
+
+  const variantStatus = useMemo(() => {
+    if (!variantJobId) return null;
+    if (!activeVariantJob) return "queued";
+    const fraction =
+      typeof activeVariantJob.progress["fraction"] === "number"
+        ? Math.round((activeVariantJob.progress["fraction"] as number) * 100)
+        : null;
+    return fraction === null
+      ? activeVariantJob.status
+      : `${activeVariantJob.status} · ${fraction}%`;
+  }, [activeVariantJob, variantJobId]);
 
   async function startRender() {
     if (pendingJobId) return;
@@ -197,6 +275,45 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
       setFurnitureError(apiErrorText(reason));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runDesignVariant() {
+    if (variantJobId) return;
+    const prompt = variantPrompt.trim();
+    if (!prompt) {
+      setVariantError("Опишите желаемый вариант дизайна.");
+      return;
+    }
+    if (!selectedRgbId) {
+      setVariantError("У выбранного рендера нет rgb-пасса — вариант недоступен.");
+      return;
+    }
+    setVariantError("");
+    setVariantInfo("");
+    setVariantResultAssetId(null);
+    try {
+      // Same freshness rule as addFurniture: the redesign base_revision_id must
+      // equal the current latest revision or the backend answers 409.
+      const fresh = await api.scene(projectId);
+      if (!fresh) {
+        setVariantError("Сцена ещё не инициализирована.");
+        return;
+      }
+      const response = await api.createRedesign(
+        projectId,
+        buildRedesignInput({
+          baseRevisionId: fresh.revision_id,
+          baseAssetId: selectedRgbId,
+          prompt,
+          strength: variantStrength,
+          referenceAssetId: variantReferenceId || null
+        })
+      );
+      setVariantJobId(response.job.id);
+      await onChanged();
+    } catch (reason) {
+      setVariantError(apiErrorText(reason));
     }
   }
 
@@ -296,6 +413,83 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged }: Props)
           </div>
         )}
       </section>
+
+      {selectedRender && (
+        <section className="td-section">
+          <div className="td-head">
+            <h3>Design variant</h3>
+          </div>
+          {!selectedRgbId ? (
+            <p className="muted">
+              У выбранного рендера нет rgb-пасса — вариант дизайна недоступен.
+            </p>
+          ) : (
+            <div className="td-form">
+              <p className="hint">
+                img2img по rgb-пассу рендера #{selectedRender.id.slice(0, 8)} · latest scene revision.
+              </p>
+              <label>
+                Prompt
+                <textarea
+                  rows={3}
+                  value={variantPrompt}
+                  onChange={(event) => setVariantPrompt(event.target.value)}
+                  placeholder="Опишите желаемый вариант дизайна…"
+                />
+              </label>
+              <label>
+                Strength · {variantStrength.toFixed(2)}
+                <input
+                  type="range"
+                  min={REDESIGN_STRENGTH_MIN}
+                  max={REDESIGN_STRENGTH_MAX}
+                  step={0.05}
+                  value={variantStrength}
+                  onChange={(event) =>
+                    setVariantStrength(clampStrength(Number(event.target.value)))
+                  }
+                />
+              </label>
+              <label>
+                Style reference (optional)
+                <select
+                  value={variantReferenceId}
+                  onChange={(event) => setVariantReferenceId(event.target.value)}
+                >
+                  <option value="">None — prompt only</option>
+                  {referenceAssets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.original_name ?? asset.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="td-actions">
+                <button
+                  type="button"
+                  onClick={() => void runDesignVariant()}
+                  disabled={variantJobId !== null || !variantPrompt.trim()}
+                >
+                  {variantJobId ? "Running…" : "Run variant"}
+                </button>
+              </div>
+              {variantStatus && (
+                <p className="muted td-status">Design variant job: {variantStatus}</p>
+              )}
+              {variantError && <div className="error td-error">{variantError}</div>}
+              {variantInfo && <div className="td-result">{variantInfo}</div>}
+              {variantResultAssetId && (
+                <div className="td-preview">
+                  <img
+                    src={api.assetUrl(variantResultAssetId)}
+                    alt="Design variant result"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="td-section">
         <div className="td-head">
