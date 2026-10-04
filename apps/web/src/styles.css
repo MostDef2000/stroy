@@ -1752,3 +1752,113 @@ header span { color: #777; font-size: 13px; }
   margin-top: 12px;
 }
 
+/* #107 Results timeline: human-readable design feed, day grouping, generation
+   previews, two-step restore confirmation and the before/after panel. */
+.rt-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border: 1px solid #dedbd3;
+  border-radius: 10px;
+  background: #faf9f6;
+  font-size: 12px;
+}
+
+.rt-feed {
+  display: grid;
+  gap: 18px;
+}
+
+.rt-day h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #6a675f;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rt-entry {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid #dedbd3;
+}
+
+.rt-entry-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.rt-label {
+  font-weight: 650;
+}
+
+.rt-time {
+  color: #85827b;
+  font-size: 12px;
+}
+
+.rt-entry-head .tag {
+  margin-left: auto;
+}
+
+.rt-preview img {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  border-radius: 10px;
+  border: 1px solid #dedbd3;
+  background: #d9d6cf;
+}
+
+.rt-details {
+  font-size: 12px;
+  color: #85827b;
+}
+
+.rt-details > div {
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.rt-versions {
+  margin-top: 18px;
+  font-size: 12px;
+}
+
+.rt-versions > summary {
+  font-size: 12px;
+  color: #6a675f;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.rt-warning {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid #e6cfa1;
+  border-radius: 9px;
+  background: #fbf5e7;
+  color: #8a6b22;
+}
+
+.rt-confirm {
+  border: 1px solid #d7a3a3;
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: #f7e6e6;
+  color: #a13b3b;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.rt-confirm:hover {
+  background: #f0d3d3;
+}
+
