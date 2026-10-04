@@ -21,10 +21,12 @@ import { SceneViewer } from "./SceneViewer";
 import { TwinDesignPanel } from "./TwinDesignPanel";
 import "./styles.css";
 
-// Camera calibration, geometry diagnostics and style-analysis panels remain
-// hidden behind this flag. MVP-2 phase A is twin-first, so SceneViewer itself
-// stays visible after a canonical scene revision exists.
-const SHOW_ADVANCED_PANELS = false;
+// Advanced panels (camera calibration, twin design, geometry diagnostics,
+// style analysis) are visible since phase B (#72) closed: the calibration
+// and design flows are backend-proven (PRs #91-#95) and await visual
+// acceptance in the running app. SceneViewer itself stays visible after a
+// canonical scene revision exists.
+const SHOW_ADVANCED_PANELS = true;
 
 function goldenRoom(projectId: string): SceneDocument {
   return {
