@@ -1,16 +1,18 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, Asset, SceneRevision } from "./api";
 
 export function ReplacementPanel({
   projectId,
   revision,
   assets,
-  onChanged
+  onChanged,
+  initialTargetId
 }: {
   projectId: string;
   revision: SceneRevision;
   assets: Asset[];
   onChanged: () => Promise<void>;
+  initialTargetId?: string | null;
 }) {
   const furniture = useMemo(
     () =>
@@ -36,6 +38,14 @@ export function ReplacementPanel({
   );
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
+
+  // Direct-manipulation entry point (#106): the viewer can push the selected
+  // furniture id down as the replacement target.
+  useEffect(() => {
+    if (initialTargetId && initialTargetId !== targetId) {
+      setTargetId(initialTargetId);
+    }
+  }, [initialTargetId, targetId]);
 
   const resolvedTarget = targetId || furniture[0]?.id || "";
   const resolvedReference = referenceId || references[0]?.id || "";

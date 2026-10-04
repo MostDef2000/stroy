@@ -68,6 +68,25 @@ export type MoveObjectInput = {
   parameters: MoveObjectParameters;
 };
 
+/** Exact `remove_object` DesignCommand envelope accepted by the backend. */
+export type RemoveObjectCommandPayload = {
+  schema_version: "0.1.0";
+  command_id: string;
+  base_revision_id: string;
+  operation: "remove_object";
+  target_id: string;
+  parameters: Record<string, never>;
+  reference_asset_ids: string[];
+  origin: "user";
+  request_text: null;
+};
+
+export type RemoveObjectInput = {
+  commandId: string;
+  baseRevisionId: string;
+  targetId: string;
+};
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -210,6 +229,33 @@ export function buildMoveObjectCommand(
     operation: "move_object",
     target_id: entity.id,
     parameters,
+    reference_asset_ids: [],
+    origin: "user",
+    request_text: null
+  };
+}
+
+/**
+ * Build the authoritative `remove_object` DesignCommand payload. Mirrors the
+ * `move_object` envelope field-for-field; the backend only reads `target_id`
+ * (domain/commands.py REMOVE_OBJECT), but the command schema always carries
+ * `parameters`, so it is emitted as an empty object. Rejects whitespace-only
+ * target ids, matching the other builders' fail-fast style.
+ */
+export function buildRemoveObjectCommand(
+  input: RemoveObjectInput
+): RemoveObjectCommandPayload {
+  if (typeof input.targetId !== "string" || input.targetId.trim().length === 0) {
+    throw new Error("remove_object target_id must be a non-empty string");
+  }
+
+  return {
+    schema_version: "0.1.0",
+    command_id: input.commandId,
+    base_revision_id: input.baseRevisionId,
+    operation: "remove_object",
+    target_id: input.targetId,
+    parameters: {},
     reference_asset_ids: [],
     origin: "user",
     request_text: null

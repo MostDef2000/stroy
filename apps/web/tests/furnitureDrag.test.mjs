@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import {
   buildMoveObjectCommand,
+  buildRemoveObjectCommand,
   canDragEntity,
   pointerAngleRad,
   ROTATION_STEP_DEG,
@@ -246,4 +247,81 @@ test("buildMoveObjectCommand rejects empty or non-finite parameters", () => {
       }),
     /finite triplet/
   );
+});
+
+test("buildRemoveObjectCommand emits the exact remove_object payload", () => {
+  const command = buildRemoveObjectCommand({
+    commandId: "command-remove-1",
+    baseRevisionId: "rev-9",
+    targetId: "object.sofa.main"
+  });
+  assert.deepEqual(command, {
+    schema_version: "0.1.0",
+    command_id: "command-remove-1",
+    base_revision_id: "rev-9",
+    operation: "remove_object",
+    target_id: "object.sofa.main",
+    parameters: {},
+    reference_asset_ids: [],
+    origin: "user",
+    request_text: null
+  });
+});
+
+test("buildRemoveObjectCommand rejects empty or whitespace-only target ids", () => {
+  for (const targetId of ["", "   ", "\t\n"]) {
+    assert.throws(
+      () =>
+        buildRemoveObjectCommand({
+          commandId: "c",
+          baseRevisionId: "r",
+          targetId
+        }),
+      /non-empty string/
+    );
+  }
+});
+
+test("buildRemoveObjectCommand accepts a valid id unchanged", () => {
+  const command = buildRemoveObjectCommand({
+    commandId: "c",
+    baseRevisionId: "r",
+    targetId: "object.chair.left"
+  });
+  assert.equal(command.target_id, "object.chair.left");
+  assert.equal(command.operation, "remove_object");
+});
+
+test("buildRemoveObjectCommand does not leak parameters mutations between calls", () => {
+  const first = buildRemoveObjectCommand({
+    commandId: "c1",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  first.parameters.injected = true;
+  const second = buildRemoveObjectCommand({
+    commandId: "c2",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  assert.deepEqual(second.parameters, {});
+  assert.deepEqual(first.reference_asset_ids, []);
+  assert.deepEqual(second.reference_asset_ids, []);
+});
+
+test("buildRemoveObjectCommand returns fresh objects per call", () => {
+  const first = buildRemoveObjectCommand({
+    commandId: "c1",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  const second = buildRemoveObjectCommand({
+    commandId: "c1",
+    baseRevisionId: "r",
+    targetId: "object.sofa.main"
+  });
+  assert.notEqual(first, second);
+  assert.notEqual(first.parameters, second.parameters);
+  assert.notEqual(first.reference_asset_ids, second.reference_asset_ids);
+  assert.deepEqual(first, second);
 });

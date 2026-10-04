@@ -1739,3 +1739,16 @@ header span { color: #777; font-size: 13px; }
   color: #3f7d52;
 }
 
+/* #106 direct-manipulation furniture placement: contextual caption actions
+   and the demoted exact-parameter block in the add-furniture form. */
+.caption-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.td-advanced {
+  margin-top: 12px;
+}
+
