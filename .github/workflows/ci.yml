@@ -127,12 +127,16 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
           sudo install -m 0755 "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
           gitleaks version
+        # .github/gitleaks.toml is the official default ruleset vendored from
+        # the gitleaks v8.28.0 tag. It is passed to every invocation EXPLICITLY:
+        # this build's embedded default config does not fire on core patterns
+        # (caught by the canary in CI run on 0755559 - exit 0 on a clean canary).
 
       - name: Scan repository for secrets (gitleaks, git history)
-        run: gitleaks detect --redact -v --source .
+        run: gitleaks git --config .github/gitleaks.toml --redact -v .
 
       - name: Scan workspace for secrets (gitleaks, filesystem)
-        run: gitleaks detect --no-git --redact -v --source .
+        run: gitleaks dir --config .github/gitleaks.toml --redact -v .
 
       - name: Canary - verify gitleaks detection is working
         run: |
@@ -144,7 +148,7 @@ jobs:
           # above. The canary file exists only inside this step's temp dir.
           printf 'api_key = "[redacted:generic-assignment]"\n' 'rIszjgJH' 'bfhTsIsV' '4CPALT2y' 'o4a4jxzx' > "$canary_dir/canary.env"
           set +e
-          gitleaks detect --no-git --redact -v --source "$canary_dir" \
+          gitleaks dir --config .github/gitleaks.toml --redact -v "$canary_dir" \
             > "$canary_dir/report.txt" 2>&1
           status=$?
           set -e
