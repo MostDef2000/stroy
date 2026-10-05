@@ -29,6 +29,31 @@ SHA = "a" * 40
 IMAGE_ID = "sha256:" + "b" * 64
 RUN_URL = "https://github.com/MostDef2000/stroy/actions/runs/123456"
 
+# Fixed config body for synthetic OCI archives: the digests below are the
+# sha256 of CONFIG_BODY / its manifest and are therefore deterministic.
+_OCI_CONFIG_MT = "application/vnd.oci.image.config.v1+json"
+_OCI_MANIFEST_MT = "application/vnd.oci.image.manifest.v1+json"
+_OCI_INDEX_MT = "application/vnd.oci.image.index.v1+json"
+_OCI_CONFIG_BODY = b'{"architecture":"amd64","os":"linux"}'
+_OCI_CONFIG_ID = "sha256:" + hashlib.sha256(_OCI_CONFIG_BODY).hexdigest()
+_OCI_MANIFEST_ID = (
+    "sha256:"
+    + hashlib.sha256(
+        json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": _OCI_MANIFEST_MT,
+                "config": {
+                    "mediaType": _OCI_CONFIG_MT,
+                    "digest": _OCI_CONFIG_ID,
+                    "size": len(_OCI_CONFIG_BODY),
+                },
+                "layers": [],
+            }
+        ).encode()
+    ).hexdigest()
+)
+
 
 # --------------------------------------------------------------------------- #
 # sha validation
@@ -608,6 +633,48 @@ def _write_fake_bins(bin_dir: Path) -> None:
         path.chmod(0o755)
 
 
+def _write_oci_image_archive(path: Path) -> None:
+    """Minimal but structurally REAL single-platform OCI image archive."""
+    config_hex = _OCI_CONFIG_ID.removeprefix("sha256:")
+    manifest_body = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": _OCI_MANIFEST_MT,
+            "config": {
+                "mediaType": _OCI_CONFIG_MT,
+                "digest": _OCI_CONFIG_ID,
+                "size": len(_OCI_CONFIG_BODY),
+            },
+            "layers": [],
+        }
+    ).encode()
+    manifest_hex = _OCI_MANIFEST_ID.removeprefix("sha256:")
+    index_body = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": _OCI_INDEX_MT,
+            "manifests": [
+                {
+                    "mediaType": _OCI_MANIFEST_MT,
+                    "digest": _OCI_MANIFEST_ID,
+                    "size": len(manifest_body),
+                    "annotations": {"org.opencontainers.image.ref.name": "latest"},
+                }
+            ],
+        }
+    ).encode()
+    with tarfile.open(path, "w:gz") as tar:
+        for name, data in (
+            ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}\n'),
+            ("index.json", index_body),
+            (f"blobs/sha256/{config_hex}", _OCI_CONFIG_BODY),
+            (f"blobs/sha256/{manifest_hex}", manifest_body),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+
 def _stage_release(
     releases_dir: Path,
     sha: str = SHA,
@@ -617,7 +684,7 @@ def _stage_release(
 ) -> Path:
     release = releases_dir / sha
     release.mkdir(parents=True)
-    (release / bundle_utils.API_IMAGE_ARCHIVE).write_bytes(b"api-image")
+    _write_oci_image_archive(release / bundle_utils.API_IMAGE_ARCHIVE)
     config_members = {
         "docker-compose.yml": compose_body,
         "nginx/stroy.mostdef.ru.conf.example": b"server {}\n",
@@ -636,12 +703,12 @@ def _stage_release(
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
-    bundle_utils.build_manifest(release, sha, IMAGE_ID, 123456, RUN_URL)
+    bundle_utils.build_manifest(release, sha, _OCI_CONFIG_ID, 123456, RUN_URL)
     return release
 
 
 def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path,
-                 sha: str = SHA) -> dict:
+                 sha: str = SHA, *, loaded_id: str = _OCI_CONFIG_ID) -> dict:
     env_dir = tmp / "opt"
     env_dir.mkdir(exist_ok=True)
     (tmp / "staging").mkdir(exist_ok=True)  # receive-v1 normally creates this
@@ -653,7 +720,7 @@ def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path,
             "SSH_ORIGINAL_COMMAND": f"apply-v1 {sha}",
             "PATH": f"{bin_dir}:{env['PATH']}",
             "FAKE_LOG": str(log),
-            "FAKE_IMAGE_ID": IMAGE_ID,
+            "FAKE_IMAGE_ID": loaded_id,
             "FAKE_HEADERS": str(headers),
             "STROY_DEPLOY_STAGING": str(tmp / "staging"),
             "STROY_DEPLOY_RELEASES": str(tmp / "releases"),
@@ -866,3 +933,221 @@ def test_wrapper_nginx_t_failure_restores_config_and_rollback(tmp_path: Path) ->
     assert nginx_vhost.read_bytes() == nginx_a
     state = json.loads(current_json.read_text(encoding="utf-8"))
     assert state["status"] in {"failed", "rolled_back_to"}
+
+
+# --------------------------------------------------------------------------- #
+# image-ids: manifest/config digests derived from a saved image archive
+# --------------------------------------------------------------------------- #
+def test_image_ids_parses_oci_archive(tmp_path: Path) -> None:
+    archive = tmp_path / "api-image.tar.gz"
+    _write_oci_image_archive(archive)
+    ids = bundle_utils.image_ids(archive)
+    assert ids == {"manifest": _OCI_MANIFEST_ID, "config": _OCI_CONFIG_ID}
+
+
+def test_image_ids_parses_legacy_docker_archive(tmp_path: Path) -> None:
+    config_hex = _OCI_CONFIG_ID.removeprefix("sha256:")
+    archive = tmp_path / "api-image.tar.gz"
+    legacy_config_name = f"blobs/sha256/{config_hex}"
+    manifest_json = json.dumps(
+        [{"Config": legacy_config_name, "RepoTags": ["stroy-api:latest"]}]
+    ).encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        for name, data in (
+            ("manifest.json", manifest_json),
+            (legacy_config_name, _OCI_CONFIG_BODY),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    ids = bundle_utils.image_ids(archive)
+    assert ids == {"manifest": None, "config": _OCI_CONFIG_ID}
+
+
+def test_image_ids_cli_prints_both_digests(tmp_path: Path, capsys) -> None:
+    archive = tmp_path / "api-image.tar.gz"
+    _write_oci_image_archive(archive)
+    rc = bundle_utils.main(["image-ids", str(archive)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert f"manifest {_OCI_MANIFEST_ID}" in out
+    assert f"config {_OCI_CONFIG_ID}" in out
+
+
+def test_image_ids_rejects_foreign_archive(tmp_path: Path) -> None:
+    archive = tmp_path / "api-image.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        data = b"\x00" * 16
+        info = tarfile.TarInfo("README.txt")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    with pytest.raises(bundle_utils.BundleError, match="neither an OCI layout"):
+        bundle_utils.image_ids(archive)
+
+
+def test_image_ids_rejects_garbage_bytes(tmp_path: Path) -> None:
+    archive = tmp_path / "api-image.tar.gz"
+    archive.write_bytes(b"api-image")
+    with pytest.raises(bundle_utils.BundleError, match="invalid image archive"):
+        bundle_utils.image_ids(archive)
+
+
+def test_image_ids_rejects_descriptor_blob_digest_mismatch(tmp_path: Path) -> None:
+    # The index points at a manifest blob whose content does not hash to the
+    # descriptor digest: tampered/desynchronized archive -> fail closed.
+    archive = tmp_path / "api-image.tar.gz"
+    config_hex = _OCI_CONFIG_ID.removeprefix("sha256:")
+    manifest_body = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": _OCI_MANIFEST_MT,
+            "config": {
+                "mediaType": _OCI_CONFIG_MT,
+                "digest": _OCI_CONFIG_ID,
+                "size": len(_OCI_CONFIG_BODY),
+            },
+            "layers": [],
+        }
+    ).encode()
+    index_body = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": _OCI_INDEX_MT,
+            "manifests": [
+                {
+                    "mediaType": _OCI_MANIFEST_MT,
+                    "digest": _OCI_MANIFEST_ID,
+                    "size": len(manifest_body),
+                }
+            ],
+        }
+    ).encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        for name, data in (
+            ("index.json", index_body),
+            (f"blobs/sha256/{config_hex}", _OCI_CONFIG_BODY),
+            # manifest stored under the WRONG name (content does not match
+            # the descriptor digest recorded in index.json)
+            ("blobs/sha256/" + "f" * 64, manifest_body),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    with pytest.raises(bundle_utils.BundleError, match="missing from archive"):
+        bundle_utils.image_ids(archive)
+
+
+def test_image_ids_rejects_multi_descriptor_index(tmp_path: Path) -> None:
+    archive = tmp_path / "api-image.tar.gz"
+    manifest_body = json.dumps({"schemaVersion": 2, "mediaType": _OCI_MANIFEST_MT}).encode()
+    index_body = json.dumps(
+        {
+            "schemaVersion": 2,
+            "mediaType": _OCI_INDEX_MT,
+            "manifests": [
+                {"mediaType": _OCI_MANIFEST_MT, "digest": _OCI_MANIFEST_ID, "size": 1},
+                {"mediaType": _OCI_MANIFEST_MT, "digest": _OCI_MANIFEST_ID, "size": 1},
+            ],
+        }
+    ).encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        for name, data in (("index.json", index_body), ("blobs/sha256/" + "0" * 64, manifest_body)):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    with pytest.raises(bundle_utils.BundleError, match="exactly one descriptor"):
+        bundle_utils.image_ids(archive)
+
+
+def test_image_ids_rejects_link_member(tmp_path: Path) -> None:
+    archive = tmp_path / "api-image.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("blobs")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "."
+        tar.addfile(info)
+        data = b"{}"
+        info2 = tarfile.TarInfo("index.json")
+        info2.size = len(data)
+        tar.addfile(info2, io.BytesIO(data))
+    with pytest.raises(bundle_utils.BundleError, match="links are not permitted"):
+        bundle_utils.image_ids(archive)
+
+
+# --------------------------------------------------------------------------- #
+# wrapper apply-v1: image identity acceptance across docker stores
+# --------------------------------------------------------------------------- #
+def test_wrapper_apply_v1_accepts_manifest_digest_id(tmp_path: Path) -> None:
+    # docker >= 27/29 (containerd image store) reports the OCI manifest digest
+    # as `docker image inspect --format {{.Id}}` for loaded archives.  The
+    # wrapper must accept it because it equals the archive manifest digest
+    # (deploy run 1 regression).
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    _stage_release(releases_dir)
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    env = _wrapper_env(tmp_path, bin_dir, log, headers, loaded_id=_OCI_MANIFEST_ID)
+
+    proc = _run_wrapper(env)
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert "apply-ok" in proc.stdout
+    state = json.loads((tmp_path / "current.json").read_text(encoding="utf-8"))
+    assert state["status"] == "deployed"
+    assert state["sha"] == SHA
+
+
+def test_wrapper_apply_v1_fails_closed_on_foreign_image_id(tmp_path: Path) -> None:
+    # A loaded Id that matches neither archive digest must fail closed after
+    # the transition marker: current.json = failed, best-effort rollback runs,
+    # "apply-ok" is never printed.
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    _stage_release(releases_dir)
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    env = _wrapper_env(
+        tmp_path, bin_dir, log, headers, loaded_id="sha256:" + "e" * 64
+    )
+
+    proc = _run_wrapper(env)
+    assert proc.returncode != 0
+    assert "image id mismatch" in proc.stderr
+    assert "apply-ok" not in proc.stdout
+    state = json.loads((tmp_path / "current.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed"
+
+
+def test_wrapper_apply_v1_rejects_manifest_id_not_matching_archive(tmp_path: Path) -> None:
+    # The manifest's api_image_id must be one of the archive-derived digests;
+    # an unrelated value (CI bug or tampering) fails closed BEFORE any host
+    # mutation, so current.json is never written.
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    release = _stage_release(releases_dir)
+    manifest = json.loads((release / bundle_utils.MANIFEST_NAME).read_text())
+    manifest["api_image_id"] = IMAGE_ID  # plausible-looking but foreign
+    (release / bundle_utils.MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n")
+    # Re-hash archives stays untouched; the manifest itself is what the
+    # wrapper cross-checks.
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    env = _wrapper_env(tmp_path, bin_dir, log, headers)
+
+    proc = _run_wrapper(env)
+    assert proc.returncode != 0
+    assert "api_image_id does not match the shipped api-image archive" in proc.stderr
+    assert "apply-ok" not in proc.stdout
+    assert not (tmp_path / "current.json").exists()
