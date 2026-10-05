@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from stroy.api.app import create_app
@@ -131,6 +132,13 @@ async def test_idle_expiry_disabled_via_env(tmp_path, monkeypatch):
                 app, datetime.now(timezone.utc) - timedelta(days=365)
             )
             assert (await client.get("/api/v1/projects")).status_code == 200
+
+
+def test_negative_idle_ttl_rejected():
+    # A typo like STROY_SESSION_IDLE_TTL=-1 must fail loudly instead of
+    # silently disabling idle expiry (validator finding on PR #132).
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, session_idle_ttl_seconds=-1)
 
 
 @pytest.mark.asyncio

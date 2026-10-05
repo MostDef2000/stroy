@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     # `STROY_SESSION_IDLE_TTL` env name and the `..._SECONDS` form.
     session_idle_ttl_seconds: int = Field(
         default=86400,
+        ge=0,
         validation_alias=AliasChoices(
             "STROY_SESSION_IDLE_TTL",
             "STROY_SESSION_IDLE_TTL_SECONDS",
