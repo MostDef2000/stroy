@@ -108,9 +108,22 @@ jobs:
       RUN_ID: ${{ needs.gate.outputs.run_id }}
       RUN_URL: ${{ needs.gate.outputs.run_url }}
     steps:
+      # Content tree: the INPUT sha (what gets built).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 1
+
+      # Tooling tree: the WORKFLOW ref (main HEAD).  Pipeline tooling must not
+      # be taken from the input sha: a down-grade dispatch of a pre-tooling
+      # sha would otherwise run an old bundle_utils/deploy_gate against the
+      # current pipeline contract (deploy run 3: 'image-ids: invalid choice').
+      # Same convention as the gate job, whose checkout already follows the
+      # workflow ref.
+      - name: Checkout deploy tooling (workflow ref)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: _tooling
           fetch-depth: 1
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -129,7 +142,7 @@ jobs:
           # reports the config digest; only archive-derived values are
           # roundtrip-stable (issue #130 deploy run 1).  The wrapper accepts
           # either half of the archive identity pair.
-          python3 scripts/deploy/bundle_utils.py image-ids \
+          python3 _tooling/scripts/deploy/bundle_utils.py image-ids \
             "${RUNNER_TEMP}/envelope/api-image.tar.gz" \
             | awk '$1 == "config" {print $2}' \
             > "${RUNNER_TEMP}/envelope/api_image_id.txt"
@@ -166,13 +179,13 @@ jobs:
       - name: Write manifest (digests recomputed here)
         run: |
           set -euo pipefail
-          python3 scripts/deploy/bundle_utils.py build-manifest \
+          python3 _tooling/scripts/deploy/bundle_utils.py build-manifest \
             "${RUNNER_TEMP}/envelope" "$SHA" \
             "$(cat "${RUNNER_TEMP}/envelope/api_image_id.txt")" "$RUN_ID" "$RUN_URL"
 
       - name: Verify manifest by rehashing members
         run: |
-          python3 scripts/deploy/bundle_utils.py verify-manifest "${RUNNER_TEMP}/envelope"
+          python3 _tooling/scripts/deploy/bundle_utils.py verify-manifest "${RUNNER_TEMP}/envelope"
 
       - name: Pack single envelope
         run: |
@@ -201,9 +214,13 @@ jobs:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Tooling tree only: the deploy job reads no content from the input sha
+      # (the envelope is self-contained and re-verified here with the CURRENT
+      # tooling, matching the gate/build convention).
+      - name: Checkout deploy tooling (workflow ref)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          path: _tooling
           fetch-depth: 1
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -215,10 +232,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/bundle"
-          python3 scripts/deploy/bundle_utils.py extract-safe \
+          python3 _tooling/scripts/deploy/bundle_utils.py extract-safe \
             "${RUNNER_TEMP}/envelope/deploy-envelope-${SHA}.tar.gz" "${RUNNER_TEMP}/bundle"
-          python3 scripts/deploy/bundle_utils.py verify-manifest "${RUNNER_TEMP}/bundle"
-          python3 scripts/deploy/bundle_utils.py verify-web "${RUNNER_TEMP}/bundle/web-dist.tar.gz"
+          python3 _tooling/scripts/deploy/bundle_utils.py verify-manifest "${RUNNER_TEMP}/bundle"
+          python3 _tooling/scripts/deploy/bundle_utils.py verify-web "${RUNNER_TEMP}/bundle/web-dist.tar.gz"
 
       - name: Configure SSH
         env:
