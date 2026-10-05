@@ -47,6 +47,10 @@ jobs:
         working-directory: apps/web
         run: npm install
 
+      - name: Audit dependencies
+        working-directory: apps/web
+        run: npm audit --audit-level=high
+
       - name: Build
         working-directory: apps/web
         run: npm run build
@@ -105,3 +109,60 @@ jobs:
           --python blender/verify_render_outputs.py
           --
           --output-dir renders/ci-golden
+
+  security-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz \
+            -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          sudo install -m 0755 "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan repository for secrets (gitleaks)
+        run: gitleaks detect --no-git --redact -v --source .
+
+      - name: Canary - verify gitleaks detection is working
+        run: |
+          set -euo pipefail
+          canary_dir="$(mktemp -d)"
+          trap 'rm -rf "$canary_dir"' EXIT
+          # Static, non-functional canary (NOT a real credential), split into
+          # short fragments so this workflow file is not flagged by the scan
+          # above. The canary file exists only inside this step's temp dir.
+          printf 'api_key = "%s%s%s%s"\n' 'rIszjgJH' 'bfhTsIsV' '4CPALT2y' 'o4a4jxzx' > "$canary_dir/canary.env"
+          if gitleaks detect --no-git --redact --source "$canary_dir"; then
+            echo "::error::Canary secret was NOT detected - gitleaks scanning is broken"
+            exit 1
+          fi
+          echo "Canary secret detected as expected"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project and pip-audit
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pip install pip-audit
+
+      - name: Audit Python dependencies (pip-audit)
+        run: |
+          # NOTE: --strict is intentionally omitted because it aborts on the
+          # editable self-install (stroy) instead of auditing the environment.
+          pip-audit --skip-editable
+
+      - name: Trivy filesystem scan (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          scanners: vuln,secret,misconfig
