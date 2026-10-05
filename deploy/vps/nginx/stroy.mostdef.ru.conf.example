@@ -1,5 +1,14 @@
+# Canonical nginx vhost template (VHOST-CANON) for stroy.mostdef.ru.
 # This file is a TEMPLATE copied to /etc/nginx/sites-available/stroy.mostdef.ru on the VPS;
 # never commit the installed copy.
+# The sha256 of this file will be recorded in issue #123 after live-vhost sync.
+#
+# add_header inheritance trap: declaring ANY add_header inside a `location`
+# cancels ALL add_header directives inherited from the server block. So every
+# location that emits its own header MUST repeat the complete server-level
+# security-header set below; locations with no add_header inherit the set.
+# All security headers carry `always` so they are sent on 4xx/5xx too;
+# Cache-Control deliberately omits `always` (must not appear on error pages).
 
 server {
     listen 80;
@@ -7,6 +16,8 @@ server {
 
     # Redirect all HTTP requests to HTTPS
     return 301 https://$host$request_uri;
+
+    # ACME challenge location: added at live-sync step (issue #123 step 2)
 }
 
 server {
@@ -23,10 +34,19 @@ server {
     gzip on;
     gzip_types text/plain text/css application/javascript application/json image/svg+xml;
 
-    # Security headers (inherited by all locations unless overridden)
-    add_header X-Content-Type-Options nosniff;
-    add_header Referrer-Policy strict-origin-when-cross-origin;
-    add_header X-Frame-Options DENY;
+    # Security headers (inherited by all locations that declare no add_header of
+    # their own). `always` is required so they are emitted on 4xx/5xx as well —
+    # the `return 404` deny locations rely on inheritance for exactly this.
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header X-Frame-Options DENY always;
+    add_header Strict-Transport-Security "max-age=63072000" always;
+    # SPA-compatible CSP, kept strict (no 'unsafe-inline'): the built bundle is
+    # fully self-hosted (no inline script/style, same-origin API fetch/XHR).
+    # `img-src data:` is the only permissive source — a safety net for
+    # runtime-generated image previews (e.g. canvas -> dataURL), never for
+    # scripts or styles.
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
 
     # Proxy headers (inherited by all proxy locations)
     proxy_set_header Host $host;
@@ -65,20 +85,28 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Long-term cache for hashed assets
+    # Long-term cache for hashed assets.
+    # add_header here cancels inheritance: repeat ALL 5 security headers (with
+    # `always`) plus this location's own Cache-Control (no `always`).
     location /assets/ {
-        add_header X-Content-Type-Options nosniff;
-        add_header Referrer-Policy strict-origin-when-cross-origin;
-        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header X-Frame-Options DENY always;
+        add_header Strict-Transport-Security "max-age=63072000" always;
+        add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    # No-cache for the entry point
+    # No-cache for the entry point.
+    # add_header here cancels inheritance: repeat ALL 5 security headers (with
+    # `always`) plus this location's own Cache-Control (no `always`).
     location = /index.html {
-        add_header X-Content-Type-Options nosniff;
-        add_header Referrer-Policy strict-origin-when-cross-origin;
-        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header X-Frame-Options DENY always;
+        add_header Strict-Transport-Security "max-age=63072000" always;
+        add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
         add_header Cache-Control "no-cache, no-store, must-revalidate";
     }
 }
