@@ -36,7 +36,16 @@ def create_app(
         await dispatcher.close()
         await engine.dispose()
 
-    app = FastAPI(title="STROY API", version="0.1.0", lifespan=lifespan)
+    # Issue #122: FastAPI serves /docs, /redoc and /openapi.json by default.
+    # Disable them entirely in production; development keeps the defaults.
+    app = FastAPI(
+        title="STROY API",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url=None if settings.is_production else "/docs",
+        redoc_url=None if settings.is_production else "/redoc",
+        openapi_url=None if settings.is_production else "/openapi.json",
+    )
     app.add_middleware(RequestContextMiddleware)
     app.state.settings = settings
     app.state.session_factory = session_factory
