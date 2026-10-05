@@ -12,4 +12,10 @@ COPY workflows ./workflows
 
 RUN python -m pip install --no-cache-dir .
 
+# Non-root runtime (trivy DS-0002): the app needs no filesystem writes in
+# production (s3 storage, postgres over network, bytecode disabled above).
+RUN useradd --create-home --uid 10001 stroy
+
+USER stroy
+
 CMD ["sh", "-c", "alembic upgrade head && uvicorn stroy.api.main:app --host 0.0.0.0 --port 8000"]
