@@ -146,7 +146,7 @@ jobs:
           # Static, non-functional canary (NOT a real credential), split into
           # short fragments so this workflow file is not flagged by the scans
           # above. The canary file exists only inside this step's temp dir.
-          printf 'api_key = "[redacted:generic-assignment]"\n' 'rIszjgJH' 'bfhTsIsV' '4CPALT2y' 'o4a4jxzx' > "$canary_dir/canary.env"
+          printf 'api_key = "%s%s%s%s"\n' 'rIszjgJH' 'bfhTsIsV' '4CPALT2y' 'o4a4jxzx' > "$canary_dir/canary.env"
           set +e
           gitleaks dir --config .github/gitleaks.toml --redact -v "$canary_dir" \
             > "$canary_dir/report.txt" 2>&1
