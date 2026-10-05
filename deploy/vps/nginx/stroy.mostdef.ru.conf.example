@@ -61,9 +61,8 @@ server {
     # which only covers the login route). Covers login, /me, logout and future
     # auth endpoints.
     # Zone stroy_auth (10r/m per IP) is declared in /etc/nginx/conf.d/stroy-ratelimit.conf
-    # (issue #125): bursting 5 queued requests (`burst=5`) are served immediately
-    # (`nodelay`) before excess is rejected; `limit_req_status 429` sets the
-    # rejection code. More-specific prefix wins over the generic /api/ location
+    # (issue #125): 5 excess requests are served immediately (`nodelay`), further
+    # excess is rejected with 429 until the bucket drains. More-specific prefix wins over the generic /api/ location
     # below (nginx prefix matching selects the longest matching prefix).
     # No add_header here: the 5 server-level security headers stay inherited.
     location /api/v1/auth/ {
