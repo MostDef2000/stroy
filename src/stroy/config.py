@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,6 +59,33 @@ class Settings(BaseSettings):
     comfyui_url: str = "http://127.0.0.1:8188"
     image_model_profile: str = "flux-dev-family"
     blender_bin: str = "blender"
+
+    @model_validator(mode="after")
+    def _validate_production_secrets(self) -> Settings:
+        if self.env != "production":
+            return self
+        fields = type(self).model_fields
+        default_session_secret = fields["session_secret"].default
+        if not self.session_secret or self.session_secret == default_session_secret:
+            raise ValueError("production requires a secure STROY_SESSION_SECRET")
+        default_s3_secret = fields["s3_secret_key"].default
+        if self.storage_backend == "s3" and (
+            not self.s3_secret_key or self.s3_secret_key == default_s3_secret
+        ):
+            raise ValueError(
+                "production s3 storage requires a secure STROY_S3_SECRET_KEY"
+            )
+        default_worker_token = fields["worker_token"].default
+        if (
+            self.worker_token_hashes == ""
+            and self.worker_token_hash == ""
+            and self.worker_token == default_worker_token
+        ):
+            raise ValueError(
+                "production requires STROY_WORKER_TOKEN_HASHES or "
+                "STROY_WORKER_TOKEN_HASH (or a non-default STROY_WORKER_TOKEN)"
+            )
+        return self
 
 
 @lru_cache
