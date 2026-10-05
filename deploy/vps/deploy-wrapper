@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+#
+# stroy-deploy-wrapper — root-owned forced-command deploy entry point.
+#
+# Install path : /usr/local/sbin/stroy-deploy-wrapper  (root:root, mode 0755)
+# Helper       : /usr/local/lib/stroy-deploy/bundle_utils.py (root:root 0644)
+#
+# The deploy public key is installed in ROOT's authorized_keys with a forced
+# command (there is NO separate deploy account):
+#
+#   command="/usr/local/sbin/stroy-deploy-wrapper",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding ssh-ed25519 AAAA... deploy@stroy
+#
+# BLAST RADIUS (honest): the wrapper itself runs as root, because it loads
+# docker images, writes /etc/nginx and reloads systemd units.  The forced
+# command is the ONLY channel the key grants, but every allowlisted verb runs
+# as root: compromise of the key is host-root compromise.  This single-owner
+# trust model is accepted (issue #130 validator).  Break-glass (direct root
+# console) is unchanged and independent of this key.
+#
+# The wrapper NEVER prints secret values and NEVER writes to the ACME webroot
+# /var/www/stroy-acme (owned by certbot/nginx).
+#
+set -Eeuo pipefail
+
+# ---- configuration (overridable for drills; production uses defaults) ------- #
+STAGING_DIR="${STROY_DEPLOY_STAGING:-/var/opt/stroy-deploy/staging}"
+RELEASES_DIR="${STROY_DEPLOY_RELEASES:-/var/opt/stroy-deploy/releases}"
+APPLY_LOCK="${STROY_DEPLOY_LOCK:-/var/opt/stroy-deploy/apply.lock}"
+CURRENT_JSON="${STROY_DEPLOY_CURRENT:-/var/opt/stroy-deploy/current.json}"
+CONFIG_DIR="${STROY_DEPLOY_CONFIG_DIR:-/opt/stroy-deploy/config}"
+CONFIG_HISTORY="${STROY_DEPLOY_CONFIG_HISTORY:-/var/opt/stroy-deploy/config-history}"
+ENV_FILE="${STROY_DEPLOY_ENV_FILE:-/opt/stroy/deploy/vps/.env}"
+WEB_ROOT="${STROY_DEPLOY_WEB_ROOT:-/var/www/stroy.mostdef.ru}"
+ACME_ROOT="${STROY_DEPLOY_ACME_ROOT:-/var/www/stroy-acme}"
+NGINX_AVAILABLE="${STROY_DEPLOY_NGINX_AVAILABLE:-/etc/nginx/sites-available}"
+NGINX_ENABLED="${STROY_DEPLOY_NGINX_ENABLED:-/etc/nginx/sites-enabled}"
+NGINX_CONFD="${STROY_DEPLOY_NGINX_CONFD:-/etc/nginx/conf.d}"
+HEALTH_URL="${STROY_DEPLOY_HEALTH_URL:-http://127.0.0.1:8000/health}"
+PUBLIC_URL="${STROY_DEPLOY_PUBLIC_URL:-https://127.0.0.1/}"
+PUBLIC_HOST="${STROY_DEPLOY_PUBLIC_HOST:-stroy.mostdef.ru}"
+ENVELOPE_CAP="${STROY_DEPLOY_ENVELOPE_CAP:-4294967296}"   # 4 GiB
+MAX_MEMBER_B="${STROY_DEPLOY_MAX_MEMBER_B:-2147483648}"   # 2 GiB decompressed/member
+MAX_TOTAL_B="${STROY_DEPLOY_MAX_TOTAL_B:-8589934592}"     # 8 GiB decompressed total
+RECEIVE_TIMEOUT="${STROY_DEPLOY_RECEIVE_TIMEOUT:-900}"    # seconds
+KEEP_RELEASES="${STROY_DEPLOY_KEEP_RELEASES:-5}"
+PYTHON="${STROY_DEPLOY_PYTHON:-python3}"
+BUNDLE_UTILS="${STROY_DEPLOY_BUNDLE_UTILS:-/usr/local/lib/stroy-deploy/bundle_utils.py}"
+
+on_err() { echo "WRAP-ERR: unexpected failure at line ${LINENO}" >&2; exit 1; }
+trap on_err ERR
+
+err() { echo "WRAP-ERR: $*" >&2; exit 1; }
+
+require_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]] || err "invalid sha"; }
+
+helper() {
+    [ -f "$BUNDLE_UTILS" ] || err "bundle helper missing: $BUNDLE_UTILS"
+    "$PYTHON" "$BUNDLE_UTILS" "$@"
+}
+
+# write_current_json <status> <from> <to> <sha> [manifest]
+# Atomically records the wrapper's view of the host.  `sha` is the release the
+# wrapper believes is live (null when there is no previous release).
+write_current_json() {
+    local status="$1" prev="$2" target="$3" cur="$4" manifest="${5:-}"
+    "$PYTHON" - "$CURRENT_JSON" "$status" "$prev" "$target" "$cur" "$manifest" <<'PY' \
+        || err "cannot write current.json"
+import json, os, sys
+from datetime import datetime, timezone
+out, status, prev, target, cur, manifest = sys.argv[1:7]
+now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+data = {
+    "status": status,
+    "from": prev or None,
+    "to": target,
+    "sha": cur or None,
+    "updated_at": now,
+}
+if status == "deployed":
+    data["deployed_at"] = now
+if manifest and os.path.isfile(manifest):
+    try:
+        data["manifest"] = json.load(open(manifest, encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+tmp = out + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, out)
+PY
+}
+
+read_prev_sha() {
+    [ -f "$CURRENT_JSON" ] || { printf ''; return 0; }
+    "$PYTHON" - "$CURRENT_JSON" <<'PY'
+import json, re, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    print(""); raise SystemExit(0)
+sha = data.get("sha") if isinstance(data, dict) else None
+print(sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else "")
+PY
+}
+
+# restore_nginx <backup_dir> — put the pre-install nginx pair + enable path back.
+restore_nginx() {
+    local backup="$1" rc=0
+    [ -d "$backup" ] || { echo "WRAP-ERR: nginx backup missing: $backup" >&2; return 1; }
+    if [ -f "$backup/vhost" ]; then
+        install -m 0644 "$backup/vhost" "$NGINX_AVAILABLE/stroy.mostdef.ru" || rc=1
+    else
+        rm -f -- "$NGINX_AVAILABLE/stroy.mostdef.ru" || rc=1
+    fi
+    if [ -f "$backup/ratelimit" ]; then
+        install -m 0644 "$backup/ratelimit" "$NGINX_CONFD/stroy-ratelimit.conf" || rc=1
+    else
+        rm -f -- "$NGINX_CONFD/stroy-ratelimit.conf" || rc=1
+    fi
+    if [ -f "$backup/enabled.file" ]; then
+        install -m 0644 "$backup/enabled.file" "$NGINX_ENABLED/stroy.mostdef.ru" || rc=1
+    elif [ -f "$backup/symlink.target" ]; then
+        ln -sfn -- "$(cat "$backup/symlink.target")" "$NGINX_ENABLED/stroy.mostdef.ru" || rc=1
+    else
+        rm -f -- "$NGINX_ENABLED/stroy.mostdef.ru" || rc=1
+    fi
+    return "$rc"
+}
+
+# rollback_previous <prev_sha> <nginx_backup> — best-effort; never masks caller.
+# Every step is logged; any failure flips the return code to 1.
+rollback_previous() {
+    local prev="$1" nginx_backup="$2" rc=0
+    trap - ERR
+    set +e
+    echo "WRAP: rollback start prev=${prev:-none}"
+    if restore_nginx "$nginx_backup"; then
+        echo "WRAP: rollback restored previous nginx config"
+    else
+        echo "WRAP-ERR: rollback could not restore previous nginx config" >&2
+        rc=1
+    fi
+    if [ -n "$prev" ] && [ -d "$WEB_ROOT/releases/$prev" ]; then
+        if ln -sfn -- "$WEB_ROOT/releases/$prev" "$WEB_ROOT/current"; then
+            echo "WRAP: rollback repointed web current -> $prev"
+        else
+            echo "WRAP-ERR: rollback could not repoint web symlink" >&2
+            rc=1
+        fi
+    else
+        echo "WRAP-ERR: rollback web symlink skipped (no previous release ${prev:-none})" >&2
+        rc=1
+    fi
+    if [ -n "$prev" ] && docker image inspect "stroy-api:$prev" >/dev/null 2>&1; then
+        if STROY_API_IMAGE="stroy-api:$prev" docker compose \
+            -f "$CONFIG_DIR/docker-compose.yml" --env-file "$ENV_FILE" \
+            --project-directory "$CONFIG_DIR" up -d --no-build; then
+            echo "WRAP: rollback compose up -> stroy-api:$prev"
+        else
+            echo "WRAP-ERR: rollback compose up failed" >&2
+            rc=1
+        fi
+    else
+        echo "WRAP-ERR: rollback compose skipped (image stroy-api:${prev:-none} absent)" >&2
+        rc=1
+    fi
+    if nginx -t && systemctl reload nginx; then
+        echo "WRAP: rollback nginx -t + reload ok"
+    else
+        echo "WRAP-ERR: rollback nginx -t/reload failed" >&2
+        rc=1
+    fi
+    set -e
+    trap on_err ERR
+    return "$rc"
+}
+
+# fail_and_rollback <reason> <prev> <target> <nginx_backup> [manifest]
+# Records "failed", attempts best-effort rollback, records "rolled_back_to" on a
+# fully successful rollback, then exits non-zero with the original reason.
+fail_and_rollback() {
+    local reason="$1" prev="$2" target="$3" nginx_backup="$4" manifest="${5:-}"
+    write_current_json "failed" "$prev" "$target" "$target" "$manifest"
+    if rollback_previous "$prev" "$nginx_backup"; then
+        write_current_json "rolled_back_to" "$target" "$prev" "$prev" ""
+        echo "WRAP: rollback completed to ${prev:-none}" >&2
+    else
+        echo "WRAP-ERR: automatic rollback incomplete; host may be partially updated" >&2
+    fi
+    err "$reason"
+}
+
+# ---------------------------------------------------------------------------- #
+# receive-v1 <sha>  — envelope on stdin, verify, stage as an immutable release
+# ---------------------------------------------------------------------------- #
+receive_v1() {
+    local sha="$1"
+    local staging
+    staging="$STAGING_DIR/${sha}.$(date +%s).$$"
+    local release="$RELEASES_DIR/$sha"
+    local envelope="$staging/deploy-envelope.tar.gz"
+
+    mkdir -p "$STAGING_DIR" "$RELEASES_DIR" || err "cannot create staging dirs"
+    mkdir -p "$staging" || err "cannot create staging dir $staging"
+
+    if ! timeout "$RECEIVE_TIMEOUT" "$PYTHON" "$BUNDLE_UTILS" read-stdin \
+        "$envelope" "$ENVELOPE_CAP"; then
+        rm -rf -- "$staging"
+        err "envelope read failed, exceeded ${ENVELOPE_CAP}B or timed out"
+    fi
+    if ! helper extract-safe "$envelope" "$staging/bundle" \
+        --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B"; then
+        rm -rf -- "$staging"
+        err "unsafe envelope archive"
+    fi
+    if ! helper verify-manifest "$staging/bundle" >/dev/null; then
+        rm -rf -- "$staging"
+        err "manifest verification failed"
+    fi
+    if ! helper check-manifest-sha "$staging/bundle" "$sha" >/dev/null; then
+        rm -rf -- "$staging"
+        err "manifest git_sha mismatch for $sha"
+    fi
+    if ! helper verify-web "$staging/bundle/web-dist.tar.gz" >/dev/null; then
+        rm -rf -- "$staging"
+        err "web dist invalid"
+    fi
+
+    # Idempotent: an existing complete release with matching digests is a no-op.
+    if [ -d "$release" ]; then
+        if helper verify-manifest "$release" >/dev/null 2>&1 \
+            && helper check-manifest-sha "$release" "$sha" >/dev/null 2>&1; then
+            rm -rf -- "$staging"
+            echo "receive-ok $sha"
+            return 0
+        fi
+        rm -rf -- "$staging"
+        err "release dir exists but does not verify: $sha"
+    fi
+    rm -f -- "$envelope"
+    if ! mv -- "$staging/bundle" "$release"; then
+        rm -rf -- "$staging"
+        err "cannot move release into place"
+    fi
+    rm -rf -- "$staging"
+    echo "receive-ok $sha"
+}
+
+# ---------------------------------------------------------------------------- #
+# apply-v1 <sha> — validate + install nginx (prod untouched), then switch
+# ---------------------------------------------------------------------------- #
+apply_v1() {
+    local sha="$1"
+    local release="$RELEASES_DIR/$sha"
+    local image_id loaded_id epoch prev headers code header
+    local nginx_backup cfg_stage web_stage web_release manifest
+
+    mkdir -p "$RELEASES_DIR" "$CONFIG_HISTORY" "$CONFIG_DIR" "$WEB_ROOT/releases" \
+        "$NGINX_AVAILABLE" "$NGINX_ENABLED" "$NGINX_CONFD" || err "cannot create dirs"
+
+    # Serialize applies; never run two switches concurrently.
+    exec 9>"$APPLY_LOCK" || err "cannot open apply lock"
+    flock -w 300 9 || err "apply lock timeout"
+
+    [ -d "$release" ] || err "release not staged: $sha"
+    helper verify-manifest "$release" >/dev/null || err "release digests invalid"
+    helper check-manifest-sha "$release" "$sha" >/dev/null \
+        || err "manifest git_sha mismatch for $sha"
+    helper verify-web "$release/web-dist.tar.gz" >/dev/null || err "release web dist invalid"
+    [ -f "$ENV_FILE" ] || err "missing env file: $ENV_FILE"
+    manifest="$release/release-manifest.json"
+
+    # Hard guard (validator): the wrapper must NEVER write the ACME webroot.
+    case "$(readlink -f "$WEB_ROOT" 2>/dev/null || echo "$WEB_ROOT")" in
+        "$ACME_ROOT" | "$ACME_ROOT"/*) err "refusing to operate on ACME webroot" ;;
+    esac
+
+    image_id="$("$PYTHON" -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["api_image_id"])' \
+        "$manifest")" || err "manifest api_image_id unreadable"
+    prev="$(read_prev_sha)"
+
+    # ---- (1) deploy-config install (history backup + stale-file removal) --- #
+    epoch="$(date +%s)"
+    if [ -n "$(find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        mkdir -p "$CONFIG_HISTORY/$epoch/config" || err "config history dir failed"
+        cp -a "$CONFIG_DIR/." "$CONFIG_HISTORY/$epoch/config/" || err "config backup failed"
+    fi
+    cfg_stage="$(mktemp -d "$STAGING_DIR/cfg.XXXXXX")" || err "mktemp failed"
+    if ! helper extract-safe "$release/deploy-config.tar.gz" "$cfg_stage" \
+        --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
+        rm -rf -- "$cfg_stage"
+        err "deploy-config archive unsafe"
+    fi
+    # Drop stale files from a prior envelope: only the pinned nginx pair +
+    # compose are consumed; the .env/.worker-env symlinks are recreated below.
+    find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + \
+        || err "cannot clear config dir"
+    cp -a "$cfg_stage/." "$CONFIG_DIR/" || err "config install failed"
+    rm -rf -- "$cfg_stage"
+    # compose resolves service-level `env_file: .env` relative to the project
+    # directory (the config dir); link the owner-managed secret file in place.
+    ln -sfn -- "$ENV_FILE" "$CONFIG_DIR/.env"
+    if [ -f "$(dirname "$ENV_FILE")/.worker-env" ]; then
+        ln -sfn -- "$(dirname "$ENV_FILE")/.worker-env" "$CONFIG_DIR/.worker-env"
+    fi
+
+    # ---- (2) install + validate nginx BEFORE any prod switch --------------- #
+    # On `nginx -t` failure BOTH previous files are restored and the created
+    # sites-enabled symlink is removed; nothing serving has been touched yet.
+    [ -f "$CONFIG_DIR/nginx/stroy.mostdef.ru.conf.example" ] || err "nginx vhost missing"
+    [ -f "$CONFIG_DIR/nginx/stroy-ratelimit.conf.example" ] || err "nginx ratelimit missing"
+    nginx_backup="$CONFIG_HISTORY/$epoch/nginx-installed"
+    mkdir -p "$nginx_backup" || err "cannot create nginx backup"
+    if [ -f "$NGINX_AVAILABLE/stroy.mostdef.ru" ]; then
+        cp -a "$NGINX_AVAILABLE/stroy.mostdef.ru" "$nginx_backup/vhost" \
+            || err "nginx backup failed"
+    fi
+    if [ -f "$NGINX_CONFD/stroy-ratelimit.conf" ]; then
+        cp -a "$NGINX_CONFD/stroy-ratelimit.conf" "$nginx_backup/ratelimit" \
+            || err "nginx backup failed"
+    fi
+    if [ -L "$NGINX_ENABLED/stroy.mostdef.ru" ]; then
+        readlink "$NGINX_ENABLED/stroy.mostdef.ru" > "$nginx_backup/symlink.target" \
+            || err "nginx symlink backup failed"
+    elif [ -e "$NGINX_ENABLED/stroy.mostdef.ru" ]; then
+        cp -a "$NGINX_ENABLED/stroy.mostdef.ru" "$nginx_backup/enabled.file" \
+            || err "nginx enabled-file backup failed"
+    fi
+    install -m 0644 "$CONFIG_DIR/nginx/stroy.mostdef.ru.conf.example" \
+        "$NGINX_AVAILABLE/stroy.mostdef.ru" || err "nginx vhost install failed"
+    install -m 0644 "$CONFIG_DIR/nginx/stroy-ratelimit.conf.example" \
+        "$NGINX_CONFD/stroy-ratelimit.conf" || err "nginx ratelimit install failed"
+    ln -sfn -- "$NGINX_AVAILABLE/stroy.mostdef.ru" "$NGINX_ENABLED/stroy.mostdef.ru" \
+        || err "nginx enable symlink failed"
+    if ! nginx -t >/dev/null 2>&1; then
+        restore_nginx "$nginx_backup" \
+            || echo "WRAP-ERR: nginx restore after -t failure also failed" >&2
+        err "nginx -t failed; previous config restored (prod untouched)"
+    fi
+    echo "WRAP: nginx -t ok"
+
+    # ---- (3) transition marker BEFORE the host-serving mutations ----------- #
+    write_current_json "transitioning" "$prev" "$sha" "$prev" "$manifest"
+
+    # ---- (4) load + verify image, then compose up -------------------------- #
+    if ! docker load -i "$release/api-image.tar.gz" >/dev/null; then
+        fail_and_rollback "docker load failed" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    if ! loaded_id="$(docker image inspect "stroy-api:$sha" --format '{{.Id}}')"; then
+        fail_and_rollback "stroy-api:$sha missing after load" \
+            "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    if [ "$loaded_id" != "$image_id" ]; then
+        fail_and_rollback "image id mismatch: manifest=$image_id loaded=$loaded_id" \
+            "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    export STROY_API_IMAGE="stroy-api:$sha"
+    if ! docker compose -f "$CONFIG_DIR/docker-compose.yml" \
+        --env-file "$ENV_FILE" --project-directory "$CONFIG_DIR" \
+        up -d --no-build; then
+        fail_and_rollback "docker compose up failed" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+
+    # ---- (5) publish web release + atomic symlink switch ------------------- #
+    web_stage="$WEB_ROOT/releases/.staging.${sha}.$$"
+    web_release="$WEB_ROOT/releases/$sha"
+    rm -rf -- "$web_stage" "$web_release"
+    if ! mkdir -p "$web_stage"; then
+        fail_and_rollback "cannot create web staging" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    if ! helper extract-safe "$release/web-dist.tar.gz" "$web_stage" \
+        --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
+        fail_and_rollback "web-dist archive unsafe" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    if [ ! -f "$web_stage/index.html" ]; then
+        fail_and_rollback "web release missing index.html" \
+            "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    if ! mv -- "$web_stage" "$web_release"; then
+        fail_and_rollback "cannot publish web release" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    if ! ln -sfn -- "$web_release" "$WEB_ROOT/current"; then
+        fail_and_rollback "cannot switch current symlink" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+
+    # ---- (6) reload nginx + health/header checks --------------------------- #
+    if ! systemctl reload nginx; then
+        fail_and_rollback "systemctl reload nginx failed" "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    for attempt in $(seq 1 30); do
+        if curl -fsS -m 5 -H "Host: $PUBLIC_HOST" "$HEALTH_URL" >/dev/null 2>&1; then
+            break
+        fi
+        if [ "$attempt" -ge 30 ]; then
+            fail_and_rollback "api /health did not become ready" \
+                "$prev" "$sha" "$nginx_backup" "$manifest"
+        fi
+        sleep 2
+    done
+    headers="$(curl -sk -m 20 -D - -o /dev/null -H "Host: $PUBLIC_HOST" "$PUBLIC_URL" || true)"
+    code="$(printf '%s\n' "$headers" | head -1 | awk '{print $2}')"
+    if [ "$code" != "200" ]; then
+        fail_and_rollback "public ingress returned HTTP ${code:-none}" \
+            "$prev" "$sha" "$nginx_backup" "$manifest"
+    fi
+    for header in x-content-type-options strict-transport-security content-security-policy \
+        x-frame-options referrer-policy; do
+        if ! printf '%s\n' "$headers" | grep -qi "^${header}:"; then
+            fail_and_rollback "missing security header on ingress: $header" \
+                "$prev" "$sha" "$nginx_backup" "$manifest"
+        fi
+    done
+
+    # ---- (7) success record + retention ------------------------------------ #
+    write_current_json "deployed" "$prev" "$sha" "$sha" "$manifest"
+    touch -- "$release"   # deployed_at watermark used by retention
+    prune_releases "$RELEASES_DIR" "$sha"
+    prune_releases "$WEB_ROOT/releases" "$sha"
+
+    echo "apply-ok $sha $loaded_id"
+}
+
+# Keep only the KEEP_RELEASES newest releases (by deploy-time mtime); the
+# release currently recorded in current.json is never pruned.
+prune_releases() {
+    local dir="$1" current_sha="$2" keep_dir base count=0 line
+    [ -d "$dir" ] || return 0
+    while IFS= read -r line; do
+        keep_dir="${line#* }"
+        [ -d "$keep_dir" ] || continue
+        base="$(basename "$keep_dir")"
+        [ "$base" = "$current_sha" ] && continue
+        case "$base" in .staging.*) continue ;; esac
+        count=$((count + 1))
+        if [ "$count" -ge "$KEEP_RELEASES" ]; then
+            rm -rf -- "$keep_dir"
+        fi
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn)
+}
+
+# ---------------------------------------------------------------------------- #
+# status-v1 — read-only operator report
+# ---------------------------------------------------------------------------- #
+status_v1() {
+    echo "== current =="
+    if [ -f "$CURRENT_JSON" ]; then
+        cat "$CURRENT_JSON"
+    else
+        echo "(no current.json)"
+    fi
+    echo "== disk =="
+    df -h /var/opt/stroy-deploy /var/www 2>/dev/null || true
+    echo "== releases =="
+    local listing
+    listing="$(find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null \
+        | sort -rn | cut -d' ' -f2- || true)"
+    if [ -n "$listing" ]; then
+        printf '%s\n' "$listing"
+    else
+        echo "(none)"
+    fi
+}
+
+# ---------------------------------------------------------------------------- #
+# dispatch: exact-match allowlist, no eval, no sh -c of caller input
+# ---------------------------------------------------------------------------- #
+main() {
+    local cmd="${SSH_ORIGINAL_COMMAND:-}"
+    if [[ "$cmd" =~ ^receive-v1\ ([0-9a-f]{40})$ ]]; then
+        receive_v1 "${BASH_REMATCH[1]}"
+    elif [[ "$cmd" =~ ^apply-v1\ ([0-9a-f]{40})$ ]]; then
+        apply_v1 "${BASH_REMATCH[1]}"
+    elif [[ "$cmd" == "status-v1" ]]; then
+        status_v1
+    else
+        err "command not allowed"
+    fi
+}
+
+main "$@"

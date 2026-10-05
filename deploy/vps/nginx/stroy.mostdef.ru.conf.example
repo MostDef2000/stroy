@@ -3,7 +3,7 @@
 # never commit the installed copy.
 # The canonical set is TWO files: this vhost template AND
 # stroy-ratelimit.conf.example (installed as /etc/nginx/conf.d/stroy-ratelimit.conf,
-# http context). The sha256 of BOTH files will be recorded in issue #123 after
+# http context). The sha256 of BOTH files will be recorded in issue #130 after
 # live-vhost sync.
 #
 # add_header inheritance trap: declaring ANY add_header inside a `location`
@@ -17,10 +17,20 @@ server {
     listen 80;
     server_name stroy.mostdef.ru;
 
-    # Redirect all HTTP requests to HTTPS
-    return 301 https://$host$request_uri;
+    # ACME challenge is served from a stable webroot OUTSIDE the release tree
+    # (/var/www/stroy-acme), so renewals never depend on a deploy and the
+    # deploy wrapper NEVER writes there. Previously this location was dead
+    # code: a server-level `return 301` short-circuited before any location
+    # matched (issue #123 peer finding, fixed in #130).
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/stroy-acme;
+        try_files $uri =404;
+    }
 
-    # ACME challenge location: added at live-sync step (issue #123 step 2)
+    # Everything else is redirected to HTTPS.
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {
@@ -93,8 +103,9 @@ server {
         return 404;
     }
 
-    # Static web assets
-    root /var/www/stroy.mostdef.ru;
+    # Static web assets. `current` is an atomic symlink repointed by the deploy
+    # wrapper to /var/www/stroy.mostdef.ru/releases/<sha> (issue #130).
+    root /var/www/stroy.mostdef.ru/current;
     index index.html;
 
     location / {

@@ -1,8 +1,6 @@
 services:
   api:
-    build:
-      context: ../..
-      dockerfile: deploy/vps/Dockerfile.api
+    image: ${STROY_API_IMAGE:?STROY_API_IMAGE must be set (deploy wrapper or compose override)}
     restart: unless-stopped
     env_file:
       - .env
@@ -50,9 +48,7 @@ services:
         max-file: "3"
 
   worker:
-    build:
-      context: ../..
-      dockerfile: deploy/vps/Dockerfile.api
+    image: ${STROY_API_IMAGE:?STROY_API_IMAGE must be set (deploy wrapper or compose override)}
     command: ["stroy-worker"]
     restart: unless-stopped
     extra_hosts:
