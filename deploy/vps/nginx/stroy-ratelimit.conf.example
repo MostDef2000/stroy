@@ -1,0 +1,27 @@
+# Canonical nginx rate-limit zone snippet for stroy.mostdef.ru (issue #125).
+# This file is a TEMPLATE copied to /etc/nginx/conf.d/stroy-ratelimit.conf on the
+# VPS (http context); never commit the installed copy.
+# Together with deploy/vps/nginx/stroy.mostdef.ru.conf.example (VHOST-CANON) it
+# forms the canonical nginx set; the sha256 of BOTH files is recorded in
+# issue #123 at live-vhost sync.
+#
+# Why this lives in conf.d/ and not inside the vhost template: `limit_req_zone`
+# is only valid in the `http` context (NGX_HTTP_MAIN_CONF). The vhost template's
+# server {} block lives in /etc/nginx/sites-available/, so a limit_req_zone
+# declared INSIDE that server block would be rejected by `nginx -t`
+# ("directive is not allowed here"). /etc/nginx/conf.d/*.conf is included into
+# the http context by the stock nginx.conf, which is exactly where the zone must
+# be declared. The vhost then references the zone from its /api/v1/auth/
+# location via `limit_req zone=stroy_auth ...`.
+
+# Per-IP token bucket for auth endpoints.
+#   $binary_remote_addr -> one bucket per client IP (4 bytes IPv4 / 16 IPv6);
+#   zone=stroy_auth:1m  -> 1 MiB shared memory ≈ 16k states (~16k distinct IPs);
+#   rate=10r/m          -> sustained 10 requests/minute per IP, i.e. one
+#                          request every 6s. This is deliberately stricter than
+#                          the app-level LoginThrottle (exponential delay on the
+#                          login route only): the edge zone covers ALL auth
+#                          paths (login, /me, logout and future ones) as
+#                          defense-in-depth, while LoginThrottle remains the
+#                          credential-aware inner layer.
+limit_req_zone $binary_remote_addr zone=stroy_auth:1m rate=10r/m;

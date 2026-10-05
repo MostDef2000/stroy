@@ -42,11 +42,20 @@ Host Nginx (Ubuntu 24.04)
    sudo certbot certonly --webroot -w /var/www/stroy.mostdef.ru -d stroy.mostdef.ru
    ```
    The certificate will be placed in `/etc/letsencrypt/live/stroy.mostdef.ru/`.
-5. **Final vhost**: Copy `deploy/vps/nginx/stroy.mostdef.ru.conf.example` to `/etc/nginx/sites-available/stroy.mostdef.ru`, create a symbolic link to `sites-enabled`, and verify. `/etc/nginx/nginx.conf` must include `sites-enabled/*` (standard Ubuntu layout — the host already serves `mostdef.ru`, `auth.mostdef.ru` and `3d.mostdef.ru` through it):
+5. **Final nginx config (two files)**: The canonical nginx set is two files.
+   - Copy `deploy/vps/nginx/stroy.mostdef.ru.conf.example` to `/etc/nginx/sites-available/stroy.mostdef.ru` and create a symbolic link to `sites-enabled`. `/etc/nginx/nginx.conf` must include `sites-enabled/*` (standard Ubuntu layout — the host already serves `mostdef.ru`, `auth.mostdef.ru` and `3d.mostdef.ru` through it).
+   - Copy `deploy/vps/nginx/stroy-ratelimit.conf.example` to `/etc/nginx/conf.d/stroy-ratelimit.conf`. This snippet declares `limit_req_zone` for the `/api/v1/auth/` location; the zone is only valid in the http context, so it must live in `conf.d/`, not in the vhost.
+
+   Verify and reload both together:
    ```bash
-   sudo nginx -t
-   sudo systemctl reload nginx
-   ```
+    sudo cp deploy/vps/nginx/stroy-ratelimit.conf.example /etc/nginx/conf.d/stroy-ratelimit.conf
+    sudo cp deploy/vps/nginx/stroy.mostdef.ru.conf.example /etc/nginx/sites-available/stroy.mostdef.ru
+    sudo ln -sf /etc/nginx/sites-available/stroy.mostdef.ru /etc/nginx/sites-enabled/stroy.mostdef.ru
+    sudo nginx -t && sudo systemctl reload nginx
+    ```
+    Keep `deploy/vps/nginx/` current in `/opt/stroy`: `git pull --ff-only` before re-copying, and always run `sudo nginx -t` before `reload` (the chained `&&` guarantees a failed test never triggers a reload; a bad zone reference fails the test and leaves the running config untouched). The renewal webroot `/var/www/stroy.mostdef.ru/.well-known/acme-challenge/` is outside this vhost's config and is preserved by the `cp -a dist/.` deploy; do not delete it when refreshing static assets.
+
+    **Auth rate-limit budget (per client IP, shared by `/api/v1/auth/*`):** sustained 10 req/min + burst of 5 excess served immediately; the 7th request of a rapid series gets `429`. Normal use is 1–2 auth requests per session (the 5 s polling loop does not touch auth paths). Known edge case: ≥7 near-simultaneous page loads from one IP (multi-tab restore) can 429 the initial `/me` call, which the SPA renders as the login screen; the SPA does **not** auto-retry `/me` — after a saturated burst, with no further auth traffic, another request is accepted after ~6 s and the excess backlog drains in ~30 s; reload the affected tab after waiting, or successfully log in again. If this is ever observed in normal use, raise `burst` in the vhost's `limit_req` line and/or the zone `rate`, then `sudo nginx -t && sudo systemctl reload nginx`.
 6. **Renewal**: Certbot's systemd timer renews the certificate automatically. Ensure the renewal triggers an nginx reload:
    ```bash
    sudo certbot renew --dry-run
