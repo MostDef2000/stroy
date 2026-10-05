@@ -790,6 +790,91 @@ def test_wrapper_apply_v1_reuses_existing_web_release(tmp_path: Path) -> None:
     assert "nginx -t" in fake_calls
 
 
+ORPHAN_SHA = "1111111111111111111111111111111111111111"
+
+
+def _write_gc_docker_bin(bin_dir: Path) -> None:
+    """docker fake with tag-listing GC support; inspect/load/compose as usual."""
+    body = (
+        "#!/usr/bin/env bash\n"
+        'echo "docker $*" >> "$FAKE_LOG"\n'
+        'case "$1 $2" in\n'
+        '  "image ls") printf \'%s\\n\' $FAKE_IMAGE_TAGS ;;\n'
+        '  "image rm")\n'
+        '    if [ "${FAKE_DOCKER_RMI_FAIL:-0}" = "1" ]; then\n'
+        "      exit 7\n"
+        "    fi ;;\n"
+        '  "image "*) printf \'%s\\n\' "$FAKE_IMAGE_ID" ;;\n'
+        '  compose*)\n'
+        '    if [ "${FAKE_DOCKER_COMPOSE_FAIL:-0}" = "1" ]; then exit 1; fi ;;\n'
+        "esac\n"
+        "exit 0\n"
+    )
+    path = bin_dir / "docker"
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _gc_env(tmp_path, sha_tags: list[str], **extra):
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir(exist_ok=True)
+    _stage_release(releases_dir)
+    web_release = tmp_path / "web" / "releases" / SHA
+    (web_release / "assets").mkdir(parents=True, exist_ok=True)
+    (web_release / "index.html").write_bytes(b"x")
+    (web_release / "assets" / "app.js").write_bytes(b"x")
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    _write_gc_docker_bin(bin_dir)
+    env = _wrapper_env(tmp_path, bin_dir, log, headers)
+    env["FAKE_IMAGE_TAGS"] = " ".join(sha_tags)
+    env.update(extra)
+    return env, log
+
+
+def test_wrapper_apply_v1_prunes_orphan_image_tags(tmp_path: Path) -> None:
+    # GC keeps the tag of every sha that still has a release dir on disk and
+    # removes orphans.  Non-40-hex tags (e.g. 'latest') and foreign repositories
+    # are never touched.
+    orphan = f"stroy-api:{ORPHAN_SHA}"
+    foreign = "other-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    env, log = _gc_env(
+        tmp_path,
+        [f"stroy-api:{SHA}", orphan, "stroy-api:latest", foreign],
+    )
+
+    proc = _run_wrapper(env)
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert "apply-ok" in proc.stdout
+
+    calls = log.read_text(encoding="utf-8")
+    assert calls.count(f"docker image rm {orphan}") == 1
+    # Retained release, unparseable tag, and foreign repo must survive.
+    assert f"docker image rm stroy-api:{SHA}" not in calls
+    assert "docker image rm stroy-api:latest" not in calls
+    assert foreign not in calls.replace("docker image ls --format", "")
+
+
+def test_wrapper_apply_v1_image_gc_failure_does_not_fail_apply(tmp_path: Path) -> None:
+    # GC is best-effort: an image rm that fails (image in use, daemon hiccup)
+    # must not fail a completed deploy.
+    env, log = _gc_env(
+        tmp_path,
+        [f"stroy-api:{SHA}", f"stroy-api:{ORPHAN_SHA}"],
+        FAKE_DOCKER_RMI_FAIL="1",
+    )
+
+    proc = _run_wrapper(env)
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert "apply-ok" in proc.stdout
+    assert f"docker image rm stroy-api:{ORPHAN_SHA}" in log.read_text(encoding="utf-8")
+
+
 def test_wrapper_apply_v1_rejects_divergent_web_release(tmp_path: Path) -> None:
     # A tampered existing tree must NOT be published under the verified identity:
     # content mismatches fail closed, the live tree is left untouched, and the
