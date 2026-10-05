@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         hide_input_in_errors=True,
+        populate_by_name=True,
     )
 
     env: str = "development"
@@ -45,6 +46,19 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     session_cookie_samesite: str = "lax"
     session_max_age_seconds: int = 604800
+    # Idle session expiry: a session is invalidated after this many seconds
+    # without an authenticated request. Activity (any authenticated request)
+    # extends it. 0 disables idle expiry; the absolute cap
+    # `session_max_age_seconds` always applies. Accepts the documented
+    # `STROY_SESSION_IDLE_TTL` env name and the `..._SECONDS` form.
+    session_idle_ttl_seconds: int = Field(
+        default=86400,
+        ge=0,
+        validation_alias=AliasChoices(
+            "STROY_SESSION_IDLE_TTL",
+            "STROY_SESSION_IDLE_TTL_SECONDS",
+        ),
+    )
 
     worker_token: str = "development-worker-token"
     worker_token_hash: str = ""
