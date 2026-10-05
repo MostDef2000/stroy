@@ -305,7 +305,7 @@ receive_v1() {
 apply_v1() {
     local sha="$1"
     local release="$RELEASES_DIR/$sha"
-    local image_id loaded_id epoch prev headers code header
+    local image_id loaded_id ids archive_manifest_id archive_config_id epoch prev headers code header
     local nginx_backup cfg_backup cfg_stage web_stage web_release web_filelist manifest
     local compose_project expected_web_sha actual_web_sha
 
@@ -348,6 +348,33 @@ apply_v1() {
         'import json,sys;print(json.load(open(sys.argv[1]))["api_image_id"])' \
         "$manifest")" || err "manifest api_image_id unreadable"
     prev="$(read_prev_sha)"
+
+    # Shipped identity pair, derived from the digest-verified archive itself.
+    # docker with the containerd image store (default from 27/29 on several
+    # platforms) reports the OCI MANIFEST digest as
+    # `docker image inspect --format '{{.Id}}'` for images loaded from an OCI
+    # archive, while the classic graphdriver store reports the CONFIG digest
+    # (deploy run 1, 2026-10-05: false mismatch -> clean automatic rollback).
+    # Both digests are computed from received, rehashed bytes, so accepting
+    # either keeps the check's transport-tamper strength and makes it
+    # image-store agnostic.
+    if ! ids="$(helper image-ids "$release/api-image.tar.gz")"; then
+        err "api-image archive identity unreadable (image-ids failed)"
+    fi
+    archive_manifest_id="$(printf '%s\n' "$ids" | awk '$1 == "manifest" {print $2}')"
+    archive_config_id="$(printf '%s\n' "$ids" | awk '$1 == "config" {print $2}')"
+    if [ "$archive_manifest_id" != "-" ]; then
+        [[ "$archive_manifest_id" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || err "image-ids printed an invalid manifest digest: $archive_manifest_id"
+    else
+        archive_manifest_id=""
+    fi
+    [[ "$archive_config_id" =~ ^sha256:[0-9a-f]{64}$ ]] \
+        || err "image-ids printed an invalid config digest: $archive_config_id"
+    if [ "$image_id" != "$archive_manifest_id" ] \
+        && [ "$image_id" != "$archive_config_id" ]; then
+        err "manifest api_image_id does not match the shipped api-image archive"
+    fi
 
     # ---- (1) deploy-config install (history backup + stale-file removal) --- #
     # Unique per-run backup id (timestamp + pid): a same-second second apply
@@ -432,7 +459,9 @@ apply_v1() {
         fail_and_rollback "stroy-api:$sha missing after load" \
             "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
-    if [ "$loaded_id" != "$image_id" ]; then
+    if [ "$loaded_id" != "$image_id" ] \
+        && [ "$loaded_id" != "$archive_manifest_id" ] \
+        && [ "$loaded_id" != "$archive_config_id" ]; then
         fail_and_rollback "image id mismatch: manifest=$image_id loaded=$loaded_id" \
             "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi

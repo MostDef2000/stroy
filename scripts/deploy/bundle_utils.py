@@ -344,6 +344,134 @@ def verify_web_dist(archive_path: str | Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# image identity: manifest + config digests of a saved docker/OCI archive
+# --------------------------------------------------------------------------- #
+_OCI_INDEX_MTS = frozenset({
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+})
+_OCI_MANIFEST_MTS = frozenset({
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+})
+# index.json / manifest.json / config blobs are KB-sized; a larger member in
+# one of these roles is either a bomb or a malformed archive - reject both.
+_IMAGE_BLOB_CAP = 16 * 1024 * 1024
+
+
+def _read_tar_member(archive: tarfile.TarFile, member: tarfile.TarInfo,
+                     cap: int = _IMAGE_BLOB_CAP) -> bytes:
+    handle = archive.extractfile(member)
+    _require(handle is not None, f"member is not a regular file: {member.name!r}")
+    data = handle.read(cap + 1)
+    _require(len(data) <= cap, f"member exceeds {cap}B cap: {member.name!r}")
+    return data
+
+
+def _member_sha256(archive: tarfile.TarFile, member: tarfile.TarInfo) -> str:
+    return "sha256:" + hashlib.sha256(_read_tar_member(archive, member)).hexdigest()
+
+
+def _parse_digest(digest: object, what: str) -> str:
+    _require(isinstance(digest, str) and digest.startswith("sha256:"),
+             f"{what} must be a sha256 digest: {digest!r}")
+    hex_part = digest[len("sha256:"):]
+    _require(bool(_HEX64.fullmatch(hex_part)), f"{what} must be sha256 hex: {digest!r}")
+    return hex_part
+
+
+def _resolve_image_descriptor(archive: tarfile.TarFile, members: dict[str, tarfile.TarInfo],
+                              descriptor: object, depth: int = 0) -> tuple[str, str]:
+    """Walk one (one level max) descriptor to a leaf manifest.
+
+    Returns ``(manifest_digest, config_digest)``.  Every referenced blob is
+    rehashed against its descriptor digest before use - a descriptor pointing
+    at tampered or missing bytes fails closed.
+    """
+    _require(isinstance(descriptor, dict), "index descriptor must be an object")
+    media_type = descriptor.get("mediaType")
+    _require(isinstance(media_type, str), "descriptor mediaType must be a string")
+    digest = descriptor.get("digest")
+    _parse_digest(digest, "descriptor digest")
+    blob_name = f"blobs/sha256/{digest[len('sha256:'):]}"
+    member = members.get(blob_name)
+    _require(member is not None, f"descriptor blob missing from archive: {blob_name}")
+    _require(_member_sha256(archive, member) == digest,
+             f"descriptor blob digest mismatch: {blob_name}")
+    body = json.loads(_read_tar_member(archive, member))
+    if media_type in _OCI_INDEX_MTS:
+        _require(depth < 1, "nested image index exceeds depth 1")
+        nested = body.get("manifests") if isinstance(body, dict) else None
+        _require(isinstance(nested, list) and len(nested) == 1,
+                 "image index must contain exactly one manifest")
+        return _resolve_image_descriptor(archive, members, nested[0], depth + 1)
+    _require(media_type in _OCI_MANIFEST_MTS,
+             f"unsupported descriptor mediaType: {media_type!r}")
+    _require(isinstance(body, dict), "manifest blob must be an object")
+    config = body.get("config")
+    _require(isinstance(config, dict), "manifest config descriptor missing")
+    config_hex = _parse_digest(config.get("digest"), "manifest config digest")
+    config_blob = f"blobs/sha256/{config_hex}"
+    config_member = members.get(config_blob)
+    _require(config_member is not None, f"config blob missing from archive: {config_blob}")
+    _require(_member_sha256(archive, config_member) == "sha256:" + config_hex,
+             f"config blob digest mismatch: {config_blob}")
+    return digest, "sha256:" + config_hex
+
+
+def image_ids(archive_path: str | Path) -> dict:
+    """Identity pair of a saved image archive, derived from its bytes only.
+
+    Returns ``{"manifest": "<sha256:...>" | None, "config": "<sha256:...>"}``.
+
+    Why both: docker with the containerd image store (default from 27/29 on
+    several platforms) reports the OCI MANIFEST digest as the image Id for
+    archives loaded via ``docker load``, while the classic graphdriver store
+    reports the CONFIG digest (the historical "image ID").  A save -> load
+    roundtrip is only stable at the archive level, so consumers must treat the
+    pair as the identity and accept either half.  No extraction to disk: only
+    the small index/manifest/config blobs are read, each size-capped.
+    """
+    try:
+        with tarfile.open(archive_path, "r:*") as archive:
+            members: dict[str, tarfile.TarInfo] = {}
+            for member in archive.getmembers():
+                _reject_unsafe_name(member.name)
+                _require(not (member.isdev() or member.isfifo()),
+                         f"device/FIFO member rejected: {member.name!r}")
+                _require(not (member.issym() or member.islnk()),
+                         f"archive links are not permitted: {member.name!r}")
+                members[member.name] = member
+            index_member = members.get("index.json")
+            if index_member is not None:
+                index = json.loads(_read_tar_member(archive, index_member))
+                _require(isinstance(index, dict), "index.json must be an object")
+                descriptors = index.get("manifests")
+                _require(isinstance(descriptors, list) and len(descriptors) == 1,
+                         "index.json must contain exactly one descriptor")
+                manifest_digest, config_digest = _resolve_image_descriptor(
+                    archive, members, descriptors[0])
+                return {"manifest": manifest_digest, "config": config_digest}
+            legacy_member = members.get("manifest.json")
+            if legacy_member is not None:
+                entries = json.loads(_read_tar_member(archive, legacy_member))
+                _require(isinstance(entries, list) and len(entries) == 1,
+                         "manifest.json must contain exactly one image entry")
+                entry = entries[0]
+                _require(isinstance(entry, dict), "manifest.json entry must be an object")
+                config_path = entry.get("Config")
+                _require(isinstance(config_path, str) and bool(config_path),
+                         "manifest.json entry missing Config path")
+                config_member = members.get(config_path)
+                _require(config_member is not None,
+                         f"config member missing: {config_path!r}")
+                return {"manifest": None, "config": _member_sha256(archive, config_member)}
+            raise BundleError("archive is neither an OCI layout nor a docker archive")
+    except (tarfile.TarError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise BundleError(f"invalid image archive: {exc}") from exc
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def _cmd_verify_manifest(args: argparse.Namespace) -> int:
@@ -368,6 +496,13 @@ def _cmd_hash_file(args: argparse.Namespace) -> int:
     path = Path(args.path)
     _require(path.is_file(), f"not a file: {args.path}")
     print(sha256_file(path))
+    return 0
+
+
+def _cmd_image_ids(args: argparse.Namespace) -> int:
+    ids = image_ids(args.archive)
+    print(f"manifest {ids['manifest'] or '-'}")
+    print(f"config {ids['config']}")
     return 0
 
 
@@ -398,6 +533,12 @@ def build_parser() -> argparse.ArgumentParser:
     hashf = sub.add_parser("hash-file", help="print the sha256 of a file")
     hashf.add_argument("path")
 
+    imageids = sub.add_parser(
+        "image-ids",
+        help="print the manifest/config digests of a saved image archive",
+    )
+    imageids.add_argument("archive")
+
     web = sub.add_parser("verify-web", help="validate web dist layout")
     web.add_argument("archive")
 
@@ -427,6 +568,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_check_manifest_sha(args)
         elif args.command == "hash-file":
             return _cmd_hash_file(args)
+        elif args.command == "image-ids":
+            return _cmd_image_ids(args)
         elif args.command == "verify-web":
             return _cmd_verify_web(args)
         elif args.command == "build-manifest":
