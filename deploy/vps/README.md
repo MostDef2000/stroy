@@ -279,8 +279,10 @@ never lies:
 2. **nginx phase** — config and both nginx files are installed and `nginx -t`
    is run *before* any switch. If `nginx -t` fails, the wrapper restores the
    previous vhost **and** `conf.d/stroy-ratelimit.conf`, removes any symlink it
-   created, and exits: the production site is untouched (nginx was never
-   reloaded).
+   created, also restores the pre-apply deploy configuration (same as the
+   post-switch rollback), and exits: the production site is untouched (nginx
+   was never reloaded) and `current.json` still describes the release that is
+   actually live.
 3. **`transitioning` marker** — `current.json` is written with
    `{"status":"transitioning","from":<prev>,"to":<sha>}` *before* the image is
    loaded, compose is (re)started, or the web symlink is switched.

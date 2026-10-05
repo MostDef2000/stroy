@@ -150,6 +150,26 @@ restore_config() {
     return "$rc"
 }
 
+# fail_pre_transition <reason> <config_backup> [nginx_backup] [restore_nginx]
+# Used for every failure AFTER the candidate deploy config is installed but
+# BEFORE the `transitioning` marker is written.  At that point the previous
+# current.json is still the truth and must stay untouched, so this does NOT
+# call fail_and_rollback (which writes "failed").  It restores the pre-apply
+# deploy config, and — when nginx files were already installed — the pre-install
+# nginx pair + enable path, then exits non-zero.
+fail_pre_transition() {
+    local reason="$1" cfg_backup="$2" nginx_backup="${3:-}" want_nginx="${4:-no}"
+    if ! restore_config "$cfg_backup"; then
+        echo "WRAP-ERR: deploy config restore after early failure also failed" >&2
+    fi
+    if [ "$want_nginx" = "yes" ]; then
+        if ! restore_nginx "$nginx_backup"; then
+            echo "WRAP-ERR: nginx restore after early failure also failed" >&2
+        fi
+    fi
+    err "$reason"
+}
+
 # rollback_previous <prev_sha> <nginx_backup> <config_backup> <compose_project>
 # Best-effort; never masks the caller.  Restores the PREVIOUS deploy config
 # (compose + nginx + symlinks) BEFORE bringing the previous image back up.
@@ -344,49 +364,60 @@ apply_v1() {
     fi
     # Drop stale files from a prior envelope: only the pinned nginx pair +
     # compose are consumed; the .env/.worker-env symlinks are recreated below.
+    # EVERY failure from here until the transitioning marker restores the
+    # pre-apply deploy config via fail_pre_transition (current.json untouched).
     find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + \
-        || err "cannot clear config dir"
-    cp -a "$cfg_stage/." "$CONFIG_DIR/" || err "config install failed"
-    rm -rf -- "$cfg_stage"
+        || fail_pre_transition "cannot clear config dir" "$cfg_backup"
+    cp -a "$cfg_stage/." "$CONFIG_DIR/" \
+        || fail_pre_transition "config install failed" "$cfg_backup"
+    rm -rf -- "$cfg_stage" || fail_pre_transition "cannot clean config staging" "$cfg_backup"
     # compose resolves service-level `env_file: .env` relative to the project
     # directory (the config dir); link the owner-managed secret file in place.
-    ln -sfn -- "$ENV_FILE" "$CONFIG_DIR/.env"
+    ln -sfn -- "$ENV_FILE" "$CONFIG_DIR/.env" \
+        || fail_pre_transition "cannot link env file into config dir" "$cfg_backup"
     if [ -f "$(dirname "$ENV_FILE")/.worker-env" ]; then
-        ln -sfn -- "$(dirname "$ENV_FILE")/.worker-env" "$CONFIG_DIR/.worker-env"
+        ln -sfn -- "$(dirname "$ENV_FILE")/.worker-env" "$CONFIG_DIR/.worker-env" \
+            || fail_pre_transition "cannot link worker env into config dir" "$cfg_backup"
     fi
 
     # ---- (2) install + validate nginx BEFORE any prod switch --------------- #
-    # On `nginx -t` failure BOTH previous files are restored and the created
-    # sites-enabled symlink is removed; nothing serving has been touched yet.
-    [ -f "$CONFIG_DIR/nginx/stroy.mostdef.ru.conf.example" ] || err "nginx vhost missing"
-    [ -f "$CONFIG_DIR/nginx/stroy-ratelimit.conf.example" ] || err "nginx ratelimit missing"
+    # On `nginx -t` failure BOTH previous nginx files are restored (created
+    # sites-enabled symlink removed), the pre-apply deploy config is restored,
+    # and nothing serving has been touched yet.  The same applies to every
+    # failure in this phase: config is always restored, nginx only once the
+    # pre-install backup exists and the live files may have been replaced.
+    [ -f "$CONFIG_DIR/nginx/stroy.mostdef.ru.conf.example" ] \
+        || fail_pre_transition "nginx vhost missing" "$cfg_backup"
+    [ -f "$CONFIG_DIR/nginx/stroy-ratelimit.conf.example" ] \
+        || fail_pre_transition "nginx ratelimit missing" "$cfg_backup"
     nginx_backup="$CONFIG_HISTORY/$epoch/nginx-installed"
-    mkdir -p "$nginx_backup" || err "cannot create nginx backup"
+    mkdir -p "$nginx_backup" || fail_pre_transition "cannot create nginx backup" "$cfg_backup"
     if [ -f "$NGINX_AVAILABLE/stroy.mostdef.ru" ]; then
         cp -a "$NGINX_AVAILABLE/stroy.mostdef.ru" "$nginx_backup/vhost" \
-            || err "nginx backup failed"
+            || fail_pre_transition "nginx backup failed" "$cfg_backup"
     fi
     if [ -f "$NGINX_CONFD/stroy-ratelimit.conf" ]; then
         cp -a "$NGINX_CONFD/stroy-ratelimit.conf" "$nginx_backup/ratelimit" \
-            || err "nginx backup failed"
+            || fail_pre_transition "nginx backup failed" "$cfg_backup"
     fi
     if [ -L "$NGINX_ENABLED/stroy.mostdef.ru" ]; then
         readlink "$NGINX_ENABLED/stroy.mostdef.ru" > "$nginx_backup/symlink.target" \
-            || err "nginx symlink backup failed"
+            || fail_pre_transition "nginx symlink backup failed" "$cfg_backup"
     elif [ -e "$NGINX_ENABLED/stroy.mostdef.ru" ]; then
         cp -a "$NGINX_ENABLED/stroy.mostdef.ru" "$nginx_backup/enabled.file" \
-            || err "nginx enabled-file backup failed"
+            || fail_pre_transition "nginx enabled-file backup failed" "$cfg_backup"
     fi
     install -m 0644 "$CONFIG_DIR/nginx/stroy.mostdef.ru.conf.example" \
-        "$NGINX_AVAILABLE/stroy.mostdef.ru" || err "nginx vhost install failed"
+        "$NGINX_AVAILABLE/stroy.mostdef.ru" \
+        || fail_pre_transition "nginx vhost install failed" "$cfg_backup" "$nginx_backup" yes
     install -m 0644 "$CONFIG_DIR/nginx/stroy-ratelimit.conf.example" \
-        "$NGINX_CONFD/stroy-ratelimit.conf" || err "nginx ratelimit install failed"
+        "$NGINX_CONFD/stroy-ratelimit.conf" \
+        || fail_pre_transition "nginx ratelimit install failed" "$cfg_backup" "$nginx_backup" yes
     ln -sfn -- "$NGINX_AVAILABLE/stroy.mostdef.ru" "$NGINX_ENABLED/stroy.mostdef.ru" \
-        || err "nginx enable symlink failed"
+        || fail_pre_transition "nginx enable symlink failed" "$cfg_backup" "$nginx_backup" yes
     if ! nginx -t >/dev/null 2>&1; then
-        restore_nginx "$nginx_backup" \
-            || echo "WRAP-ERR: nginx restore after -t failure also failed" >&2
-        err "nginx -t failed; previous config restored (prod untouched)"
+        fail_pre_transition "nginx -t failed; previous config restored (prod untouched)" \
+            "$cfg_backup" "$nginx_backup" yes
     fi
     echo "WRAP: nginx -t ok"
 
@@ -415,8 +446,12 @@ apply_v1() {
 
     # ---- (5) publish web release + atomic symlink switch ------------------- #
     # Same-sha reapply: the release dir may already be the live target of
-    # `current`.  NEVER delete it; rehash the staged archive against the
-    # manifest and reuse the existing tree.  Only extract when it is missing.
+    # `current`.  NEVER delete it.  Authorise reuse by rehashing the staged
+    # archive against the manifest, then extract that verified archive into a
+    # fresh staging dir and compare EVERY staged file byte-for-byte with the
+    # existing tree (`cmp -s`).  A tampered or partial tree must never be
+    # published under a verified identity; extra files in the existing tree are
+    # tolerated.  Any mismatch keeps the existing tree and fails closed.
     web_stage="$WEB_ROOT/releases/.staging.${sha}.$$"
     web_release="$WEB_ROOT/releases/$sha"
     rm -rf -- "$web_stage"
@@ -429,21 +464,34 @@ apply_v1() {
             fail_and_rollback "web archive digest mismatch on reuse" "$prev" "$sha" \
                 "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
         fi
-        echo "WRAP: web release reused: $web_release"
+    fi
+    if ! mkdir -p "$web_stage"; then
+        fail_and_rollback "cannot create web staging" "$prev" "$sha" \
+            "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+    fi
+    if ! helper extract-safe "$release/web-dist.tar.gz" "$web_stage" \
+        --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
+        fail_and_rollback "web-dist archive unsafe" "$prev" "$sha" \
+            "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+    fi
+    if [ ! -f "$web_stage/index.html" ]; then
+        rm -rf -- "$web_stage"
+        fail_and_rollback "web release missing index.html" \
+            "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+    fi
+    if [ -d "$web_release" ]; then
+        while IFS= read -r -d '' staged_file; do
+            rel="${staged_file#"$web_stage"/}"
+            if [ ! -f "$web_release/$rel" ] \
+                || ! cmp -s -- "$staged_file" "$web_release/$rel"; then
+                rm -rf -- "$web_stage"
+                fail_and_rollback "web release content mismatch on reuse: $rel" \
+                    "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+            fi
+        done < <(find "$web_stage" -type f -print0)
+        rm -rf -- "$web_stage"
+        echo "WRAP: web release reused (content verified): $web_release"
     else
-        if ! mkdir -p "$web_stage"; then
-            fail_and_rollback "cannot create web staging" "$prev" "$sha" \
-                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
-        fi
-        if ! helper extract-safe "$release/web-dist.tar.gz" "$web_stage" \
-            --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
-            fail_and_rollback "web-dist archive unsafe" "$prev" "$sha" \
-                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
-        fi
-        if [ ! -f "$web_stage/index.html" ]; then
-            fail_and_rollback "web release missing index.html" \
-                "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
-        fi
         if ! mv -- "$web_stage" "$web_release"; then
             fail_and_rollback "cannot publish web release" "$prev" "$sha" \
                 "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"

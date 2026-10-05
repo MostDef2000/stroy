@@ -572,12 +572,21 @@ def _write_fake_bins(bin_dir: Path) -> None:
             'echo "docker $*" >> "$FAKE_LOG"\n'
             'case "$1" in\n'
             "  image) printf '%s\\n' \"$FAKE_IMAGE_ID\" ;;\n"
+            "  compose)\n"
+            '    if [ "${FAKE_DOCKER_COMPOSE_FAIL:-0}" = "1" ]; then\n'
+            '      echo "fake docker compose failure" >&2\n'
+            "      exit 1\n"
+            "    fi ;;\n"
             "esac\n"
             "exit 0\n"
         ),
         "nginx": (
             "#!/usr/bin/env bash\n"
             'echo "nginx $*" >> "$FAKE_LOG"\n'
+            'if [ "${FAKE_NGINX_T_FAIL:-0}" = "1" ] && [ "${1:-}" = "-t" ]; then\n'
+            '  echo "fake nginx -t failure" >&2\n'
+            "  exit 1\n"
+            "fi\n"
             "exit 0\n"
         ),
         "systemctl": (
@@ -598,12 +607,18 @@ def _write_fake_bins(bin_dir: Path) -> None:
         path.chmod(0o755)
 
 
-def _stage_release(releases_dir: Path) -> None:
-    release = releases_dir / SHA
+def _stage_release(
+    releases_dir: Path,
+    sha: str = SHA,
+    *,
+    compose_body: bytes = b"services: {}\n",
+    web_files: dict[str, bytes] | None = None,
+) -> Path:
+    release = releases_dir / sha
     release.mkdir(parents=True)
     (release / bundle_utils.API_IMAGE_ARCHIVE).write_bytes(b"api-image")
     config_members = {
-        "docker-compose.yml": b"services: {}\n",
+        "docker-compose.yml": compose_body,
         "nginx/stroy.mostdef.ru.conf.example": b"server {}\n",
         "nginx/stroy-ratelimit.conf.example": b"limit_req_zone $binary_remote_addr "
                                              b"zone=stroy:10m rate=10r/s;\n",
@@ -613,15 +628,19 @@ def _stage_release(releases_dir: Path) -> None:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
+    if web_files is None:
+        web_files = {"./index.html": b"x", "./assets/app.js": b"x"}
     with tarfile.open(release / bundle_utils.WEB_ARCHIVE, "w:gz") as tar:
-        for name in ("./index.html", "./assets/app.js"):
+        for name, data in web_files.items():
             info = tarfile.TarInfo(name)
-            info.size = 1
-            tar.addfile(info, io.BytesIO(b"x"))
-    bundle_utils.build_manifest(release, SHA, IMAGE_ID, 123456, RUN_URL)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    bundle_utils.build_manifest(release, sha, IMAGE_ID, 123456, RUN_URL)
+    return release
 
 
-def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path) -> dict:
+def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path,
+                 sha: str = SHA) -> dict:
     env_dir = tmp / "opt"
     env_dir.mkdir(exist_ok=True)
     (tmp / "staging").mkdir(exist_ok=True)  # receive-v1 normally creates this
@@ -630,7 +649,7 @@ def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path) -> dict:
     env = os.environ.copy()
     env.update(
         {
-            "SSH_ORIGINAL_COMMAND": f"apply-v1 {SHA}",
+            "SSH_ORIGINAL_COMMAND": f"apply-v1 {sha}",
             "PATH": f"{bin_dir}:{env['PATH']}",
             "FAKE_LOG": str(log),
             "FAKE_IMAGE_ID": IMAGE_ID,
@@ -658,13 +677,27 @@ def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path) -> dict:
     return env
 
 
+def _run_wrapper(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(WRAPPER)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_wrapper_apply_v1_reuses_existing_web_release(tmp_path: Path) -> None:
     releases_dir = tmp_path / "releases"
     releases_dir.mkdir()
     _stage_release(releases_dir)
+    # Existing tree is byte-identical to the verified archive, plus an extra
+    # file that must be tolerated.  Reuse is now allowed only after content
+    # verification.
     web_release = tmp_path / "web" / "releases" / SHA
-    web_release.mkdir(parents=True)
-    (web_release / "index.html").write_text("live index", encoding="utf-8")
+    (web_release / "assets").mkdir(parents=True)
+    (web_release / "index.html").write_bytes(b"x")
+    (web_release / "assets" / "app.js").write_bytes(b"x")
     (web_release / "MARKER.txt").write_text("keep me", encoding="utf-8")
 
     bin_dir = tmp_path / "fakebin"
@@ -675,23 +708,104 @@ def test_wrapper_apply_v1_reuses_existing_web_release(tmp_path: Path) -> None:
     _write_fake_bins(bin_dir)
     env = _wrapper_env(tmp_path, bin_dir, log, headers)
 
-    for _ in range(2):
-        proc = subprocess.run(
-            ["bash", str(WRAPPER)],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        assert "web release reused" in proc.stdout
-        assert "apply-ok" in proc.stdout
+    proc = _run_wrapper(env)
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert "web release reused (content verified)" in proc.stdout
+    assert "apply-ok" in proc.stdout
 
-    # The pre-existing release tree (and its marker) must survive both applies;
-    # the old code `rm -rf`'d it unconditionally.
+    # The pre-existing release tree (and its extra file) must survive.
     assert (web_release / "MARKER.txt").read_text(encoding="utf-8") == "keep me"
     assert os.readlink(tmp_path / "web" / "current") == str(web_release)
     fake_calls = log.read_text(encoding="utf-8")
     assert "docker image inspect" in fake_calls
     assert "docker compose" in fake_calls
     assert "nginx -t" in fake_calls
+
+
+def test_wrapper_apply_v1_rejects_divergent_web_release(tmp_path: Path) -> None:
+    # A tampered existing tree must NOT be published under the verified identity:
+    # content mismatches fail closed, the live tree is left untouched, and the
+    # wrapper exits non-zero.
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    _stage_release(releases_dir)
+    web_release = tmp_path / "web" / "releases" / SHA
+    (web_release / "assets").mkdir(parents=True)
+    (web_release / "index.html").write_text("tampered index", encoding="utf-8")
+    (web_release / "assets" / "app.js").write_bytes(b"x")
+    (web_release / "MARKER.txt").write_text("keep me", encoding="utf-8")
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    env = _wrapper_env(tmp_path, bin_dir, log, headers)
+
+    proc = _run_wrapper(env)
+    assert proc.returncode != 0
+    assert "content mismatch on reuse" in proc.stderr
+    assert "apply-ok" not in proc.stdout
+    # The live tree is untouched (no file deleted or overwritten).
+    assert (web_release / "index.html").read_text(encoding="utf-8") == "tampered index"
+    assert (web_release / "MARKER.txt").read_text(encoding="utf-8") == "keep me"
+    assert (web_release / "assets" / "app.js").read_bytes() == b"x"
+
+
+def test_wrapper_nginx_t_failure_restores_config_and_rollback(tmp_path: Path) -> None:
+    # Regression: config install -> nginx -t failure must restore the pre-apply
+    # deploy config, not leave the rejected candidate in CONFIG_DIR (a later
+    # apply would otherwise snapshot the rejected config as its baseline).
+    shas = {"A": "a" * 40, "B": "b" * 40, "C": "c" * 40}
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    for tag, sha in shas.items():
+        _stage_release(releases_dir, sha, compose_body=f"# config {tag}\n".encode())
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+
+    config_file = tmp_path / "config" / "docker-compose.yml"
+    nginx_vhost = tmp_path / "nginx" / "available" / "stroy.mostdef.ru"
+    current_json = tmp_path / "current.json"
+
+    # (1) apply A cleanly.
+    proc_a = _run_wrapper(_wrapper_env(tmp_path, bin_dir, log, headers, sha=shas["A"]))
+    assert proc_a.returncode == 0, f"stdout:\n{proc_a.stdout}\nstderr:\n{proc_a.stderr}"
+    assert "apply-ok" in proc_a.stdout
+    sentinel_a = config_file.read_bytes()
+    assert b"config A" in sentinel_a
+    nginx_a = nginx_vhost.read_bytes()
+    state = json.loads(current_json.read_text(encoding="utf-8"))
+    assert state["status"] == "deployed"
+    assert state["sha"] == shas["A"]
+
+    # (2) apply B with nginx -t failing: candidate config must be rolled back to
+    # A and current.json must still describe A (transition marker never written).
+    env_b = _wrapper_env(tmp_path, bin_dir, log, headers, sha=shas["B"])
+    env_b["FAKE_NGINX_T_FAIL"] = "1"
+    proc_b = _run_wrapper(env_b)
+    assert proc_b.returncode != 0
+    assert "nginx -t failed" in proc_b.stderr
+    assert config_file.read_bytes() == sentinel_a
+    assert nginx_vhost.read_bytes() == nginx_a
+    state = json.loads(current_json.read_text(encoding="utf-8"))
+    assert state["status"] == "deployed"
+    assert state["sha"] == shas["A"]
+
+    # (3) apply C with docker compose failing post-switch: automatic rollback
+    # must restore config A from its unique history snapshot.
+    env_c = _wrapper_env(tmp_path, bin_dir, log, headers, sha=shas["C"])
+    env_c["FAKE_DOCKER_COMPOSE_FAIL"] = "1"
+    proc_c = _run_wrapper(env_c)
+    assert proc_c.returncode != 0
+    assert "compose up failed" in proc_c.stderr
+    assert config_file.read_bytes() == sentinel_a
+    assert nginx_vhost.read_bytes() == nginx_a
+    state = json.loads(current_json.read_text(encoding="utf-8"))
+    assert state["status"] in {"failed", "rolled_back_to"}
