@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -751,6 +752,62 @@ def test_wrapper_apply_v1_rejects_divergent_web_release(tmp_path: Path) -> None:
     assert (web_release / "index.html").read_text(encoding="utf-8") == "tampered index"
     assert (web_release / "MARKER.txt").read_text(encoding="utf-8") == "keep me"
     assert (web_release / "assets" / "app.js").read_bytes() == b"x"
+
+
+def test_wrapper_apply_v1_fails_closed_when_web_enumeration_fails(tmp_path: Path) -> None:
+    # Regression: the reuse comparison must materialize its file list with a
+    # CHECKED find.  A find that fails (or returns a partial listing) must fail
+    # the apply before "content verified"/"apply-ok"; the live tree is left
+    # untouched and no staging directory survives.
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    _stage_release(releases_dir)
+    web_release = tmp_path / "web" / "releases" / SHA
+    (web_release / "assets").mkdir(parents=True)
+    (web_release / "index.html").write_bytes(b"x")
+    (web_release / "assets" / "app.js").write_bytes(b"x")
+    (web_release / "MARKER.txt").write_text("keep me", encoding="utf-8")
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    # A `find` that fails ONLY on the web-stage enumeration (identified by the
+    # -print0 output mode) and delegates all other calls to the real binary, so
+    # config install / prune are unaffected.
+    real_find = shutil.which("find")
+    assert real_find is not None
+    failing_find = bin_dir / "find"
+    failing_find.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "find $*" >> "$FAKE_LOG"\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "-print0" ]; then\n'
+        '    echo "fake find: enumeration failed" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real_find}" "$@"\n',
+        encoding="utf-8",
+    )
+    failing_find.chmod(0o755)
+    env = _wrapper_env(tmp_path, bin_dir, log, headers)
+
+    proc = _run_wrapper(env)
+    assert proc.returncode != 0
+    assert "web reuse enumeration failed" in proc.stderr
+    assert "web release reused (content verified)" not in proc.stdout
+    assert "apply-ok" not in proc.stdout
+
+    # The live tree is untouched (no file deleted or overwritten) and the
+    # failed apply left no staging directory behind.
+    assert (web_release / "index.html").read_bytes() == b"x"
+    assert (web_release / "assets" / "app.js").read_bytes() == b"x"
+    assert (web_release / "MARKER.txt").read_text(encoding="utf-8") == "keep me"
+    assert list((tmp_path / "web" / "releases").glob(".staging.*")) == []
+    assert list((tmp_path / "staging").glob("web-filelist.*")) == []
 
 
 def test_wrapper_nginx_t_failure_restores_config_and_rollback(tmp_path: Path) -> None:

@@ -306,7 +306,7 @@ apply_v1() {
     local sha="$1"
     local release="$RELEASES_DIR/$sha"
     local image_id loaded_id epoch prev headers code header
-    local nginx_backup cfg_backup cfg_stage web_stage web_release manifest
+    local nginx_backup cfg_backup cfg_stage web_stage web_release web_filelist manifest
     local compose_project expected_web_sha actual_web_sha
 
     mkdir -p "$RELEASES_DIR" "$CONFIG_HISTORY" "$CONFIG_DIR" "$WEB_ROOT/releases" \
@@ -480,6 +480,21 @@ apply_v1() {
             "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     if [ -d "$web_release" ]; then
+        # Enumerate the stage into a checked list first: `find` inside a process
+        # substitution cannot propagate its exit status, so a failed or partial
+        # enumeration would otherwise reach "content verified" with an empty
+        # loop.  The list lives in STAGING_DIR, never under $web_stage (which
+        # find would otherwise enumerate as a member of its own output).  It is
+        # unlinked immediately after fd 8 opens it, so no exit path leaks it.
+        web_filelist="$STAGING_DIR/web-filelist.${sha}.$$"
+        if ! find "$web_stage" -type f -print0 > "$web_filelist"; then
+            rm -f -- "$web_filelist"
+            rm -rf -- "$web_stage"
+            fail_and_rollback "web reuse enumeration failed" "$prev" "$sha" \
+                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+        exec 8< "$web_filelist"
+        rm -f -- "$web_filelist"
         while IFS= read -r -d '' staged_file; do
             rel="${staged_file#"$web_stage"/}"
             if [ ! -f "$web_release/$rel" ] \
@@ -488,7 +503,8 @@ apply_v1() {
                 fail_and_rollback "web release content mismatch on reuse: $rel" \
                     "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
             fi
-        done < <(find "$web_stage" -type f -print0)
+        done <&8
+        exec 8<&-
         rm -rf -- "$web_stage"
         echo "WRAP: web release reused (content verified): $web_release"
     else
