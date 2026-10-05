@@ -1,7 +1,10 @@
 # Canonical nginx vhost template (VHOST-CANON) for stroy.mostdef.ru.
 # This file is a TEMPLATE copied to /etc/nginx/sites-available/stroy.mostdef.ru on the VPS;
 # never commit the installed copy.
-# The sha256 of this file will be recorded in issue #123 after live-vhost sync.
+# The canonical set is TWO files: this vhost template AND
+# stroy-ratelimit.conf.example (installed as /etc/nginx/conf.d/stroy-ratelimit.conf,
+# http context). The sha256 of BOTH files will be recorded in issue #123 after
+# live-vhost sync.
 #
 # add_header inheritance trap: declaring ANY add_header inside a `location`
 # cancels ALL add_header directives inherited from the server block. So every
@@ -54,6 +57,20 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
 
+    # Rate-limited auth paths (defense-in-depth over app-level LoginThrottle,
+    # which only covers the login route). Covers login, /me, logout and future
+    # auth endpoints.
+    # Zone stroy_auth (10r/m per IP) is declared in /etc/nginx/conf.d/stroy-ratelimit.conf
+    # (issue #125): bursting 5 queued requests (`burst=5`) are served immediately
+    # (`nodelay`) before excess is rejected; `limit_req_status 429` sets the
+    # rejection code. More-specific prefix wins over the generic /api/ location
+    # below (nginx prefix matching selects the longest matching prefix).
+    # No add_header here: the 5 server-level security headers stay inherited.
+    location /api/v1/auth/ {
+        limit_req zone=stroy_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8000;
+    }
     # Backend API proxy
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
