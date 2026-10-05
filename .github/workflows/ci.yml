@@ -153,9 +153,15 @@ jobs:
 
       - name: Audit Python dependencies (pip-audit)
         run: |
+          # PYSEC-2026-1845 / CVE-2025-71176 / GHSA-6w46-j5rx-g56g (pytest < 9.0.3)
+          # is MEDIUM severity, dev/test environment only. The fixed pytest>=9.0.3
+          # is NOT installable: every published pytest-asyncio (<1) pins pytest<9,
+          # so pip resolution fails (verified in CI run 37271858906). Suppressed
+          # as a documented accepted risk per issue #124; revisit when
+          # pytest-asyncio ships a pytest-9-compatible release.
           # NOTE: --strict is intentionally omitted because it aborts on the
           # editable self-install (stroy) instead of auditing the environment.
-          pip-audit --skip-editable
+          pip-audit --skip-editable --ignore-vuln PYSEC-2026-1845
 
       - name: Trivy filesystem scan (HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
