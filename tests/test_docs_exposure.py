@@ -69,7 +69,7 @@ async def _running_client(settings: Settings) -> AsyncIterator[AsyncClient]:
 @pytest.mark.asyncio
 async def test_production_disables_docs_and_schema_endpoints(tmp_path: Path) -> None:
     async with _running_client(_production_settings(tmp_path)) as client:
-        for path in ("/docs", "/redoc", "/openapi.json"):
+        for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
             response = await client.get(path)
             assert response.status_code == 404, path
 
