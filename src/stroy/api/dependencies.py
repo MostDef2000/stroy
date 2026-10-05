@@ -45,6 +45,20 @@ async def require_owner(request: Request, session: DbSession) -> AuthSessionRow:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at <= now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session expired")
+    idle_ttl = settings_from(request).session_idle_ttl_seconds
+    if idle_ttl > 0:
+        last_seen = auth_session.last_seen_at or auth_session.created_at
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if (now - last_seen).total_seconds() >= idle_ttl:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="session expired"
+            )
+    # Idle activity extends the session. get_db does not commit on request
+    # exit, so persist explicitly here (safe: dependencies run before the
+    # route body, so no other pending changes exist yet).
+    auth_session.last_seen_at = now
+    await session.commit()
     request.state.auth_session = auth_session
     return auth_session
 
