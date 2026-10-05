@@ -580,6 +580,7 @@ apply_v1() {
     touch -- "$release"   # deployed_at watermark used by retention
     prune_releases "$RELEASES_DIR" "$sha"
     prune_releases "$WEB_ROOT/releases" "$sha"
+    prune_images
 
     echo "apply-ok $sha $loaded_id"
 }
@@ -600,6 +601,23 @@ prune_releases() {
             rm -rf -- "$keep_dir"
         fi
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn)
+}
+
+# Best-effort GC: docker image tags track release retention.  A stroy-api image
+# whose tag-sha has no release dir on disk is removed; anything unparseable,
+# foreign, or in use is skipped (plain rm, no --force, failures ignored).  Image
+# cleanup must never fail a completed deploy, hence fire-and-forget semantics.
+prune_images() {
+    local tag sha
+    command -v docker >/dev/null 2>&1 || return 0
+    while IFS= read -r tag; do
+        [ -n "$tag" ] || continue
+        sha="${tag#stroy-api:}"
+        [ "$sha" != "$tag" ] || continue
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+        [ -d "$RELEASES_DIR/$sha" ] && continue
+        docker image rm "stroy-api:$sha" >/dev/null 2>&1 || true
+    done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
 }
 
 # ---------------------------------------------------------------------------- #
