@@ -7,8 +7,11 @@ These are unit tests: no docker, no network.  They import the pure logic from
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -92,7 +95,7 @@ def test_parse_runs_rejects_invalid_sha() -> None:
         deploy_gate.parse_runs({"total_count": 1, "workflow_runs": []}, "short")
 
 
-@pytest.mark.parametrize("total_count", [0, -1, None, "3", True])
+@pytest.mark.parametrize("total_count", [0, -1, None, "3", True, 2.5, 3.0])
 def test_parse_runs_fails_closed_on_bad_total_count(total_count) -> None:
     payload: dict = {"workflow_runs": []}
     if total_count is not None:
@@ -354,16 +357,55 @@ def test_extract_safe_rejects_traversal(tmp_path: Path, member_name: str) -> Non
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_extract_safe_rejects_symlink_escape(tmp_path: Path) -> None:
-    archive = _symlink_tar(tmp_path, "dir/link", "../../etc/passwd")
-    with pytest.raises(bundle_utils.BundleError, match="escapes"):
+@pytest.mark.parametrize(
+    "member_name, linkname",
+    [
+        ("dir/link", "../../etc/passwd"),   # escape
+        ("link", "/etc/passwd"),            # absolute
+        ("dir/link", "file.txt"),           # benign-looking internal link
+        ("a", "."),                         # chained-link primitive
+    ],
+)
+def test_extract_safe_rejects_every_symlink(tmp_path: Path, member_name: str,
+                                            linkname: str) -> None:
+    archive = _symlink_tar(tmp_path, member_name, linkname)
+    with pytest.raises(bundle_utils.BundleError, match="links are not permitted"):
         bundle_utils.extract_safe(archive, tmp_path / "out")
 
 
-def test_extract_safe_rejects_absolute_symlink(tmp_path: Path) -> None:
-    archive = _symlink_tar(tmp_path, "link", "/etc/passwd")
-    with pytest.raises(bundle_utils.BundleError):
+def test_extract_safe_rejects_hardlink(tmp_path: Path) -> None:
+    info = tarfile.TarInfo("hard")
+    info.type = tarfile.LNKTYPE
+    info.linkname = "target.txt"
+    archive = _write_tar(tmp_path, "hardlink.tar.gz", info)
+    with pytest.raises(bundle_utils.BundleError, match="links are not permitted"):
         bundle_utils.extract_safe(archive, tmp_path / "out")
+
+
+def test_extract_safe_rejects_chained_symlink_escape(tmp_path: Path) -> None:
+    # Validator chain: a -> '.', b -> 'a/..', then regular member b/escape.
+    # Prevalidation alone passes (a does not exist yet), so links must be
+    # rejected outright or b/escape lands OUTSIDE dest.
+    archive = tmp_path / "chain.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        first = tarfile.TarInfo("a")
+        first.type = tarfile.SYMTYPE
+        first.linkname = "."
+        tar.addfile(first)
+        second = tarfile.TarInfo("b")
+        second.type = tarfile.SYMTYPE
+        second.linkname = "a/.."
+        tar.addfile(second)
+        payload = b"pwned"
+        escape = tarfile.TarInfo("b/escape")
+        escape.size = len(payload)
+        tar.addfile(escape, io.BytesIO(payload))
+    dest = tmp_path / "out"
+    with pytest.raises(bundle_utils.BundleError, match="links are not permitted"):
+        bundle_utils.extract_safe(archive, dest)
+    # Nothing may exist outside dest (or inside it).
+    assert not (tmp_path / "escape").exists()
+    assert not dest.exists()
 
 
 def test_extract_safe_rejects_device_member(tmp_path: Path) -> None:
@@ -376,21 +418,25 @@ def test_extract_safe_rejects_device_member(tmp_path: Path) -> None:
         bundle_utils.extract_safe(archive, tmp_path / "out")
 
 
-def test_extract_safe_allows_benign_internal_symlink(tmp_path: Path) -> None:
-    path = tmp_path / "benign.tar.gz"
-    with tarfile.open(path, "w:gz") as archive:
-        payload = b"hello"
-        info = tarfile.TarInfo("dir/file.txt")
-        info.size = len(payload)
-        archive.addfile(info, io.BytesIO(payload))
-        link = tarfile.TarInfo("dir/link.txt")
-        link.type = tarfile.SYMTYPE
-        link.linkname = "file.txt"
-        link.mode = 0o777
-        archive.addfile(link)
-    dest = tmp_path / "out"
-    bundle_utils.extract_safe(path, dest)
-    assert (dest / "dir" / "file.txt").read_bytes() == b"hello"
+# --------------------------------------------------------------------------- #
+# hash-file CLI
+# --------------------------------------------------------------------------- #
+def test_cli_hash_file_prints_sha256(tmp_path: Path,
+                                     capsys: pytest.CaptureFixture) -> None:
+    target = tmp_path / "blob.bin"
+    target.write_bytes(b"hello world")
+    expected = hashlib.sha256(b"hello world").hexdigest()
+    assert bundle_utils.main(["hash-file", str(target)]) == 0
+    assert capsys.readouterr().out.strip() == expected
+
+
+def test_cli_hash_file_missing_file_errors(tmp_path: Path,
+                                           capsys: pytest.CaptureFixture) -> None:
+    missing = tmp_path / "nope.bin"
+    assert bundle_utils.main(["hash-file", str(missing)]) == 1
+    captured = capsys.readouterr()
+    assert "BUNDLE-ERR" in captured.err
+    assert "not a file" in captured.err
 
 
 # --------------------------------------------------------------------------- #
@@ -495,3 +541,157 @@ def test_verify_web_dist_rejects_well_known(tmp_path: Path) -> None:
 def test_verify_web_dist_rejects_missing_index(tmp_path: Path) -> None:
     with pytest.raises(bundle_utils.BundleError, match="index.html"):
         bundle_utils.verify_web_dist(_web_tar(tmp_path, ["./assets/app.js"]))
+
+
+# --------------------------------------------------------------------------- #
+# wrapper apply-v1: same-sha web-release reuse (hermetic: no docker, no network)
+# --------------------------------------------------------------------------- #
+# This is an integration smoke test of deploy/vps/deploy-wrapper through its
+# public dispatch (SSH_ORIGINAL_COMMAND) with every external side effect faked:
+#   * docker  -> image inspect prints the manifest api_image_id; all else exit 0
+#   * nginx   -> `-t` exits 0        * systemctl -> `reload` exits 0
+#   * curl    -> always prints a 200 + the five security headers
+#   * flock/find/install/mktemp/... -> real coreutils
+# The wrapper uses tmp-dir STROY_DEPLOY_* overrides and the real bundle_utils.py.
+WRAPPER = ROOT / "deploy" / "vps" / "deploy-wrapper"
+FAKE_HEADERS = (
+    "HTTP/1.1 200 OK\r\n"
+    "X-Content-Type-Options: nosniff\r\n"
+    "Strict-Transport-Security: max-age=63072000; includeSubDomains\r\n"
+    "Content-Security-Policy: default-src 'self'\r\n"
+    "X-Frame-Options: DENY\r\n"
+    "Referrer-Policy: strict-origin-when-cross-origin\r\n"
+    "\r\n"
+)
+
+
+def _write_fake_bins(bin_dir: Path) -> None:
+    scripts = {
+        "docker": (
+            "#!/usr/bin/env bash\n"
+            'echo "docker $*" >> "$FAKE_LOG"\n'
+            'case "$1" in\n'
+            "  image) printf '%s\\n' \"$FAKE_IMAGE_ID\" ;;\n"
+            "esac\n"
+            "exit 0\n"
+        ),
+        "nginx": (
+            "#!/usr/bin/env bash\n"
+            'echo "nginx $*" >> "$FAKE_LOG"\n'
+            "exit 0\n"
+        ),
+        "systemctl": (
+            "#!/usr/bin/env bash\n"
+            'echo "systemctl $*" >> "$FAKE_LOG"\n'
+            "exit 0\n"
+        ),
+        "curl": (
+            "#!/usr/bin/env bash\n"
+            'echo "curl $*" >> "$FAKE_LOG"\n'
+            'cat "$FAKE_HEADERS"\n'
+            "exit 0\n"
+        ),
+    }
+    for name, body in scripts.items():
+        path = bin_dir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+
+
+def _stage_release(releases_dir: Path) -> None:
+    release = releases_dir / SHA
+    release.mkdir(parents=True)
+    (release / bundle_utils.API_IMAGE_ARCHIVE).write_bytes(b"api-image")
+    config_members = {
+        "docker-compose.yml": b"services: {}\n",
+        "nginx/stroy.mostdef.ru.conf.example": b"server {}\n",
+        "nginx/stroy-ratelimit.conf.example": b"limit_req_zone $binary_remote_addr "
+                                             b"zone=stroy:10m rate=10r/s;\n",
+    }
+    with tarfile.open(release / bundle_utils.DEPLOY_CONFIG_ARCHIVE, "w:gz") as tar:
+        for name, data in config_members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    with tarfile.open(release / bundle_utils.WEB_ARCHIVE, "w:gz") as tar:
+        for name in ("./index.html", "./assets/app.js"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+    bundle_utils.build_manifest(release, SHA, IMAGE_ID, 123456, RUN_URL)
+
+
+def _wrapper_env(tmp: Path, bin_dir: Path, log: Path, headers: Path) -> dict:
+    env_dir = tmp / "opt"
+    env_dir.mkdir(exist_ok=True)
+    (tmp / "staging").mkdir(exist_ok=True)  # receive-v1 normally creates this
+    env_file = env_dir / ".env"
+    env_file.write_text("STROY_API_IMAGE=placeholder\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "SSH_ORIGINAL_COMMAND": f"apply-v1 {SHA}",
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "FAKE_LOG": str(log),
+            "FAKE_IMAGE_ID": IMAGE_ID,
+            "FAKE_HEADERS": str(headers),
+            "STROY_DEPLOY_STAGING": str(tmp / "staging"),
+            "STROY_DEPLOY_RELEASES": str(tmp / "releases"),
+            "STROY_DEPLOY_LOCK": str(tmp / "apply.lock"),
+            "STROY_DEPLOY_CURRENT": str(tmp / "current.json"),
+            "STROY_DEPLOY_CONFIG_DIR": str(tmp / "config"),
+            "STROY_DEPLOY_CONFIG_HISTORY": str(tmp / "config-history"),
+            "STROY_DEPLOY_ENV_FILE": str(env_file),
+            "STROY_DEPLOY_WEB_ROOT": str(tmp / "web"),
+            "STROY_DEPLOY_ACME_ROOT": str(tmp / "acme"),
+            "STROY_DEPLOY_NGINX_AVAILABLE": str(tmp / "nginx/available"),
+            "STROY_DEPLOY_NGINX_ENABLED": str(tmp / "nginx/enabled"),
+            "STROY_DEPLOY_NGINX_CONFD": str(tmp / "nginx/confd"),
+            "STROY_DEPLOY_HEALTH_URL": "http://127.0.0.1:8000/health",
+            "STROY_DEPLOY_PUBLIC_URL": "https://stroy.mostdef.ru/",
+            "STROY_DEPLOY_PUBLIC_HOST": "stroy.mostdef.ru",
+            "STROY_DEPLOY_PYTHON": sys.executable,
+            "STROY_DEPLOY_BUNDLE_UTILS": str(ROOT / "scripts" / "deploy" / "bundle_utils.py"),
+            "STROY_DEPLOY_KEEP_RELEASES": "5",
+        }
+    )
+    return env
+
+
+def test_wrapper_apply_v1_reuses_existing_web_release(tmp_path: Path) -> None:
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    _stage_release(releases_dir)
+    web_release = tmp_path / "web" / "releases" / SHA
+    web_release.mkdir(parents=True)
+    (web_release / "index.html").write_text("live index", encoding="utf-8")
+    (web_release / "MARKER.txt").write_text("keep me", encoding="utf-8")
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+    env = _wrapper_env(tmp_path, bin_dir, log, headers)
+
+    for _ in range(2):
+        proc = subprocess.run(
+            ["bash", str(WRAPPER)],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        assert "web release reused" in proc.stdout
+        assert "apply-ok" in proc.stdout
+
+    # The pre-existing release tree (and its marker) must survive both applies;
+    # the old code `rm -rf`'d it unconditionally.
+    assert (web_release / "MARKER.txt").read_text(encoding="utf-8") == "keep me"
+    assert os.readlink(tmp_path / "web" / "current") == str(web_release)
+    fake_calls = log.read_text(encoding="utf-8")
+    assert "docker image inspect" in fake_calls
+    assert "docker compose" in fake_calls
+    assert "nginx -t" in fake_calls

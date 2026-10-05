@@ -128,13 +128,43 @@ restore_nginx() {
     return "$rc"
 }
 
-# rollback_previous <prev_sha> <nginx_backup> — best-effort; never masks caller.
+# restore_config <backup_dir> — put the previous deploy-config snapshot back
+# (compose file + pinned nginx files) and recreate the owner-managed symlinks
+# exactly as the install step does.  Logged; any failure flips the return code.
+restore_config() {
+    local backup="$1" rc=0
+    [ -d "$backup" ] || { echo "WRAP-ERR: config backup missing: $backup" >&2; return 1; }
+    echo "WRAP: restoring previous deploy config from $backup"
+    if ! find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; then
+        echo "WRAP-ERR: cannot clear config dir before restore" >&2
+        rc=1
+    fi
+    if ! cp -a "$backup/." "$CONFIG_DIR/"; then
+        echo "WRAP-ERR: cannot restore config snapshot contents" >&2
+        rc=1
+    fi
+    ln -sfn -- "$ENV_FILE" "$CONFIG_DIR/.env" || rc=1
+    if [ -f "$(dirname "$ENV_FILE")/.worker-env" ]; then
+        ln -sfn -- "$(dirname "$ENV_FILE")/.worker-env" "$CONFIG_DIR/.worker-env" || rc=1
+    fi
+    return "$rc"
+}
+
+# rollback_previous <prev_sha> <nginx_backup> <config_backup> <compose_project>
+# Best-effort; never masks the caller.  Restores the PREVIOUS deploy config
+# (compose + nginx + symlinks) BEFORE bringing the previous image back up.
 # Every step is logged; any failure flips the return code to 1.
 rollback_previous() {
-    local prev="$1" nginx_backup="$2" rc=0
+    local prev="$1" nginx_backup="$2" cfg_backup="$3" compose_project="$4" rc=0
     trap - ERR
     set +e
-    echo "WRAP: rollback start prev=${prev:-none}"
+    echo "WRAP: rollback start prev=${prev:-none} project=${compose_project:-none}"
+    if restore_config "$cfg_backup"; then
+        echo "WRAP: rollback restored previous deploy config"
+    else
+        echo "WRAP-ERR: rollback could not restore previous deploy config" >&2
+        rc=1
+    fi
     if restore_nginx "$nginx_backup"; then
         echo "WRAP: rollback restored previous nginx config"
     else
@@ -153,7 +183,7 @@ rollback_previous() {
         rc=1
     fi
     if [ -n "$prev" ] && docker image inspect "stroy-api:$prev" >/dev/null 2>&1; then
-        if STROY_API_IMAGE="stroy-api:$prev" docker compose \
+        if STROY_API_IMAGE="stroy-api:$prev" docker compose -p "$compose_project" \
             -f "$CONFIG_DIR/docker-compose.yml" --env-file "$ENV_FILE" \
             --project-directory "$CONFIG_DIR" up -d --no-build; then
             echo "WRAP: rollback compose up -> stroy-api:$prev"
@@ -176,13 +206,15 @@ rollback_previous() {
     return "$rc"
 }
 
-# fail_and_rollback <reason> <prev> <target> <nginx_backup> [manifest]
+# fail_and_rollback <reason> <prev> <target> <nginx_backup> <config_backup> \
+#                  <compose_project> [manifest]
 # Records "failed", attempts best-effort rollback, records "rolled_back_to" on a
 # fully successful rollback, then exits non-zero with the original reason.
 fail_and_rollback() {
-    local reason="$1" prev="$2" target="$3" nginx_backup="$4" manifest="${5:-}"
+    local reason="$1" prev="$2" target="$3" nginx_backup="$4" cfg_backup="$5" \
+        compose_project="$6" manifest="${7:-}"
     write_current_json "failed" "$prev" "$target" "$target" "$manifest"
-    if rollback_previous "$prev" "$nginx_backup"; then
+    if rollback_previous "$prev" "$nginx_backup" "$cfg_backup" "$compose_project"; then
         write_current_json "rolled_back_to" "$target" "$prev" "$prev" ""
         echo "WRAP: rollback completed to ${prev:-none}" >&2
     else
@@ -254,7 +286,8 @@ apply_v1() {
     local sha="$1"
     local release="$RELEASES_DIR/$sha"
     local image_id loaded_id epoch prev headers code header
-    local nginx_backup cfg_stage web_stage web_release manifest
+    local nginx_backup cfg_backup cfg_stage web_stage web_release manifest
+    local compose_project expected_web_sha actual_web_sha
 
     mkdir -p "$RELEASES_DIR" "$CONFIG_HISTORY" "$CONFIG_DIR" "$WEB_ROOT/releases" \
         "$NGINX_AVAILABLE" "$NGINX_ENABLED" "$NGINX_CONFD" || err "cannot create dirs"
@@ -271,6 +304,21 @@ apply_v1() {
     [ -f "$ENV_FILE" ] || err "missing env file: $ENV_FILE"
     manifest="$release/release-manifest.json"
 
+    # Compose identity: take it from the manifest (schema-required) and pass
+    # `-p` to EVERY compose call.  Without this, a config dir named `config`
+    # would adopt the default project name "config" and orphan the real
+    # containers/volumes that live under the production project "vps".
+    compose_project="$("$PYTHON" -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["compose_project"])' \
+        "$manifest")" || err "manifest compose_project unreadable"
+    [[ "$compose_project" =~ ^[a-z0-9][a-z0-9_-]{0,48}$ ]] \
+        || err "invalid compose_project in manifest"
+
+    # Expected web-archive digest, used to authorise same-sha release reuse.
+    expected_web_sha="$("$PYTHON" -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["web_archive_sha256"])' \
+        "$manifest")" || err "manifest web_archive_sha256 unreadable"
+
     # Hard guard (validator): the wrapper must NEVER write the ACME webroot.
     case "$(readlink -f "$WEB_ROOT" 2>/dev/null || echo "$WEB_ROOT")" in
         "$ACME_ROOT" | "$ACME_ROOT"/*) err "refusing to operate on ACME webroot" ;;
@@ -282,11 +330,12 @@ apply_v1() {
     prev="$(read_prev_sha)"
 
     # ---- (1) deploy-config install (history backup + stale-file removal) --- #
-    epoch="$(date +%s)"
-    if [ -n "$(find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-        mkdir -p "$CONFIG_HISTORY/$epoch/config" || err "config history dir failed"
-        cp -a "$CONFIG_DIR/." "$CONFIG_HISTORY/$epoch/config/" || err "config backup failed"
-    fi
+    # Unique per-run backup id (timestamp + pid): a same-second second apply
+    # must never clobber the baseline a rollback depends on.
+    epoch="$(date +%s).$$"
+    cfg_backup="$CONFIG_HISTORY/$epoch/config"
+    mkdir -p "$cfg_backup" || err "config history dir failed"
+    cp -a "$CONFIG_DIR/." "$cfg_backup/" || err "config backup failed"
     cfg_stage="$(mktemp -d "$STAGING_DIR/cfg.XXXXXX")" || err "mktemp failed"
     if ! helper extract-safe "$release/deploy-config.tar.gz" "$cfg_stage" \
         --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
@@ -346,48 +395,68 @@ apply_v1() {
 
     # ---- (4) load + verify image, then compose up -------------------------- #
     if ! docker load -i "$release/api-image.tar.gz" >/dev/null; then
-        fail_and_rollback "docker load failed" "$prev" "$sha" "$nginx_backup" "$manifest"
+        fail_and_rollback "docker load failed" "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     if ! loaded_id="$(docker image inspect "stroy-api:$sha" --format '{{.Id}}')"; then
         fail_and_rollback "stroy-api:$sha missing after load" \
-            "$prev" "$sha" "$nginx_backup" "$manifest"
+            "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     if [ "$loaded_id" != "$image_id" ]; then
         fail_and_rollback "image id mismatch: manifest=$image_id loaded=$loaded_id" \
-            "$prev" "$sha" "$nginx_backup" "$manifest"
+            "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     export STROY_API_IMAGE="stroy-api:$sha"
-    if ! docker compose -f "$CONFIG_DIR/docker-compose.yml" \
+    if ! docker compose -p "$compose_project" -f "$CONFIG_DIR/docker-compose.yml" \
         --env-file "$ENV_FILE" --project-directory "$CONFIG_DIR" \
         up -d --no-build; then
-        fail_and_rollback "docker compose up failed" "$prev" "$sha" "$nginx_backup" "$manifest"
+        fail_and_rollback "docker compose up failed" "$prev" "$sha" "$nginx_backup" \
+            "$cfg_backup" "$compose_project" "$manifest"
     fi
 
     # ---- (5) publish web release + atomic symlink switch ------------------- #
+    # Same-sha reapply: the release dir may already be the live target of
+    # `current`.  NEVER delete it; rehash the staged archive against the
+    # manifest and reuse the existing tree.  Only extract when it is missing.
     web_stage="$WEB_ROOT/releases/.staging.${sha}.$$"
     web_release="$WEB_ROOT/releases/$sha"
-    rm -rf -- "$web_stage" "$web_release"
-    if ! mkdir -p "$web_stage"; then
-        fail_and_rollback "cannot create web staging" "$prev" "$sha" "$nginx_backup" "$manifest"
-    fi
-    if ! helper extract-safe "$release/web-dist.tar.gz" "$web_stage" \
-        --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
-        fail_and_rollback "web-dist archive unsafe" "$prev" "$sha" "$nginx_backup" "$manifest"
-    fi
-    if [ ! -f "$web_stage/index.html" ]; then
-        fail_and_rollback "web release missing index.html" \
-            "$prev" "$sha" "$nginx_backup" "$manifest"
-    fi
-    if ! mv -- "$web_stage" "$web_release"; then
-        fail_and_rollback "cannot publish web release" "$prev" "$sha" "$nginx_backup" "$manifest"
+    rm -rf -- "$web_stage"
+    if [ -d "$web_release" ]; then
+        if ! actual_web_sha="$(helper hash-file "$release/web-dist.tar.gz")"; then
+            fail_and_rollback "cannot rehash web archive for reuse" "$prev" "$sha" \
+                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+        if [ "$actual_web_sha" != "$expected_web_sha" ]; then
+            fail_and_rollback "web archive digest mismatch on reuse" "$prev" "$sha" \
+                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+        echo "WRAP: web release reused: $web_release"
+    else
+        if ! mkdir -p "$web_stage"; then
+            fail_and_rollback "cannot create web staging" "$prev" "$sha" \
+                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+        if ! helper extract-safe "$release/web-dist.tar.gz" "$web_stage" \
+            --max-member-b "$MAX_MEMBER_B" --max-total-b "$MAX_TOTAL_B" >/dev/null; then
+            fail_and_rollback "web-dist archive unsafe" "$prev" "$sha" \
+                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+        if [ ! -f "$web_stage/index.html" ]; then
+            fail_and_rollback "web release missing index.html" \
+                "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+        if ! mv -- "$web_stage" "$web_release"; then
+            fail_and_rollback "cannot publish web release" "$prev" "$sha" \
+                "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
     fi
     if ! ln -sfn -- "$web_release" "$WEB_ROOT/current"; then
-        fail_and_rollback "cannot switch current symlink" "$prev" "$sha" "$nginx_backup" "$manifest"
+        fail_and_rollback "cannot switch current symlink" "$prev" "$sha" \
+            "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
 
     # ---- (6) reload nginx + health/header checks --------------------------- #
     if ! systemctl reload nginx; then
-        fail_and_rollback "systemctl reload nginx failed" "$prev" "$sha" "$nginx_backup" "$manifest"
+        fail_and_rollback "systemctl reload nginx failed" "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     for attempt in $(seq 1 30); do
         if curl -fsS -m 5 -H "Host: $PUBLIC_HOST" "$HEALTH_URL" >/dev/null 2>&1; then
@@ -395,7 +464,7 @@ apply_v1() {
         fi
         if [ "$attempt" -ge 30 ]; then
             fail_and_rollback "api /health did not become ready" \
-                "$prev" "$sha" "$nginx_backup" "$manifest"
+                "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
         fi
         sleep 2
     done
@@ -403,13 +472,13 @@ apply_v1() {
     code="$(printf '%s\n' "$headers" | head -1 | awk '{print $2}')"
     if [ "$code" != "200" ]; then
         fail_and_rollback "public ingress returned HTTP ${code:-none}" \
-            "$prev" "$sha" "$nginx_backup" "$manifest"
+            "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     for header in x-content-type-options strict-transport-security content-security-policy \
         x-frame-options referrer-policy; do
         if ! printf '%s\n' "$headers" | grep -qi "^${header}:"; then
             fail_and_rollback "missing security header on ingress: $header" \
-                "$prev" "$sha" "$nginx_backup" "$manifest"
+                "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
         fi
     done
 

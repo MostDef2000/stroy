@@ -55,6 +55,20 @@ required reviewers / a wait timer) and set secrets `DEPLOY_SSH_KEY`,
 owner-managed; the workflow cannot create them. `DEPLOY_USER` is `root`: the
 forced-command key lives in root's `authorized_keys` (see bootstrap).
 
+## Branch protection (required checks, post-merge)
+
+The deploy gate only trusts a completed, successful `ci.yml` **push** run on
+`main`. Keep that invariant enforced after #130 merges:
+
+- Require status checks before merging on `main`, and require **all five**
+  checks: `blender-smoke`, `contracts-and-python`, `deployment-config`,
+  `security-gates`, `web`. Job id == check name: `ci.yml` declares no per-job
+  `name:`, so the GitHub check name is the job id.
+- Require branches to be up to date before merging.
+- Do not allow bypassing the above settings (single-owner repo: leaving it
+  enforced is what makes `event=push` + `head_branch=main` + all-jobs-success
+  meaningful for the gate).
+
 ## One-time VPS bootstrap
 
 1. **DNS**: `stroy.mostdef.ru` A record points at the VPS.
@@ -124,11 +138,73 @@ forced-command key lives in root's `authorized_keys` (see bootstrap).
      docker tag cr.yandex/mirror/minio/minio minio/minio:latest
      ```
      (The live VPS already has this tag.)
-8. **Bootstrap release A (exception, recorded in the handoff)**: the live VPS
-   was originally deployed with `docker compose up -d --build`. Before the
-   first wrapper-driven deploy, create release A once from a verified checkout
-   at the target sha and record the sha/config in the deploy handoff. The first
-   successful `apply-v1` supersedes it and starts `current.json`.
+8. **Confirm production compose identity before the first apply.** The wrapper
+   passes `-p vps` (read from the release manifest) to *every* `docker compose`
+   call, so the live containers/volumes must belong to the project `vps`. Check
+   the running api container's compose label on the server:
+   ```bash
+   docker inspect <api-container> \
+     --format '{{index .Config.Labels "com.docker.compose.project"}}'
+   # expect: vps
+   ```
+   If it prints anything else (e.g. `config`), stop and reconcile (`docker
+   compose -p vps ...` / volume migration) before the first `apply-v1` —
+   otherwise compose starts a second, empty stack and the site goes dark.
+9. **Bootstrap release A — seed the rollback baseline BEFORE the first B.**
+   A wrapper `apply-v1` can only roll back to a release the host already has,
+   and the nginx template it installs serves `/var/www/stroy.mostdef.ru/current`
+   — both must exist *before* the first workflow deploy. The live VPS was
+   originally deployed by hand with `docker compose up -d --build` at
+   `8033b4a7e560a1e4d50e30fed95d89c6d0a4c8d9` (release **A**). On the server, as
+   root, run the whole sequence below to seed A through the wrapper itself:
+   ```bash
+   A=8033b4a7e560a1e4d50e30fed95d89c6d0a4c8d9
+   ROOT="/var/opt/stroy-deploy/bootstrap/$A"
+   mkdir -p "$ROOT"
+
+   # (a) tag the currently running image as the release A image
+   API_IMAGE_ID="$(docker inspect <api-container> --format '{{.Image}}')"
+   docker tag "$API_IMAGE_ID" "stroy-api:$A"
+
+   # (b) snapshot the CURRENT serving web root exactly as served
+   tar -C /var/www/stroy.mostdef.ru/current -czf "$ROOT/web-dist.tar.gz" .
+
+   # (c) deploy-config from the repo tree at A (deploy/vps contents at root)
+   mkdir -p "$ROOT/deploy-config"
+   git -C <repo> fetch --no-tags origin "$A"
+   git -C <repo> archive --format=tar "$A" deploy/vps \
+     | tar -x -C "$ROOT/deploy-config" --strip-components=2
+   tar -C "$ROOT/deploy-config" -czf "$ROOT/deploy-config.tar.gz" .
+
+   # (d) api image archive + manifest (server copy of the helper)
+   docker save "stroy-api:$A" | gzip -9 > "$ROOT/api-image.tar.gz"
+   ID="$(docker image inspect "stroy-api:$A" --format '{{.Id}}')"
+   python3 /usr/local/lib/stroy-deploy/bundle_utils.py build-manifest \
+     "$ROOT" "$A" "$ID" 1 "manual"
+
+   # (e) pack and feed the envelope through the wrapper's verbs
+   tar -C "$ROOT" -czf "$ROOT/deploy-envelope-$A.tar.gz" .
+   SSH_ORIGINAL_COMMAND="receive-v1 $A" /usr/local/sbin/stroy-deploy-wrapper \
+     < "$ROOT/deploy-envelope-$A.tar.gz"
+   SSH_ORIGINAL_COMMAND="apply-v1 $A" /usr/local/sbin/stroy-deploy-wrapper
+   ```
+   `ci_run_id` must be a positive integer (the manifest schema rejects `0` and
+   strings); there is no CI run for the bootstrap release, so use the integer
+   placeholder `1` together with `ci_run_url="manual"` as shown.
+   Step (e) installs the new nginx template, the `/current` symlink and
+   `current.json` in one verified step — this *is* the live-config sync.
+10. **Verify, then deploy B.** Confirm the site and all five security headers
+    (`status-v1`, plus a `curl -sD - -o /dev/null https://stroy.mostdef.ru/`),
+    then run the first workflow deploy **B**. B's rollback target is now A,
+    retained under `/var/opt/stroy-deploy/releases/$A` and
+    `/var/www/stroy.mostdef.ru/releases/$A`.
+
+   > **Why A itself cannot be deployed by the workflow.** `deploy.yml`'s
+   > `build` job checks out the requested SHA and calls `scripts/deploy/*`; at
+   > A (`8033b4a`) those helpers did not exist, so a `deploy.yml` run for A
+   > fails. Rollback to A is therefore **server-retention only**: while A is
+   > still staged, `apply-v1 A` works; if it was pruned, re-seed it (retag the
+   > retained image `stroy-api:$A` and `receive-v1`/`apply-v1` the A envelope).
 
 ## Web distribution
 
@@ -144,7 +220,10 @@ produces `web-dist.tar.gz`; `apply-v1` extracts it to
   (`TrustedHostMiddleware`); pass `-H 'Host: stroy.mostdef.ru'`.
 - `apply-v1` fails the deploy unless the API health endpoint is ready and the
   public ingress returns 200 **with all five security headers**.
-- **Containers**: `docker compose -f /opt/stroy-deploy/config/docker-compose.yml ps`.
+- **Containers**: `docker compose -p vps -f /opt/stroy-deploy/config/docker-compose.yml ps`.
+  The `-p vps` is mandatory: it is the production project identity the wrapper
+  always uses; omitting it selects a throwaway project derived from the config
+  directory and shows an empty stack.
 
 ## Troubleshooting
 
@@ -209,11 +288,13 @@ never lies:
    nginx reload, health/header checks) — the wrapper rewrites `current.json`
    with `status: "failed"` and then attempts an automatic best-effort rollback,
    logging every step:
-   - restore the previous nginx pair from the config-history snapshot;
+   - restore the previous **deploy config** (compose file + nginx pair) from the
+     unique config-history snapshot (`<timestamp>.<pid>`) and recreate the
+     `.env`/`.worker-env` symlinks;
    - repoint the `current` web symlink to the previous release when
      `/var/www/stroy.mostdef.ru/releases/<prev>` still exists;
-   - `docker compose up -d --no-build` with `stroy-api:<prev>` **only if** that
-     image still exists locally (`docker image inspect`);
+   - `docker compose -p vps up -d --no-build` with `stroy-api:<prev>` **only if**
+     that image still exists locally (`docker image inspect`);
    - `nginx -t && systemctl reload nginx`.
 
    On a fully successful rollback `current.json` is rewritten as

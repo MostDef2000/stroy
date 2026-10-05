@@ -6,10 +6,11 @@ VPS host with no repo importable.
 
 Security posture: every parser/verifier is fail-closed and raises
 ``BundleError`` on anything untrusted.  Archive extraction rejects absolute
-paths, ``..`` traversal, link targets that escape the destination and
-device/FIFO members *before* ``tarfile.extractall`` runs, so hostile tars are
-rejected deterministically on every Python version (independent of
-``filter="data"`` availability).
+paths, ``..`` traversal, **all** symlink/hardlink members (chained links can
+resolve outside the destination even when each lexical target looks safe) and
+device/FIFO members *before* anything is written, so hostile tars are rejected
+deterministically on every Python version (independent of ``filter="data"``
+availability).  Legitimate bundles contain plain files/dirs only.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import shutil
 import sys
@@ -100,15 +100,8 @@ def _reject_unsafe_name(name: str) -> PurePosixPath:
     return posix
 
 
-def _resolve_under(candidate: Path, dest: Path) -> None:
-    resolved = candidate.resolve()
-    _require(
-        resolved == dest or dest in resolved.parents,
-        f"member escapes destination: {candidate}",
-    )
-
-
 def _validate_members(members, dest: Path) -> None:
+    del dest  # retained in the signature for callers/tests; links are rejected outright
     for member in members:
         _reject_unsafe_name(member.name)
         _require(
@@ -116,22 +109,11 @@ def _validate_members(members, dest: Path) -> None:
             f"device/FIFO member rejected: {member.name!r}",
         )
         if member.issym() or member.islnk():
-            _require(
-                member.linkname and not member.linkname.startswith(("/", "\\")),
-                f"absolute link target rejected: {member.name!r}",
-            )
-            link = PurePosixPath(member.linkname)
-            _require(
-                not link.is_absolute() and "\\" not in member.linkname,
-                f"absolute link target rejected: {member.name!r}",
-            )
-            if member.issym():
-                # Symlink targets are relative to the link's own directory.
-                base = (dest / PurePosixPath(member.name)).parent
-            else:
-                # Hardlink targets are archive-root relative.
-                base = dest
-            _resolve_under(base / link, dest)
+            # Chained links defeat lexical validation: a -> '.', b -> 'a/..'
+            # passes prevalidation (a does not exist yet) but makes a later
+            # regular member land outside dest.  No legitimate bundle carries
+            # links, so reject ALL of them.
+            raise BundleError(f"archive links are not permitted: {member.name!r}")
 
 
 def _cleanup_partial(dest: Path, created: bool, extracted: list[Path]) -> None:
@@ -177,15 +159,8 @@ def _stream_extract(
             extracted.append(target)
             continue
         if member.issym() or member.islnk():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.is_symlink() or target.exists():
-                target.unlink()
-            if member.issym():
-                os.symlink(member.linkname, target)
-            else:
-                os.link(dest / PurePosixPath(member.linkname), target)
-            extracted.append(target)
-            continue
+            # Defence in depth: validation already rejects every link member.
+            raise BundleError(f"archive links are not permitted: {member.name!r}")
         _require(member.isfile(), f"unsupported member type: {member.name!r}")
         _require(
             member.size <= max_member_bytes,
@@ -389,6 +364,13 @@ def _cmd_check_manifest_sha(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_hash_file(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    _require(path.is_file(), f"not a file: {args.path}")
+    print(sha256_file(path))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bundle_utils")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -412,6 +394,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="bind manifest git_sha to the requested release sha")
     cms.add_argument("bundle_dir")
     cms.add_argument("sha")
+
+    hashf = sub.add_parser("hash-file", help="print the sha256 of a file")
+    hashf.add_argument("path")
 
     web = sub.add_parser("verify-web", help="validate web dist layout")
     web.add_argument("archive")
@@ -440,6 +425,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_manifest(args)
         elif args.command == "check-manifest-sha":
             return _cmd_check_manifest_sha(args)
+        elif args.command == "hash-file":
+            return _cmd_hash_file(args)
         elif args.command == "verify-web":
             return _cmd_verify_web(args)
         elif args.command == "build-manifest":
