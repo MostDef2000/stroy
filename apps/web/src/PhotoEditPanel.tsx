@@ -1,5 +1,7 @@
 import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, Asset, AssetRole, Generation, Job, SceneRevision } from "./api";
+import { ImageLightbox } from "./ImageLightbox";
+import { ImagePreview } from "./ImagePreview";
 import { statusLabel } from "./copy";
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -71,6 +73,19 @@ export function PhotoEditPanel({
   const [revisionOverride, setRevisionOverride] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
+  // Shared lightbox (#150): primitives only — App.tsx polls every 5s and
+  // replaces object identities, so lightbox state must never hold objects.
+  const [lightbox, setLightbox] = useState<{
+    src: string;
+    alt: string;
+    title: string;
+  } | null>(null);
+  const lightboxTriggerRef = useRef<HTMLElement | null>(null);
+
+  function openLightbox(src: string, alt: string, title: string, trigger: HTMLElement) {
+    lightboxTriggerRef.current = trigger;
+    setLightbox({ src, alt, title });
+  }
 
   const resolvedPhotoId = photoId || imageAssets.photos[0]?.id || "";
   const baseRevisionId = revisionOverride ?? revision.revision_id;
@@ -344,7 +359,20 @@ export function PhotoEditPanel({
               ([label, assetId, caption]) => (
                 <figure key={label}>
                   <figcaption><strong>{label}</strong><span>{caption}</span></figcaption>
-                  <img src={api.assetUrl(assetId)} alt={label} />
+                  <ImagePreview
+                    variant="bounded"
+                    src={api.assetUrl(assetId)}
+                    alt={`${label} — ${caption}`}
+                    expandable
+                    onExpand={(trigger) =>
+                      openLightbox(
+                        api.assetUrl(assetId),
+                        `${label} — ${caption}`,
+                        `Правка фото — ${label}`,
+                        trigger
+                      )
+                    }
+                  />
                 </figure>
               )
             )}
@@ -360,6 +388,15 @@ export function PhotoEditPanel({
       )}
       {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
       {error && <div className="error">{error}</div>}
+
+      <ImageLightbox
+        open={lightbox !== null}
+        src={lightbox?.src ?? null}
+        alt={lightbox?.alt ?? ""}
+        title={lightbox?.title}
+        onClose={() => setLightbox(null)}
+        returnFocusRef={lightboxTriggerRef}
+      />
     </article>
   );
 }
