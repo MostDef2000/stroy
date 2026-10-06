@@ -9,6 +9,10 @@ const STATE_LABEL: Record<ReadinessState, string> = {
 
 // Overview: what is ready, what is missing, where to go next. Also hosts the
 // golden-room demo-scene action while the project has no scene (#101).
+// Everything renders inside .overview-page: an explicit page wrapper (#151)
+// that keeps the workspace's top-aligned row model scoped to this page —
+// without it, the stretched .workspace grid distributes the free viewport
+// height across its implicit rows and the readiness cards grow tall.
 export function OverviewPage({
   readiness,
   hasProject,
@@ -26,17 +30,19 @@ export function OverviewPage({
 }) {
   if (!hasProject) {
     return (
-      <section className="empty-state">
-        <h2>Проект не выбран</h2>
-        <p>Создайте проект в левой панели или выберите существующий.</p>
-      </section>
+      <div className="overview-page">
+        <section className="empty-state">
+          <h2>Проект не выбран</h2>
+          <p>Создайте проект в левой панели или выберите существующий.</p>
+        </section>
+      </div>
     );
   }
 
   const items = computeProjectReadiness(readiness);
 
   return (
-    <>
+    <div className="overview-page">
       {!hasScene && (
         <section className="panel start-scene-panel">
           <h2>Начало работы</h2>
@@ -69,6 +75,6 @@ export function OverviewPage({
           );
         })}
       </section>
-    </>
+    </div>
   );
 }
