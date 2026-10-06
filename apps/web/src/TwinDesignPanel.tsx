@@ -1,5 +1,7 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, Asset, Job, RenderRecord, SceneRevision } from "./api";
+import { ImageLightbox } from "./ImageLightbox";
+import { ImagePreview } from "./ImagePreview";
 import { statusLabel } from "./copy";
 import {
   apiErrorText,
@@ -80,6 +82,20 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
   const [busy, setBusy] = useState(false);
   const [furnitureError, setFurnitureError] = useState("");
   const [furnitureInfo, setFurnitureInfo] = useState("");
+
+  // Shared lightbox (#150): primitives only — App.tsx polls every 5s and
+  // replaces object identities, so lightbox state must never hold objects.
+  const [lightbox, setLightbox] = useState<{
+    src: string;
+    alt: string;
+    title: string;
+  } | null>(null);
+  const lightboxTriggerRef = useRef<HTMLElement | null>(null);
+
+  function openLightbox(src: string, alt: string, title: string, trigger: HTMLElement) {
+    lightboxTriggerRef.current = trigger;
+    setLightbox({ src, alt, title });
+  }
 
   // Keep the camera selection valid as the scene revision changes.
   useEffect(() => {
@@ -409,7 +425,20 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
         {selectedRender && (
           <div className="td-preview">
             {selectedRgbId ? (
-              <img src={api.assetUrl(selectedRgbId)} alt={`Рендер ${selectedRender.id}`} />
+              <ImagePreview
+                variant="bounded"
+                src={api.assetUrl(selectedRgbId)}
+                alt={`Рендер ${selectedRender.id}`}
+                expandable
+                onExpand={(trigger) =>
+                  openLightbox(
+                    api.assetUrl(selectedRgbId),
+                    `Рендер ${selectedRender.id}`,
+                    `Рендер ${selectedRender.id}`,
+                    trigger
+                  )
+                }
+              />
             ) : (
               <p className="muted">У выбранного рендера нет rgb-пасса.</p>
             )}
@@ -483,9 +512,19 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
               {variantInfo && <div className="td-result">{variantInfo}</div>}
               {variantResultAssetId && (
                 <div className="td-preview">
-                  <img
+                  <ImagePreview
+                    variant="bounded"
                     src={api.assetUrl(variantResultAssetId)}
                     alt="Результат варианта дизайна"
+                    expandable
+                    onExpand={(trigger) =>
+                      openLightbox(
+                        api.assetUrl(variantResultAssetId),
+                        "Результат варианта дизайна",
+                        "Вариант дизайна",
+                        trigger
+                      )
+                    }
                   />
                 </div>
               )}
@@ -573,6 +612,15 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
           {furnitureInfo && <div className="td-result">{furnitureInfo}</div>}
         </form>
       </section>
+
+      <ImageLightbox
+        open={lightbox !== null}
+        src={lightbox?.src ?? null}
+        alt={lightbox?.alt ?? ""}
+        title={lightbox?.title}
+        onClose={() => setLightbox(null)}
+        returnFocusRef={lightboxTriggerRef}
+      />
     </article>
   );
 }
