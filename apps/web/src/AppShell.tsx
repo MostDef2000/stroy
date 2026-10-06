@@ -16,6 +16,7 @@ export function AppShell({
   onCreateProject,
   onSelectProject,
   onLogout,
+  accountLabel,
   projectName,
   revisionLabel,
   page,
@@ -34,6 +35,7 @@ export function AppShell({
   onCreateProject: (event: FormEvent) => void;
   onSelectProject: (id: string) => void;
   onLogout: () => void;
+  accountLabel: string;
   projectName: string;
   revisionLabel: string;
   page: PageId;
@@ -55,6 +57,7 @@ export function AppShell({
         onCreateProject={onCreateProject}
         onSelectProject={onSelectProject}
         onLogout={onLogout}
+        accountLabel={accountLabel}
       />
 
       <main className="workspace">
