@@ -121,3 +121,150 @@ export function compactJson(value: unknown): string {
     return "—";
   }
 }
+
+// ---------------------------------------------------------------------------
+// Worker telemetry display (#144).
+//
+// CRITICAL INVARIANT: never synthesize or estimate a value. Anything the
+// worker could not report is skipped or surfaced as explicitly unavailable
+// («Метрики недоступны» / «Метрики устарели») — absence is never rendered
+// as zero, a dash-padded number, or an empty placeholder.
+// ---------------------------------------------------------------------------
+
+/** Telemetry older than this is shown as stale, not live. */
+export const TELEMETRY_STALE_SECONDS = 90;
+
+/** Structural slice of the API Worker needed for the status tag (#144).
+ *  Fields optional so old server payloads (missing keys) never crash:
+ *  missing reads as false/null defensively. */
+export type WorkerStatusInput = {
+  online?: boolean | null;
+  busy?: boolean | null;
+  current_job?: { job_type?: string | null } | null;
+};
+
+/** Status tag + optional secondary line for a worker card. */
+export type WorkerStatusView = {
+  /** Tag text: "online" | "offline" | "● ЗАНЯТ". */
+  label: string;
+  /** CSS class suffix on .tag: online/offline are global, warn is #143 diag tone. */
+  tone: "online" | "offline" | "warn";
+  /** Secondary line: «Сейчас: <job_type>» when busy, «Свободен» when idle. */
+  note: string | null;
+};
+
+export function workerStatusView(worker: WorkerStatusInput): WorkerStatusView {
+  if (!worker.online) return { label: "offline", tone: "offline", note: null };
+  if (worker.busy) {
+    const job = worker.current_job ?? null;
+    const jobType =
+      job && typeof job.job_type === "string" && job.job_type ? job.job_type : null;
+    return {
+      label: "● ЗАНЯТ",
+      tone: "warn",
+      note: jobType ? `Сейчас: ${jobType}` : null
+    };
+  }
+  return { label: "online", tone: "online", note: "Свободен" };
+}
+
+/** Structural slice of the API Worker needed for telemetry lines (#144). */
+export type WorkerTelemetryInput = {
+  online?: boolean | null;
+  telemetry?: {
+    cpu?: { utilization_percent?: number | null } | null;
+    memory?: { used_bytes?: number | null; total_bytes?: number | null } | null;
+    gpus?: Array<{
+      name?: string | null;
+      utilization_percent?: number | null;
+      memory_used_bytes?: number | null;
+      memory_total_bytes?: number | null;
+    }> | null;
+  } | null;
+  telemetry_updated_at?: string | null;
+};
+
+/**
+ * Parse-safe staleness check: unparsable/missing timestamps count as stale
+ * (they cannot prove freshness); strictly older than 90s is stale, so an
+ * exactly-90s-old sample is still fresh. Future timestamps (clock skew)
+ * are treated as fresh, never synthesized.
+ */
+export function isTelemetryStale(
+  updatedAt: string | null | undefined,
+  nowMs: number
+): boolean {
+  if (!updatedAt) return true;
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) return true;
+  return (nowMs - date.getTime()) / 1000 > TELEMETRY_STALE_SECONDS;
+}
+
+/** Real finite number or null — guards non-numbers and NaN/Infinity. */
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Memory pairs render only complete: <used>/<total> — half a pair is skipped. */
+function memoryPairLine(
+  used: unknown,
+  total: unknown
+): string | null {
+  const usedBytes = finiteNumberOrNull(used);
+  const totalBytes = finiteNumberOrNull(total);
+  if (usedBytes === null || totalBytes === null) return null;
+  return `${formatBytes(usedBytes)} / ${formatBytes(totalBytes)}`;
+}
+
+/**
+ * Display lines for a worker card's telemetry block, or the explicit
+ * unavailable/stale copies when live values cannot be shown:
+ * - offline → «Метрики недоступны» (offline trumps any stored sample);
+ * - online without telemetry/timestamp → «Метрики недоступны»;
+ * - online stale (>90s) → «Метрики устарели» + relative time;
+ * - online fresh → present metrics only (missing metrics are skipped
+ *   silently), plus a relative "Последняя телеметрия" line; a sample with
+ *   zero present metrics is itself unavailable.
+ */
+export function telemetryLines(
+  worker: WorkerTelemetryInput,
+  nowMs: number
+): string[] {
+  if (!worker.online) return ["Метрики недоступны"];
+  const telemetry = worker.telemetry ?? null;
+  const updatedAt =
+    typeof worker.telemetry_updated_at === "string" && worker.telemetry_updated_at
+      ? worker.telemetry_updated_at
+      : null;
+  if (!telemetry || !updatedAt) return ["Метрики недоступны"];
+  if (isTelemetryStale(updatedAt, nowMs)) {
+    return [
+      "Метрики устарели",
+      `Последняя телеметрия: ${formatRelativeTime(updatedAt, new Date(nowMs))}`
+    ];
+  }
+
+  const lines: string[] = [];
+  const cpuPercent = finiteNumberOrNull(telemetry.cpu?.utilization_percent);
+  if (cpuPercent !== null) lines.push(`CPU ${Math.round(cpuPercent)}%`);
+
+  const memory = telemetry.memory ?? null;
+  const ramLine = memory ? memoryPairLine(memory.used_bytes, memory.total_bytes) : null;
+  if (ramLine) lines.push(`RAM ${ramLine}`);
+
+  const gpus = Array.isArray(telemetry.gpus) ? telemetry.gpus : [];
+  for (const gpu of gpus) {
+    const name = gpu && typeof gpu.name === "string" && gpu.name ? gpu.name : "GPU";
+    const parts: string[] = [];
+    const utilPercent = finiteNumberOrNull(gpu?.utilization_percent);
+    if (utilPercent !== null) parts.push(`${Math.round(utilPercent)}%`);
+    const vramLine = gpu ? memoryPairLine(gpu.memory_used_bytes, gpu.memory_total_bytes) : null;
+    if (vramLine) parts.push(vramLine);
+    // CPU-only workers report gpus: [] — no GPU line, not an error.
+    if (parts.length > 0) lines.push(`${name} ${parts.join(" · ")}`);
+  }
+
+  if (lines.length === 0) return ["Метрики недоступны"];
+  lines.push(`Последняя телеметрия: ${formatRelativeTime(updatedAt, new Date(nowMs))}`);
+  return lines;
+}

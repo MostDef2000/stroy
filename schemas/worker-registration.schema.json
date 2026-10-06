@@ -10,7 +10,7 @@
     "display_name": {"type": "string"},
     "capabilities": {
       "type": "array",
-      "items": {"enum": ["llm", "style_analysis", "image_generation", "image_edit", "blender_render", "geometry_quality"]}
+      "items": {"enum": ["llm", "style_analysis", "plan_analyze", "image_generation", "image_edit", "blender_render", "geometry_quality"]}
     },
     "models": {"type": "array", "items": {"type": "string"}},
     "runtimes": {

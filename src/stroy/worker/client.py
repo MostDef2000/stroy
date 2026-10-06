@@ -26,9 +26,12 @@ class WorkerClient:
         response.raise_for_status()
         return response.json()
 
-    async def heartbeat(self) -> None:
+    async def heartbeat(self, telemetry: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"worker_id": self.worker_id}
+        if telemetry is not None:
+            payload["telemetry"] = telemetry
         response = await self.client.post(
-            f"{self.server_url}/api/v1/workers/heartbeat", json={"worker_id": self.worker_id}
+            f"{self.server_url}/api/v1/workers/heartbeat", json=payload
         )
         response.raise_for_status()
 
