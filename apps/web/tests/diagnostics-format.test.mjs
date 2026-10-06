@@ -1,4 +1,5 @@
-// Zero-dependency unit tests for the diagnostics dashboard helpers (#143).
+// Zero-dependency unit tests for the diagnostics dashboard helpers
+// (#143 layout + #144 worker telemetry).
 //
 // Node 22 has no native TypeScript support, so the source is compiled first:
 //   apps/web/node_modules/.bin/tsc src/diagnostics-format.ts --outDir build \
@@ -18,11 +19,15 @@ import {
   formatJobSubtitle,
   formatRelativeTime,
   isJobCancellable,
+  isTelemetryStale,
   jobErrorText,
   jobProgressText,
   jobStatusTone,
   newestFirst,
-  shortId
+  shortId,
+  telemetryLines,
+  TELEMETRY_STALE_SECONDS,
+  workerStatusView
 } from "../build/diagnostics-format.js";
 
 // "YYYY-MM-DDTHH:MM" without an offset parses as LOCAL time, so these
@@ -191,4 +196,224 @@ test("compactJson survives circular structures", () => {
   const circular = {};
   circular.self = circular;
   assert.equal(compactJson(circular), "—");
+});
+
+// ---------------------------------------------------------------------------
+// Worker telemetry (#144). Timestamps are absolute instants built from
+// Date.UTC, so the assertions hold in any timezone.
+// ---------------------------------------------------------------------------
+
+const NOW_MS = Date.UTC(2026, 9, 6, 15, 31, 0);
+/** ISO timestamp `ms` milliseconds before NOW_MS. */
+const msBefore = (ms) => new Date(NOW_MS - ms).toISOString();
+
+test("isTelemetryStale accepts fresh samples and rejects old ones", () => {
+  assert.equal(isTelemetryStale(msBefore(10_000), NOW_MS), false);
+  assert.equal(isTelemetryStale(msBefore(TELEMETRY_STALE_SECONDS * 1000 - 1), NOW_MS), false);
+  assert.equal(isTelemetryStale(msBefore(TELEMETRY_STALE_SECONDS * 1000 + 1), NOW_MS), true);
+  assert.equal(isTelemetryStale(msBefore(10 * 60_000), NOW_MS), true);
+});
+
+test("isTelemetryStale treats exactly-90s boundary as still fresh", () => {
+  assert.equal(isTelemetryStale(msBefore(TELEMETRY_STALE_SECONDS * 1000), NOW_MS), false);
+});
+
+test("isTelemetryStale is parse-safe: missing/invalid timestamps count as stale", () => {
+  assert.equal(isTelemetryStale(null, NOW_MS), true);
+  assert.equal(isTelemetryStale(undefined, NOW_MS), true);
+  assert.equal(isTelemetryStale("", NOW_MS), true);
+  assert.equal(isTelemetryStale("not-a-date", NOW_MS), true);
+});
+
+test("isTelemetryStale treats future timestamps (clock skew) as fresh", () => {
+  assert.equal(isTelemetryStale(new Date(NOW_MS + 30_000).toISOString(), NOW_MS), false);
+});
+
+test("workerStatusView: offline tag with no note", () => {
+  assert.deepEqual(workerStatusView({ online: false, busy: true }), {
+    label: "offline",
+    tone: "offline",
+    note: null
+  });
+});
+
+test("workerStatusView: idle online worker is Свободен", () => {
+  assert.deepEqual(workerStatusView({ online: true, busy: false }), {
+    label: "online",
+    tone: "online",
+    note: "Свободен"
+  });
+});
+
+test("workerStatusView: busy worker shows ● ЗАНЯТ (warn) with current job type", () => {
+  assert.deepEqual(
+    workerStatusView({
+      online: true,
+      busy: true,
+      current_job: { id: "j1", job_type: "render", status: "running", project_id: "p1" }
+    }),
+    { label: "● ЗАНЯТ", tone: "warn", note: "Сейчас: render" }
+  );
+});
+
+test("workerStatusView: busy without usable current_job keeps the tag, drops the note", () => {
+  assert.deepEqual(workerStatusView({ online: true, busy: true, current_job: null }).note, null);
+  assert.deepEqual(
+    workerStatusView({ online: true, busy: true, current_job: { job_type: null } }).note,
+    null
+  );
+  const noJob = workerStatusView({ online: true, busy: true });
+  assert.equal(noJob.label, "● ЗАНЯТ");
+  assert.equal(noJob.note, null);
+});
+
+test("workerStatusView: missing busy flag (old server payload) reads as free", () => {
+  const view = workerStatusView({ online: true });
+  assert.equal(view.label, "online");
+  assert.equal(view.note, "Свободен");
+});
+
+test("telemetryLines: offline trumps any stored telemetry", () => {
+  const worker = {
+    online: false,
+    telemetry_updated_at: msBefore(5_000),
+    telemetry: { cpu: { utilization_percent: 12 }, gpus: [] }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), ["Метрики недоступны"]);
+});
+
+test("telemetryLines: missing telemetry or timestamp is explicitly unavailable", () => {
+  assert.deepEqual(telemetryLines({ online: true }, NOW_MS), ["Метрики недоступны"]);
+  assert.deepEqual(
+    telemetryLines({ online: true, telemetry: { gpus: [] } }, NOW_MS),
+    ["Метрики недоступны"]
+  );
+  assert.deepEqual(
+    telemetryLines({ online: true, telemetry_updated_at: msBefore(5_000) }, NOW_MS),
+    ["Метрики недоступны"]
+  );
+});
+
+test("telemetryLines: stale telemetry is marked stale, not live", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(5 * 60_000),
+    telemetry: { cpu: { utilization_percent: 42 }, gpus: [] }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), [
+    "Метрики устарели",
+    "Последняя телеметрия: 5 мин назад"
+  ]);
+});
+
+test("telemetryLines: fresh full sample renders every present metric", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: {
+      cpu: { utilization_percent: 42.6 },
+      memory: { used_bytes: 1.5 * 1024 ** 3, total_bytes: 8 * 1024 ** 3 },
+      gpus: [
+        {
+          name: "RTX 4090",
+          utilization_percent: 71.4,
+          memory_used_bytes: 3.2 * 1024 ** 3,
+          memory_total_bytes: 24 * 1024 ** 3
+        }
+      ]
+    }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), [
+    "CPU 43%",
+    "RAM 1.5 GB / 8 GB",
+    "RTX 4090 71% · 3.2 GB / 24 GB",
+    "Последняя телеметрия: только что"
+  ]);
+});
+
+test("telemetryLines: CPU-only worker (empty gpus) has no GPU line, not an error", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: {
+      cpu: { utilization_percent: 7 },
+      memory: { used_bytes: 512 * 1024 ** 2, total_bytes: 16 * 1024 ** 3 },
+      gpus: []
+    }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), [
+    "CPU 7%",
+    "RAM 512 MB / 16 GB",
+    "Последняя телеметрия: только что"
+  ]);
+});
+
+test("telemetryLines: absent metrics are skipped silently, never shown as zero", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: {
+      cpu: { utilization_percent: null },
+      memory: { used_bytes: 1024, total_bytes: null },
+      gpus: [{ name: "Nvidia", utilization_percent: null, memory_used_bytes: 10 }]
+    }
+  };
+  // Nothing renderable: no CPU (null), no RAM (incomplete pair), no GPU line
+  // (no util, no VRAM pair) → the sample itself is explicitly unavailable.
+  assert.deepEqual(telemetryLines(worker, NOW_MS), ["Метрики недоступны"]);
+});
+
+test("telemetryLines: GPU without a name falls back to a generic GPU label", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: {
+      gpus: [{ name: null, utilization_percent: 0, memory_used_bytes: null, memory_total_bytes: null }]
+    }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), [
+    "GPU 0%",
+    "Последняя телеметрия: только что"
+  ]);
+});
+
+test("telemetryLines: GPU with utilization only renders without a VRAM pair", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: { gpus: [{ name: "Nvidia", utilization_percent: 88 }] }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), [
+    "Nvidia 88%",
+    "Последняя телеметрия: только что"
+  ]);
+});
+
+test("telemetryLines: missing gpus array (old payload) yields no GPU line", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: { cpu: { utilization_percent: 3 } }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), [
+    "CPU 3%",
+    "Последняя телеметрия: только что"
+  ]);
+});
+
+test("telemetryLines: NaN/Infinity metrics are treated as absent", () => {
+  const worker = {
+    online: true,
+    telemetry_updated_at: msBefore(10_000),
+    telemetry: {
+      cpu: { utilization_percent: Number.NaN },
+      memory: { used_bytes: Number.POSITIVE_INFINITY, total_bytes: 1024 },
+      gpus: []
+    }
+  };
+  assert.deepEqual(telemetryLines(worker, NOW_MS), ["Метрики недоступны"]);
+});
+
+test("TELEMETRY_STALE_SECONDS is 90", () => {
+  assert.equal(TELEMETRY_STALE_SECONDS, 90);
 });

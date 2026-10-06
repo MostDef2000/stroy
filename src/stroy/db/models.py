@@ -188,6 +188,10 @@ class WorkerRow(Base):
     hardware: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="online")
     last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    telemetry: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    telemetry_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AuthSessionRow(Base):

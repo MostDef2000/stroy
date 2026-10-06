@@ -8,6 +8,7 @@ from stroy.worker.runtime import WorkerRunner
 class FakeClient:
     def __init__(self) -> None:
         self.heartbeats = 0
+        self.last_telemetry: dict | None = None
         self.renews = 0
         self.started = 0
         self.completed = 0
@@ -21,8 +22,9 @@ class FakeClient:
         self.released = 0
         self.lease_state = {"status": "running", "lease_valid": True}
 
-    async def heartbeat(self) -> None:
+    async def heartbeat(self, telemetry: dict | None = None) -> None:
         self.heartbeats += 1
+        self.last_telemetry = telemetry
 
     async def claim(self):
         return {
@@ -337,3 +339,39 @@ async def test_run_forever_recovers_after_transient_control_plane_failure() -> N
     await asyncio.wait_for(runner.run_forever(shutdown), timeout=1)
     await stopper
     assert client.claim_attempts >= 2
+
+
+@pytest.mark.asyncio
+async def test_worker_sends_collected_telemetry_with_heartbeat(monkeypatch) -> None:
+    sample = {"cpu": {"utilization_percent": 12.5}, "memory": {"used_bytes": 1, "total_bytes": 2}, "gpus": []}
+    monkeypatch.setattr("stroy.worker.runtime.collect_telemetry", lambda: sample)
+    client = FakeClient()
+    runner = WorkerRunner(
+        client,
+        {},
+        heartbeat_seconds=0.001,
+        lease_renew_seconds=60,
+    )
+
+    assert await runner.run_once() is True
+    assert client.heartbeats == 1
+    assert client.last_telemetry == sample
+
+
+@pytest.mark.asyncio
+async def test_telemetry_collector_failure_still_sends_heartbeat(monkeypatch) -> None:
+    def _explode() -> dict:
+        raise RuntimeError("collector exploded")
+
+    monkeypatch.setattr("stroy.worker.runtime.collect_telemetry", _explode)
+    client = FakeClient()
+    runner = WorkerRunner(
+        client,
+        {},
+        heartbeat_seconds=0.001,
+        lease_renew_seconds=60,
+    )
+
+    assert await runner.run_once() is True
+    assert client.heartbeats == 1
+    assert client.last_telemetry is None

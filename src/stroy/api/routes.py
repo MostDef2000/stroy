@@ -42,6 +42,7 @@ from stroy.services.generations import (
     resolve_base_asset_for_edit,
 )
 from stroy.services.jobs import (
+    ACTIVE_JOB_STATUSES,
     cancel_job,
     claim_job,
     complete_job,
@@ -292,8 +293,51 @@ class WorkerRegistration(BaseModel):
     hardware: dict[str, Any] = Field(default_factory=dict)
 
 
+class TelemetryCpu(BaseModel):
+    utilization_percent: float | None = Field(default=None, ge=0, le=100)
+
+
+class TelemetryMemory(BaseModel):
+    used_bytes: int | None = Field(default=None, ge=0)
+    total_bytes: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _used_not_exceeds_total(self) -> TelemetryMemory:
+        if (
+            self.used_bytes is not None
+            and self.total_bytes is not None
+            and self.used_bytes > self.total_bytes
+        ):
+            raise ValueError("used_bytes cannot exceed total_bytes")
+        return self
+
+
+class TelemetryGpu(BaseModel):
+    name: str | None = None
+    utilization_percent: float | None = Field(default=None, ge=0, le=100)
+    memory_used_bytes: int | None = Field(default=None, ge=0)
+    memory_total_bytes: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _memory_used_not_exceeds_total(self) -> TelemetryGpu:
+        if (
+            self.memory_used_bytes is not None
+            and self.memory_total_bytes is not None
+            and self.memory_used_bytes > self.memory_total_bytes
+        ):
+            raise ValueError("memory_used_bytes cannot exceed memory_total_bytes")
+        return self
+
+
+class WorkerTelemetry(BaseModel):
+    cpu: TelemetryCpu | None = None
+    memory: TelemetryMemory | None = None
+    gpus: list[TelemetryGpu] = Field(default_factory=list)
+
+
 class WorkerHeartbeat(BaseModel):
     worker_id: str
+    telemetry: WorkerTelemetry | None = None
 
 
 class WorkerClaim(BaseModel):
@@ -1841,8 +1885,38 @@ def job_view(row: JobRow) -> dict[str, Any]:
 @router.get("/api/v1/workers", dependencies=[Depends(require_owner)])
 async def workers(request: Request, session: DbSession):
     result = await session.execute(select(WorkerRow).order_by(WorkerRow.id.asc()))
+    rows = list(result.scalars())
     now = datetime.now(timezone.utc)
     grace = request.app.state.settings.worker_heartbeat_grace_seconds
+
+    # Derive busy/current_job server-side: one query for all workers, picking
+    # the deterministic first active job per worker (latest update, then id).
+    active_jobs: dict[str, JobRow] = {}
+    worker_ids = [row.id for row in rows]
+    if worker_ids:
+        leased = await session.execute(
+            select(JobRow)
+            .where(
+                JobRow.leased_to.in_(worker_ids),
+                JobRow.status.in_(ACTIVE_JOB_STATUSES),
+            )
+            .order_by(JobRow.updated_at.desc(), JobRow.id.asc())
+        )
+        for job in leased.scalars():
+            if job.leased_to is not None and job.leased_to not in active_jobs:
+                active_jobs[job.leased_to] = job
+
+    def _as_utc(value: datetime | None) -> datetime | None:
+        """Serialize timestamps with an explicit UTC offset.
+
+        sqlite round-trips tz-aware datetimes as naive; an offset-less ISO
+        string is parsed as *local* time by browser Date() constructors,
+        which makes fresh telemetry read as stale away from UTC.
+        """
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
     return [
         {
             "id": row.id,
@@ -1859,9 +1933,23 @@ async def workers(request: Request, session: DbSession):
             "capabilities": row.capabilities,
             "models": row.models,
             "runtimes": row.runtimes,
-            "last_heartbeat": row.last_heartbeat,
+            "last_heartbeat": _as_utc(row.last_heartbeat),
+            "hardware": row.hardware,
+            "telemetry": row.telemetry,
+            "telemetry_updated_at": _as_utc(row.telemetry_updated_at),
+            "busy": row.id in active_jobs,
+            "current_job": (
+                {
+                    "id": job.id,
+                    "job_type": job.job_type,
+                    "status": job.status,
+                    "project_id": job.project_id,
+                }
+                if (job := active_jobs.get(row.id)) is not None
+                else None
+            ),
         }
-        for row in result.scalars()
+        for row in rows
     ]
 
 
@@ -1878,6 +1966,9 @@ async def worker_register(payload: WorkerRegistration, session: DbSession):
     row.hardware = payload.hardware
     row.status = "online"
     row.last_heartbeat = datetime.now(timezone.utc)
+    # Re-registration clears stale telemetry samples.
+    row.telemetry = None
+    row.telemetry_updated_at = None
     await session.commit()
     return {"worker_id": row.id, "status": row.status}
 
@@ -1887,8 +1978,17 @@ async def worker_heartbeat(payload: WorkerHeartbeat, session: DbSession):
     row = await session.get(WorkerRow, payload.worker_id)
     if row is None:
         raise HTTPException(status_code=404, detail="worker not registered")
+    now = datetime.now(timezone.utc)
     row.status = "online"
-    row.last_heartbeat = datetime.now(timezone.utc)
+    row.last_heartbeat = now
+    if payload.telemetry is not None:
+        row.telemetry = payload.telemetry.model_dump(mode="json", exclude_none=True)
+        row.telemetry_updated_at = now
+    else:
+        # A heartbeat without telemetry means "I could not collect right now";
+        # stale samples must never present as current.
+        row.telemetry = None
+        row.telemetry_updated_at = None
     await session.commit()
     return {"worker_id": row.id, "status": "online"}
 

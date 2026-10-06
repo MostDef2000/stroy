@@ -19,7 +19,9 @@ import {
   jobProgressText,
   jobStatusTone,
   newestFirst,
-  shortId
+  shortId,
+  telemetryLines,
+  workerStatusView
 } from "../diagnostics-format";
 
 type ActivityTab = "jobs" | "revisions" | "generations";
@@ -99,21 +101,32 @@ export function DiagnosticsPage({
         </div>
         {workers.length === 0 && <p className="muted">worker ещё не зарегистрирован</p>}
         <div className="diag-worker-grid">
-          {workers.map((worker) => (
-            <article className="diag-worker-card" key={worker.id}>
-              <div className="diag-worker-head">
-                <span className="diag-worker-name">{worker.display_name ?? worker.id}</span>
-                <span className={worker.online ? "tag online" : "tag offline"}>
-                  {worker.online ? "online" : "offline"}
-                </span>
-              </div>
-              <small className="diag-worker-meta">
-                {worker.models.length > 0 ? worker.models.join(", ") : "модели не заявлены"}
-                {worker.capabilities.length > 0 ? ` · ${worker.capabilities.join(", ")}` : ""}
-              </small>
-              {/* Слот для ресурсной телеметрии воркера (#144): ничего не рендерим, значений-заглушек нет. */}
-            </article>
-          ))}
+          {workers.map((worker) => {
+            const status = workerStatusView(worker);
+            // #144: live metrics only when online + fresh; otherwise the
+            // helpers return the explicit unavailable/stale copies. All
+            // staleness/metric decisions stay in the pure helpers.
+            const telemetry = telemetryLines(worker, Date.now());
+            return (
+              <article className="diag-worker-card" key={worker.id}>
+                <div className="diag-worker-head">
+                  <span className="diag-worker-name">{worker.display_name ?? worker.id}</span>
+                  <span className={`tag ${status.tone}`}>{status.label}</span>
+                </div>
+                <small className="diag-worker-meta">
+                  {worker.models.length > 0 ? worker.models.join(", ") : "модели не заявлены"}
+                  {worker.capabilities.length > 0 ? ` · ${worker.capabilities.join(", ")}` : ""}
+                </small>
+                {status.note && <small className="diag-worker-meta">{status.note}</small>}
+                {/* #144: только реальные значения; недоступные метрики помечены явно. */}
+                {telemetry.map((line, index) => (
+                  <small className="diag-worker-meta" key={`${index}:${line}`}>
+                    {line}
+                  </small>
+                ))}
+              </article>
+            );
+          })}
         </div>
       </section>
 
