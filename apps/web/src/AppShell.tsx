@@ -56,8 +56,6 @@ export function AppShell({
         onNewProjectChange={onNewProjectChange}
         onCreateProject={onCreateProject}
         onSelectProject={onSelectProject}
-        onLogout={onLogout}
-        accountLabel={accountLabel}
       />
 
       <main className="workspace">
@@ -69,6 +67,8 @@ export function AppShell({
           canDelete={canDelete}
           deleteError={deleteError}
           onDelete={onDelete}
+          accountLabel={accountLabel}
+          onLogout={onLogout}
         />
 
         {children}

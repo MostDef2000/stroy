@@ -273,73 +273,6 @@ nav { display: grid; gap: 6px; }
 }
 .project.active { background: var(--st-color-selected-bg); color: var(--st-color-selected-text); }
 
-/* Account / logout discoverability (#140): account row pinned to the bottom of
-   the sidebar, opening an upward menu with the logout action. */
-.sidebar-account {
-  margin-top: auto;
-  position: relative;
-}
-.account-button {
-  width: 100%;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas:
-    "avatar name chevron"
-    "avatar role chevron";
-  column-gap: 10px;
-  align-items: center;
-  padding: 8px 10px;
-  background: var(--st-color-sidebar-surface);
-  border: 1px solid var(--st-color-border-subtle);
-  border-radius: var(--st-radius);
-  color: var(--st-color-text);
-  text-align: left;
-}
-.account-button:hover {
-  background: var(--st-color-selected-muted-bg);
-}
-.account-avatar {
-  grid-area: avatar;
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--st-color-sidebar-surface);
-  border: 1px solid var(--st-color-border);
-  color: var(--st-color-text);
-  font-size: 13px;
-  font-weight: 700;
-}
-.account-name {
-  grid-area: name;
-  font-size: 13px;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.account-role {
-  grid-area: role;
-  color: var(--st-color-muted-text);
-  font-size: 11px;
-  line-height: 1.2;
-}
-.account-chevron {
-  grid-area: chevron;
-  color: var(--st-color-muted-text);
-  font-size: 16px;
-  line-height: 1;
-}
-.overflow-dropdown.account-menu {
-  position: absolute;
-  top: auto;
-  bottom: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  min-width: 0;
-}
-
 .project-delete {
   margin-top: 8px;
   display: flex;
@@ -400,7 +333,6 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { min-height: auto; }
   nav { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
-  .sidebar-account { margin-top: 0; }
   header { align-items: flex-start; flex-direction: column; }
 }
 
@@ -1567,6 +1499,71 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
 }
 .overflow-dropdown .danger:hover {
   background: #451d19;
+}
+
+/* #142: account identity + logout moved from the sidebar bottom into this
+   header overflow menu — one place for account and project actions. The
+   account header is presentational; «Выйти из аккаунта» is a neutral item
+   (inherits .overflow-dropdown button) while «Удалить проект» stays the only
+    destructive entry. The dropdown sits inside <header>, where the bare
+    `header span` rule directly matches every span here — inheritance from
+    .menu-account-header alone would lose to it. Mitigation: .account-name
+    carries its own color declaration, and .menu-account-header sets inherited
+    color for the remaining non-.account-name descendants (eyebrow/role). */
+.menu-account-header {
+  display: grid;
+  gap: 6px;
+  padding: 2px 13px 0;
+  color: var(--st-color-text);
+}
+.menu-eyebrow {
+  font-size: var(--st-text-xs);
+  color: var(--st-color-muted-text);
+  letter-spacing: 0.06em;
+}
+.menu-account-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.menu-account-texts {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.account-avatar {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--st-color-surface-inset);
+  border: 1px solid var(--st-color-border);
+  color: var(--st-color-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.account-name {
+  color: var(--st-color-text);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-role {
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.menu-divider {
+  height: 0;
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid var(--st-color-border-subtle);
+  list-style: none;
 }
 
 /* Overview readiness cards (#101) */
