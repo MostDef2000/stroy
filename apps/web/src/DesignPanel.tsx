@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Generation, Job, RevisionSummary } from "./api";
+import { ImageLightbox } from "./ImageLightbox";
+import { ImagePreview } from "./ImagePreview";
 import { statusLabel } from "./copy";
 import {
   buildTimelineEntries,
@@ -38,6 +40,19 @@ export function DesignPanel({
   const [beforeId, setBeforeId] = useState("");
   const [afterId, setAfterId] = useState("");
   const [confirmRestoreId, setConfirmRestoreId] = useState<string | null>(null);
+  // Shared lightbox (#150): primitives only — the app polls every 5s and
+  // replaces object identities, so lightbox state must never hold objects.
+  const [lightbox, setLightbox] = useState<{
+    src: string;
+    alt: string;
+    title: string;
+  } | null>(null);
+  const lightboxTriggerRef = useRef<HTMLElement | null>(null);
+
+  function openLightbox(src: string, alt: string, title: string, trigger: HTMLElement) {
+    lightboxTriggerRef.current = trigger;
+    setLightbox({ src, alt, title });
+  }
 
   useEffect(() => {
     if (generations.length === 0) {
@@ -169,13 +184,24 @@ export function DesignPanel({
                   const generation = generations.find(
                     (item) => item.id === entry.id
                   );
+                  const outputAssetId = entry.outputAssetId;
                   return (
                     <article className="rt-entry" key={entry.id}>
-                      {entry.outputAssetId && (
+                      {outputAssetId && (
                         <div className="rt-preview">
-                          <img
-                            src={api.assetUrl(entry.outputAssetId)}
+                          <ImagePreview
+                            variant="bounded"
+                            src={api.assetUrl(outputAssetId)}
                             alt={entry.label}
+                            expandable
+                            onExpand={(trigger) =>
+                              openLightbox(
+                                api.assetUrl(outputAssetId),
+                                entry.label,
+                                entry.label,
+                                trigger
+                              )
+                            }
                           />
                         </div>
                       )}
@@ -284,36 +310,59 @@ export function DesignPanel({
                 </select>
               </label>
             </div>
-            <div className="compare-grid">
-              {[["До", before], ["После", after]].map(([label, generation]) => {
-                const item = generation as Generation | undefined;
-                const assetId = outputAsset(item);
-                return (
-                  <figure key={label as string}>
-                    <figcaption>
-                      <strong>{label as string}</strong>
-                      <small
-                        title={
-                          item ? `revision ${item.design_revision_id}` : undefined
-                        }
-                      >
-                        {item
-                          ? new Date(item.created_at).toLocaleString("ru-RU")
-                          : "—"}
-                      </small>
-                    </figcaption>
-                    {assetId ? (
-                      <img src={api.assetUrl(assetId)} alt={label as string} />
-                    ) : (
-                      <div className="compare-empty">нет изображения</div>
-                    )}
-                  </figure>
-                );
-              })}
-            </div>
+              <div className="compare-grid">
+                {[["До", before], ["После", after]].map(([label, generation]) => {
+                  const item = generation as Generation | undefined;
+                  const assetId = outputAsset(item);
+                  const compareLabel = label as string;
+                  return (
+                    <figure key={compareLabel}>
+                      <figcaption>
+                        <strong>{compareLabel}</strong>
+                        <small
+                          title={
+                            item ? `revision ${item.design_revision_id}` : undefined
+                          }
+                        >
+                          {item
+                            ? new Date(item.created_at).toLocaleString("ru-RU")
+                            : "—"}
+                        </small>
+                      </figcaption>
+                      {assetId ? (
+                        <ImagePreview
+                          variant="bounded"
+                          src={api.assetUrl(assetId)}
+                          alt={compareLabel}
+                          expandable
+                          onExpand={(trigger) =>
+                            openLightbox(
+                              api.assetUrl(assetId),
+                              compareLabel,
+                              compareLabel,
+                              trigger
+                            )
+                          }
+                        />
+                      ) : (
+                        <div className="compare-empty">нет изображения</div>
+                      )}
+                    </figure>
+                  );
+                })}
+              </div>
           </>
         )}
       </article>
+
+      <ImageLightbox
+        open={lightbox !== null}
+        src={lightbox?.src ?? null}
+        alt={lightbox?.alt ?? ""}
+        title={lightbox?.title}
+        onClose={() => setLightbox(null)}
+        returnFocusRef={lightboxTriggerRef}
+      />
     </>
   );
 }
