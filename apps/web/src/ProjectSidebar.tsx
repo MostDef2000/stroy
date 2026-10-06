@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { Project } from "./api";
 
 // Extracted sidebar from the pre-#101 App layout: brand, worker indicator,
-// new-project form, project list nav, logout. Presentational only.
+// new-project form, project list nav. Presentational only. Account/logout live
+// in the ProjectHeader overflow menu since #142.
 export function ProjectSidebar({
   projects,
   selected,
@@ -11,9 +11,7 @@ export function ProjectSidebar({
   newProject,
   onNewProjectChange,
   onCreateProject,
-  onSelectProject,
-  onLogout,
-  accountLabel
+  onSelectProject
 }: {
   projects: Project[];
   selected: string | null;
@@ -22,30 +20,7 @@ export function ProjectSidebar({
   onNewProjectChange: (value: string) => void;
   onCreateProject: (event: FormEvent) => void;
   onSelectProject: (id: string) => void;
-  onLogout: () => void;
-  accountLabel: string;
 }) {
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const accountRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    function onPointerDown(event: MouseEvent) {
-      if (accountRef.current && !accountRef.current.contains(event.target as Node)) {
-        setAccountMenuOpen(false);
-      }
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setAccountMenuOpen(false);
-    }
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [accountMenuOpen]);
-
   return (
     <aside className="sidebar">
       <div className="brand">STROY</div>
@@ -73,41 +48,6 @@ export function ProjectSidebar({
           </button>
         ))}
       </nav>
-
-      <div className="sidebar-account" ref={accountRef}>
-        <button
-          type="button"
-          className="account-button"
-          aria-label={`Аккаунт: ${accountLabel}. ${accountMenuOpen ? "Закрыть меню" : "Открыть меню"}`}
-          aria-haspopup="menu"
-          aria-expanded={accountMenuOpen}
-          onClick={() => setAccountMenuOpen((open) => !open)}
-        >
-          <span className="account-avatar" aria-hidden="true">
-            {accountLabel.trim().charAt(0).toUpperCase() || "В"}
-          </span>
-          <span className="account-name">{accountLabel}</span>
-          <span className="account-role">Владелец</span>
-          <span className="account-chevron" aria-hidden="true">
-            ⋮
-          </span>
-        </button>
-        {accountMenuOpen && (
-          <div className="overflow-dropdown account-menu" role="menu">
-            <button
-              type="button"
-              className="logout"
-              role="menuitem"
-              onClick={() => {
-                setAccountMenuOpen(false);
-                onLogout();
-              }}
-            >
-              Выйти
-            </button>
-          </div>
-        )}
-      </div>
     </aside>
   );
 }

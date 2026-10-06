@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { PAGES, type PageId } from "./nav";
 
-// Project title + horizontal page tabs + overflow menu (destructive actions).
-// Deletion lives inside the «⋮» menu so it is not a primary control next to the
-// title (#101).
+// Project title + horizontal page tabs + overflow menu. Since #142 this is the
+// single place for account and project actions: the account identity and
+// logout sit above the destructive delete entry (#101), inside the same «⋮»
+// menu.
 export function ProjectHeader({
   projectName,
   revisionLabel,
@@ -11,7 +12,9 @@ export function ProjectHeader({
   onPageChange,
   canDelete,
   deleteError,
-  onDelete
+  onDelete,
+  accountLabel,
+  onLogout
 }: {
   projectName: string;
   revisionLabel: string;
@@ -20,6 +23,8 @@ export function ProjectHeader({
   canDelete: boolean;
   deleteError: string;
   onDelete: () => void;
+  accountLabel: string;
+  onLogout: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -69,36 +74,66 @@ export function ProjectHeader({
           ))}
         </nav>
 
-        {canDelete && (
-          <div className="overflow-menu" ref={menuRef}>
-            <button
-              type="button"
-              className="overflow-menu-button"
-              aria-label="Дополнительные действия"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              ⋮
-            </button>
-            {menuOpen && (
-              <div className="overflow-dropdown" role="menu">
-                <button
-                  type="button"
-                  className="danger"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDelete();
-                  }}
-                >
-                  Удалить проект
-                </button>
-                {deleteError && <div className="error">{deleteError}</div>}
+        {/* The «⋮» menu is the single place for account + project actions
+            (#142): it renders on every page so logout is always reachable,
+            while the destructive delete entry stays gated on a selection. */}
+        <div className="overflow-menu" ref={menuRef}>
+          <button
+            type="button"
+            className="overflow-menu-button"
+            aria-label="Меню проекта и аккаунта"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            ⋮
+          </button>
+          {menuOpen && (
+            <div className="overflow-dropdown" role="menu">
+              <div className="menu-account-header" role="presentation">
+                <span className="menu-eyebrow">Аккаунт</span>
+                <div className="menu-account-row">
+                  <span className="account-avatar" aria-hidden="true">
+                    {accountLabel.trim().charAt(0).toUpperCase() || "В"}
+                  </span>
+                  <span className="menu-account-texts">
+                    <span className="account-name">{accountLabel}</span>
+                    <span className="account-role">Владелец</span>
+                  </span>
+                </div>
               </div>
-            )}
-          </div>
-        )}
+              <div className="menu-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="logout"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onLogout();
+                }}
+              >
+                Выйти из аккаунта
+              </button>
+              {canDelete && (
+                <>
+                  <div className="menu-divider" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="danger"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onDelete();
+                    }}
+                  >
+                    Удалить проект
+                  </button>
+                  {deleteError && <div className="error">{deleteError}</div>}
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
