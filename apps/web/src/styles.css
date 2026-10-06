@@ -2677,3 +2677,65 @@ textarea.invalid {
   }
 }
 
+/* ===== #151: Overview start screen — compact, top-aligned readiness cards =====
+   Root cause: .workspace is a CSS grid of implicit auto-sized rows and is
+   stretched to the viewport by .app-shell's min-height: 100vh (grid items
+   stretch by default). With the default align-content: stretch, the free
+   viewport height is distributed across those implicit rows — the project
+   header row grows (the "large empty gap") and the readiness row grows with
+   it; .readiness-grid's own implicit row stretches the same way, and the
+   cards (align-self: stretch default) end up hundreds of px tall.
+
+   Fix, scoped to Overview only:
+     .workspace:has(.overview-page)  rows pack at the top — the free space
+                                     stays below the content instead of being
+                                     handed out to the header/readiness rows.
+                                     Uses the same :has() page-scoping pattern
+                                     as the #148 diagnostics board; Diagnostics
+                                     never renders .overview-page and Overview
+                                     never renders .diag-board, so the two
+                                     height chains cannot interact.
+     .overview-page                  content-sized grid (18px gap = the
+                                     previous .workspace rhythm between the
+                                     start panel and the readiness grid). */
+
+.workspace:has(.overview-page) {
+  align-content: start;
+}
+
+.overview-page {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  min-width: 0;
+}
+
+/* Emphasis model (#151): at most one item needs owner action — it gets the
+   strong treatment (tinted danger surface + primary-looking CTA); completed
+   cards stay quiet (existing muted surface + badge colors). Consumes only
+   --st-* tokens. */
+
+.overview-page .readiness-card.attention {
+  background: var(--st-color-danger-bg);
+  border-color: var(--st-color-danger-border);
+  border-left-color: var(--st-color-danger);
+  box-shadow: var(--st-shadow-soft);
+}
+
+.overview-page .readiness-card.attention > button {
+  background: var(--st-color-accent);
+  border-color: var(--st-color-accent);
+  color: var(--st-color-accent-contrast);
+  font-weight: var(--st-weight-medium);
+}
+.overview-page .readiness-card.attention > button:hover {
+  background: var(--st-color-accent-hover);
+  border-color: var(--st-color-accent-hover);
+  color: var(--st-color-accent-contrast);
+}
+.overview-page .readiness-card.attention > button:active {
+  background: var(--st-color-accent-active);
+  border-color: var(--st-color-accent-active);
+  color: var(--st-color-accent-contrast);
+}
+
