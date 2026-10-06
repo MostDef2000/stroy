@@ -105,15 +105,19 @@ function Login({ onLogin }: { onLogin: () => void }) {
   const [username, setUsername] = useState("owner");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    setSubmitting(true);
     try {
       setError("");
       await api.login(username, password);
       onLogin();
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -129,8 +133,12 @@ function Login({ onLogin }: { onLogin: () => void }) {
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Пароль"
         />
-        <button>Войти</button>
-        {error && <div className="error">{error}</div>}
+        <button disabled={submitting}>{submitting ? "Входим…" : "Войти"}</button>
+        {error && (
+          <div className="error" aria-live="polite">
+            {error}
+          </div>
+        )}
       </form>
     </main>
   );
@@ -155,6 +163,7 @@ export default function App() {
   const [sceneReadyFor, setSceneReadyFor] = useState<string | null>(null);
   const [preparingScene, setPreparingScene] = useState(false);
   const [page, setPage] = useState<PageId>("overview");
+  const [username, setUsername] = useState("Владелец");
   const sceneInitAttempted = useRef<Set<string>>(new Set());
 
   const refreshProjectsAndWorkers = useCallback(async () => {
@@ -184,7 +193,10 @@ export default function App() {
 
   useEffect(() => {
     api.me()
-      .then(() => {
+      .then((me) => {
+        if (me && typeof me.username === "string" && me.username) {
+          setUsername(me.username);
+        }
         setAuthenticated(true);
         return refreshProjectsAndWorkers();
       })
@@ -407,7 +419,13 @@ export default function App() {
         setSelected(id);
         setDeleteError("");
       }}
-      onLogout={() => void api.logout().then(() => setAuthenticated(false))}
+      onLogout={() =>
+        void api
+          .logout()
+          .catch(() => undefined)
+          .finally(() => setAuthenticated(false))
+      }
+      accountLabel={username}
       projectName={currentProject?.name ?? "Проект"}
       revisionLabel={revision ? "Сцена готова" : "Сцена ещё не создана"}
       page={page}
