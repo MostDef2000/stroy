@@ -14,22 +14,6 @@ export type WorkerCurrentJob = {
   project_id: string | null;
 };
 
-/**
- * Resource telemetry sample reported with a worker heartbeat (#144).
- * Any metric may be null/absent when uncollectible — absence is never zero.
- * CPU-only workers report an empty gpus array.
- */
-export type WorkerTelemetry = {
-  cpu?: { utilization_percent?: number | null } | null;
-  memory?: { used_bytes?: number | null; total_bytes?: number | null } | null;
-  gpus?: Array<{
-    name?: string | null;
-    utilization_percent?: number | null;
-    memory_used_bytes?: number | null;
-    memory_total_bytes?: number | null;
-  }> | null;
-};
-
 export type Worker = {
   id: string;
   display_name: string | null;
@@ -39,8 +23,6 @@ export type Worker = {
   last_heartbeat: string;
   /** Structured hardware description; opaque to the UI. */
   hardware: Record<string, unknown>;
-  telemetry: WorkerTelemetry | null;
-  telemetry_updated_at: string | null;
   busy: boolean;
   current_job: WorkerCurrentJob | null;
 };

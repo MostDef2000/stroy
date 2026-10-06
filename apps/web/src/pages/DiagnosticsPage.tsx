@@ -20,7 +20,6 @@ import {
   jobStatusTone,
   newestFirst,
   shortId,
-  telemetryLines,
   workerStatusView
 } from "../diagnostics-format";
 
@@ -108,10 +107,6 @@ export function DiagnosticsPage({
         <div className="diag-worker-grid">
           {workers.map((worker) => {
             const status = workerStatusView(worker);
-            // #144: live metrics only when online + fresh; otherwise the
-            // helpers return the explicit unavailable/stale copies. All
-            // staleness/metric decisions stay in the pure helpers.
-            const telemetry = telemetryLines(worker, Date.now());
             return (
               <article className="diag-worker-card" key={worker.id}>
                 <div className="diag-worker-head">
@@ -123,12 +118,6 @@ export function DiagnosticsPage({
                   {worker.capabilities.length > 0 ? ` · ${worker.capabilities.join(", ")}` : ""}
                 </small>
                 {status.note && <small className="diag-worker-meta">{status.note}</small>}
-                {/* #144: только реальные значения; недоступные метрики помечены явно. */}
-                {telemetry.map((line, index) => (
-                  <small className="diag-worker-meta" key={`${index}:${line}`}>
-                    {line}
-                  </small>
-                ))}
               </article>
             );
           })}

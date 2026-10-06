@@ -2202,7 +2202,7 @@ textarea.invalid {
   white-space: nowrap;
 }
 
-/* Compute: worker cards. The #144 telemetry slot renders inside the card. */
+/* Compute: worker cards. */
 .diag-worker-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));

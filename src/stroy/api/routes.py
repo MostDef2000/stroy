@@ -293,51 +293,8 @@ class WorkerRegistration(BaseModel):
     hardware: dict[str, Any] = Field(default_factory=dict)
 
 
-class TelemetryCpu(BaseModel):
-    utilization_percent: float | None = Field(default=None, ge=0, le=100)
-
-
-class TelemetryMemory(BaseModel):
-    used_bytes: int | None = Field(default=None, ge=0)
-    total_bytes: int | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def _used_not_exceeds_total(self) -> TelemetryMemory:
-        if (
-            self.used_bytes is not None
-            and self.total_bytes is not None
-            and self.used_bytes > self.total_bytes
-        ):
-            raise ValueError("used_bytes cannot exceed total_bytes")
-        return self
-
-
-class TelemetryGpu(BaseModel):
-    name: str | None = None
-    utilization_percent: float | None = Field(default=None, ge=0, le=100)
-    memory_used_bytes: int | None = Field(default=None, ge=0)
-    memory_total_bytes: int | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def _memory_used_not_exceeds_total(self) -> TelemetryGpu:
-        if (
-            self.memory_used_bytes is not None
-            and self.memory_total_bytes is not None
-            and self.memory_used_bytes > self.memory_total_bytes
-        ):
-            raise ValueError("memory_used_bytes cannot exceed memory_total_bytes")
-        return self
-
-
-class WorkerTelemetry(BaseModel):
-    cpu: TelemetryCpu | None = None
-    memory: TelemetryMemory | None = None
-    gpus: list[TelemetryGpu] = Field(default_factory=list)
-
-
 class WorkerHeartbeat(BaseModel):
     worker_id: str
-    telemetry: WorkerTelemetry | None = None
 
 
 class WorkerClaim(BaseModel):
@@ -1911,7 +1868,7 @@ async def workers(request: Request, session: DbSession):
 
         sqlite round-trips tz-aware datetimes as naive; an offset-less ISO
         string is parsed as *local* time by browser Date() constructors,
-        which makes fresh telemetry read as stale away from UTC.
+        which makes a fresh heartbeat read as stale away from UTC.
         """
         if value is not None and value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
@@ -1935,8 +1892,6 @@ async def workers(request: Request, session: DbSession):
             "runtimes": row.runtimes,
             "last_heartbeat": _as_utc(row.last_heartbeat),
             "hardware": row.hardware,
-            "telemetry": row.telemetry,
-            "telemetry_updated_at": _as_utc(row.telemetry_updated_at),
             "busy": row.id in active_jobs,
             "current_job": (
                 {
@@ -1966,9 +1921,6 @@ async def worker_register(payload: WorkerRegistration, session: DbSession):
     row.hardware = payload.hardware
     row.status = "online"
     row.last_heartbeat = datetime.now(timezone.utc)
-    # Re-registration clears stale telemetry samples.
-    row.telemetry = None
-    row.telemetry_updated_at = None
     await session.commit()
     return {"worker_id": row.id, "status": row.status}
 
@@ -1978,17 +1930,8 @@ async def worker_heartbeat(payload: WorkerHeartbeat, session: DbSession):
     row = await session.get(WorkerRow, payload.worker_id)
     if row is None:
         raise HTTPException(status_code=404, detail="worker not registered")
-    now = datetime.now(timezone.utc)
     row.status = "online"
-    row.last_heartbeat = now
-    if payload.telemetry is not None:
-        row.telemetry = payload.telemetry.model_dump(mode="json", exclude_none=True)
-        row.telemetry_updated_at = now
-    else:
-        # A heartbeat without telemetry means "I could not collect right now";
-        # stale samples must never present as current.
-        row.telemetry = None
-        row.telemetry_updated_at = None
+    row.last_heartbeat = datetime.now(timezone.utc)
     await session.commit()
     return {"worker_id": row.id, "status": "online"}
 

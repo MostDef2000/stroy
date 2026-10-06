@@ -10,7 +10,6 @@ from stroy.generation import GenerationContext, finalize_generation_manifest
 from stroy.rendering import RenderContext, finalize_render_manifest
 from stroy.services.adapters import AdapterError
 from stroy.worker.client import WorkerClient
-from stroy.worker.telemetry import collect_telemetry
 
 
 class Executor(Protocol):
@@ -50,14 +49,7 @@ class WorkerRunner:
     async def _heartbeat_if_due(self) -> None:
         now = time.monotonic()
         if now - self._last_worker_heartbeat >= self.heartbeat_seconds:
-            # Telemetry collection must never take a heartbeat down: any
-            # failure degrades to a heartbeat without telemetry.
-            telemetry: dict[str, Any] | None = None
-            try:
-                telemetry = await asyncio.to_thread(collect_telemetry)
-            except Exception:
-                telemetry = None
-            await self.client.heartbeat(telemetry=telemetry)
+            await self.client.heartbeat()
             self._last_worker_heartbeat = now
 
     async def _cancel_executor(
