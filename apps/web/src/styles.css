@@ -2528,3 +2528,152 @@ textarea.invalid {
   }
 }
 
+/* ===== #143 follow-up: horizontal diagnostics board =====
+   Owner request: the work blocks (Вычисления, Активность, Файлы, Профили
+   стиля, Проверка пайплайна) must sit side by side on desktop — no vertical
+   page scroll at all. The page root keeps the .diag-stack class (its scoped
+   .tag/.summary rules and the narrow fallback keep working) and adds
+   .diag-board, which switches to columns at >=901px:
+
+     >=1440px   4 columns: [Вычисления] [Активность] [Файлы] [Профили стиля +
+                          Проверка пайплайна, pipeline secondary]
+     1100-1439  3 columns: Вычисления and Активность span both rows; Файлы
+                          sits above Профили+Пайплайн in the third column
+     900-1099   2 columns: [Вычисления][Активность] / [Файлы][Профили+Пайплайн]
+     <900px     single column = the original #143 stacked layout (page scroll
+                          acceptable on narrow/mobile by design)
+
+   Height mechanics — how "exactly the remaining viewport height" is achieved
+   without touching AppShell.tsx / .app-shell / .workspace: a fixed
+   calc(100dvh - Xpx) root offset is NOT robust here, because the measured
+   chrome is not fixed — .workspace padding is 2 x var(--st-space-5) = 48px,
+   the workspace grid gap is 18px, but the .project-header row is content-
+   sized (h1 + page tabs + menu; a long project name wraps h1 taller) and the
+   optional .status-panel message strip (AppShell) is conditional. So the
+   chain is pinned with explicit row templates scoped to this page via :has(),
+   and every fixed amount of chrome is absorbed by an auto-sized row:
+
+     .app-shell  height: 100dvh (was min-height: 100vh), rows: minmax(0, 1fr)
+     .workspace  rows: auto minmax(0, 1fr) — header auto, board gets exactly
+                 the rest; a .status-panel becomes a third implicit auto row
+     .diag-board min-height: 0 + overflow: hidden — the board IS the remaining
+                 space (the dvh-calc equivalent "X" = 2*var(--st-space-5)
+                 padding + 18px gap + header row + optional status row, all
+                 absorbed by auto rows, so the board never needs the number)
+
+   Result: the page never scrolls on >=901px viewports; only the per-column
+   panes scroll internally (.diag-scroll/.diag-worker-grid flex-fill with
+   max-height released). Sticky tab bar (outside the pane) and sticky file
+   group summaries (inside their .diag-scroll) keep working. Every grid/flex
+   child carries min-height: 0 (classic grid-overflow gotcha). Other pages are
+   unaffected: the shell rules only apply when a .diag-board exists. */
+
+/* Below 900px the side wrapper dissolves and the board is exactly the
+   original #143 stack: single column, fixed .diag-scroll max-heights. */
+.diag-side {
+  display: contents;
+}
+
+@media (min-width: 901px) {
+  /* Height chain (see mechanics note above). */
+  .app-shell:has(.diag-board) {
+    height: 100dvh;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .app-shell:has(.diag-board) .sidebar {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .app-shell:has(.diag-board) .workspace {
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .diag-board {
+    min-height: 0;
+    min-width: 0;
+    /* No page scroll may escape the board on desktop. */
+    overflow: hidden;
+    /* .diag-stack packs rows at start; the board must fill its height. */
+    align-content: stretch;
+  }
+
+  /* Columns are flex stacks: head/tab/chip rows keep their size, the scroll
+     pane absorbs the rest of the column. */
+  .diag-board > .panel,
+  .diag-side {
+    min-height: 0;
+    min-width: 0;
+  }
+  .diag-board > .panel,
+  .diag-side > .panel {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .diag-board .diag-panel-head,
+  .diag-board .diag-tabs,
+  .diag-board .diag-chip-row {
+    flex: none;
+  }
+  /* Column panes fill their column and scroll internally instead of using
+     the fixed px max-heights (those stay for the <900px stacked fallback). */
+  .diag-board .diag-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+  }
+  /* Compute has no .diag-scroll pane; its worker-card grid scrolls instead.
+     align-content: start keeps sparse cards compact instead of stretching. */
+  .diag-board .diag-worker-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    align-content: start;
+  }
+  /* Fourth column: style profiles take the space, pipeline test stays a
+     compact secondary strip at the bottom. */
+  .diag-side {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 14px;
+  }
+
+  /* Narrow board columns: long hashes/ids in details wrap instead of forcing
+     a horizontal pane scrollbar. */
+  .diag-board .diag-details-row > span:last-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* 900-1099px: two columns, two rows (Файлы / Профили+Пайплайн on row 2). */
+@media (min-width: 901px) and (max-width: 1099px) {
+  .diag-board {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+/* 1100-1439px: three columns; Compute and Activity span both rows, Files
+   stacks above Styles+Pipeline in the third column. */
+@media (min-width: 1100px) and (max-width: 1439px) {
+  .diag-board {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.25fr) minmax(0, 1fr);
+  }
+  .diag-compute,
+  .diag-activity {
+    grid-row: span 2;
+  }
+  .diag-side {
+    grid-column: 3;
+  }
+}
+
+/* >=1440px: all four blocks side by side in a single row. */
+@media (min-width: 1440px) {
+  .diag-board {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+

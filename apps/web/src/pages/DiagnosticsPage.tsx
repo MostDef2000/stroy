@@ -93,7 +93,12 @@ export function DiagnosticsPage({
   const hiddenCount = Math.max(0, activityCounts[activityTab] - activityLimit);
 
   return (
-    <div className="diag-stack">
+    // Horizontal board (#143 follow-up): work blocks sit side by side on
+    // desktop, zero vertical page scroll; <900px keeps the stacked #143
+    // layout. Layout lives in styles.css ("diagnostics horizontal board").
+    // .diag-stack stays on the root so its scoped tag/summary rules and the
+    // narrow-screen fallback keep working.
+    <div className="diag-board diag-stack">
       <section className="panel diag-compute">
         <div className="diag-panel-head">
           <h2>Вычисления</h2>
@@ -213,36 +218,41 @@ export function DiagnosticsPage({
         )}
       </section>
 
-      <section className="panel diag-styles">
-        <div className="diag-panel-head">
-          <h2>Профили стиля</h2>
-          <span className="diag-count">{styleProfiles.length}</span>
-        </div>
-        {styleProfiles.length === 0 && (
-          <p className="muted">профилей пока нет — запустите анализ стиля по reference-фото</p>
-        )}
-        {styleProfiles.length > 0 && (
-          <div className="diag-scroll diag-styles-scroll">
-            {styleProfiles.map((item) => (
-              <StyleRow key={item.id} item={item} />
-            ))}
+      {/* Fourth column (>=901px): style profiles with the pipeline test kept
+          secondary underneath; dissolves (display:contents) into the stacked
+          layout below 900px. */}
+      <div className="diag-side">
+        <section className="panel diag-styles">
+          <div className="diag-panel-head">
+            <h2>Профили стиля</h2>
+            <span className="diag-count">{styleProfiles.length}</span>
           </div>
-        )}
-      </section>
+          {styleProfiles.length === 0 && (
+            <p className="muted">профилей пока нет — запустите анализ стиля по reference-фото</p>
+          )}
+          {styleProfiles.length > 0 && (
+            <div className="diag-scroll diag-styles-scroll">
+              {styleProfiles.map((item) => (
+                <StyleRow key={item.id} item={item} />
+              ))}
+            </div>
+          )}
+        </section>
 
-      <section className="panel diag-pipeline" aria-label="Проверка пайплайна">
-        <div className="diag-pipeline-row">
-          <div>
-            <h2>Проверка пайплайна</h2>
-            <small className="muted">ручной прогон тестовой генерации (#101)</small>
+        <section className="panel diag-pipeline" aria-label="Проверка пайплайна">
+          <div className="diag-pipeline-row">
+            <div>
+              <h2>Проверка пайплайна</h2>
+              <small className="muted">ручной прогон тестовой генерации (#101)</small>
+            </div>
+            <div className="pl-actions">
+              <button type="button" className="secondary" onClick={onTestGeneration}>
+                Тестовая генерация
+              </button>
+            </div>
           </div>
-          <div className="pl-actions">
-            <button type="button" className="secondary" onClick={onTestGeneration}>
-              Тестовая генерация
-            </button>
-          </div>
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }
