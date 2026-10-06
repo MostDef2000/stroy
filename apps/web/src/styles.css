@@ -2167,3 +2167,364 @@ textarea.invalid {
   }
 }
 
+/* ===== #143 diagnostics dashboard =====
+   Compact bounded operator surface: fixed-height panes with internal
+   scroll (list growth never stretches the page), compact two-line rows,
+   raw ids/hashes/errors behind "Подробнее" details. Consumes only --st-*
+   tokens; additive at EOF so it wins the cascade over the equal-specificity
+   component rules above without touching them. */
+
+.diag-stack {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+/* Panel head: title + count chip on one line. */
+.diag-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-space-3);
+  margin: 0 0 10px;
+}
+.diag-panel-head h2 {
+  margin: 0;
+}
+.diag-count {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: 999px;
+  background: var(--st-color-surface-elevated);
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Compute: worker cards. The #144 telemetry slot renders inside the card. */
+.diag-worker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+.diag-worker-card {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+}
+.diag-worker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-space-2);
+}
+.diag-worker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--st-weight-medium);
+}
+.diag-worker-head .tag {
+  flex: none;
+}
+.diag-worker-meta {
+  color: var(--st-color-muted-text);
+  font-size: var(--st-text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* Activity tabs. Native buttons: Tab + Enter/Space work natively. Selected
+   state keys off aria-selected; .is-active is unused by CSS on purpose so the
+   consolidated .active block above stays untouched. */
+.diag-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.diag-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--st-color-border-strong);
+  border-radius: 999px;
+  background: var(--st-color-surface);
+  color: var(--st-color-text-secondary);
+  font-size: var(--st-text-sm);
+}
+.diag-tab:hover {
+  background: var(--st-color-selected-muted-bg);
+  color: var(--st-color-text);
+}
+.diag-tab[aria-selected="true"] {
+  background: var(--st-color-selected-bg);
+  border-color: var(--st-color-selected-bg);
+  color: var(--st-color-selected-text);
+}
+.diag-tab-count {
+  padding: 0 6px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: 999px;
+  background: var(--st-color-surface-elevated);
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+}
+.diag-tab[aria-selected="true"] .diag-tab-count {
+  border-color: transparent;
+  background: var(--st-color-accent-contrast);
+  color: var(--st-color-accent);
+}
+
+/* Bounded scroll panes: tab bar stays above the pane, content scrolls. */
+.diag-scroll {
+  max-height: 380px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+  padding: 2px var(--st-space-3);
+}
+.diag-files-scroll {
+  max-height: 320px;
+}
+.diag-styles-scroll {
+  max-height: 300px;
+}
+
+/* Compact rows: primary line + secondary line; side cluster never wraps. */
+.diag-row {
+  padding: var(--st-space-2) 0;
+  border-top: 1px solid var(--st-color-border-subtle);
+}
+.diag-row:first-child {
+  border-top: 0;
+}
+.diag-row-main,
+.diag-row-sub {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--st-space-2);
+  min-width: 0;
+}
+.diag-row-main {
+  align-items: center;
+}
+.diag-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--st-text-sm);
+}
+.diag-row-sub {
+  margin-top: 2px;
+  color: var(--st-color-muted-text);
+  font-size: var(--st-text-xs);
+}
+.diag-row-side {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--st-space-2);
+}
+.diag-time {
+  color: var(--st-color-muted-text);
+  font-size: var(--st-text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.diag-progress {
+  color: var(--st-color-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Status tag tones — dashboard-scoped (global .tag only has online/offline). */
+.diag-stack .tag.ok {
+  background: var(--st-color-ok-bg);
+  color: var(--st-color-ok);
+}
+.diag-stack .tag.err {
+  background: var(--st-color-danger-bg);
+  color: var(--st-color-danger);
+}
+.diag-stack .tag.warn {
+  background: var(--st-color-warn-bg);
+  color: var(--st-color-warn);
+}
+
+/* "Показать ещё": reveals more rows inside the bounded pane (no silent
+   clipping). */
+.diag-show-more {
+  margin: 10px 0 8px;
+}
+
+/* Inline cancel on compact job rows: smaller than the shared .secondary. */
+.diag-cancel {
+  padding: 4px 9px;
+}
+
+/* Expandable details: raw ids/hashes/error context/provenance live here. */
+.diag-details {
+  margin-top: 4px;
+  font-size: var(--st-text-xs);
+}
+/* <summary> is not covered by the global :focus-visible selector list —
+   keyboard users still need a visible ring on "Подробнее" and role groups. */
+.diag-stack summary:focus-visible {
+  outline: 2px solid var(--st-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--st-radius-sm);
+}
+.diag-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 2px;
+  border-radius: var(--st-radius-sm);
+  cursor: pointer;
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  list-style: none;
+}
+.diag-details > summary::-webkit-details-marker {
+  display: none;
+}
+.diag-details > summary::before {
+  content: "▸";
+  transition: transform 0.12s ease;
+}
+.diag-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.diag-details > summary:hover {
+  color: var(--st-color-text-secondary);
+}
+.diag-details-grid {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-color-surface);
+}
+.diag-details-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--st-space-2);
+  min-width: 0;
+}
+.diag-k {
+  flex: none;
+  width: 140px;
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+}
+.diag-details-grid .mono {
+  color: var(--st-color-text-secondary);
+}
+.diag-error-text {
+  min-width: 0;
+  color: var(--st-color-danger);
+  overflow-wrap: anywhere;
+}
+
+/* Files: role summary chips + bounded per-role lists with sticky headers. */
+.diag-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.diag-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: 999px;
+  background: var(--st-color-surface-inset);
+  color: var(--st-color-text-secondary);
+  font-size: var(--st-text-xs);
+  white-space: nowrap;
+}
+.diag-chip.is-empty {
+  color: var(--st-color-muted-text);
+  border-style: dashed;
+}
+.diag-file-group {
+  padding: 4px 0;
+  border-top: 1px solid var(--st-color-border-subtle);
+}
+.diag-file-group:first-child {
+  border-top: 0;
+}
+.diag-file-group > summary {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-space-2);
+  padding: 5px 0;
+  border-radius: var(--st-radius-sm);
+  cursor: pointer;
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--st-color-surface-inset);
+}
+.diag-file-group > summary:hover {
+  color: var(--st-color-text-secondary);
+}
+
+/* Pipeline test (#101): kept reachable but visually secondary, at the bottom. */
+.diag-pipeline {
+  background: var(--st-color-surface-inset);
+}
+.diag-pipeline h2 {
+  color: var(--st-color-muted-text);
+  font-size: var(--st-text-sm);
+}
+.diag-pipeline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--st-space-3);
+}
+.diag-pipeline-row .muted {
+  margin: 2px 0 0;
+}
+.diag-pipeline-row .secondary {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diag-details > summary::before {
+    transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .diag-scroll {
+    max-height: 300px;
+  }
+  .diag-k {
+    width: 108px;
+  }
+  .diag-worker-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
