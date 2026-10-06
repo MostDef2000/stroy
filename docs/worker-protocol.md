@@ -149,49 +149,6 @@ Completion and failure endpoints must be idempotent per lease/attempt.
 
 A stale worker whose lease expired cannot overwrite a newer attempt result.
 
-## Worker telemetry
-
-Heartbeats may optionally carry a `telemetry` sample with real, measured
-CPU/RAM/GPU numbers. The field is optional and backwards-safe: old workers
-keep sending only `worker_id`.
-
-```json
-{
-  "worker_id": "home-gpu-worker",
-  "telemetry": {
-    "cpu": {"utilization_percent": 42.5},
-    "memory": {"used_bytes": 8589934592, "total_bytes": 17179869184},
-    "gpus": [
-      {
-        "name": "NVIDIA GeForce RTX 4090",
-        "utilization_percent": 61.0,
-        "memory_used_bytes": 1073741824,
-        "memory_total_bytes": 25769803776
-      }
-    ]
-  }
-}
-```
-
-Rules:
-
-- **Fail-soft.** Collection happens in the worker process and never fails the
-  heartbeat. If a metric cannot be read, it is omitted (`None`), and if the
-  collector fails entirely the heartbeat is sent without `telemetry`.
-- **No fake values.** Only actually measured numbers are reported. A missing
-  GPU probe yields an empty `gpus` list — never fabricated zeros or guesses.
-- **CPU-only machines** report `"gpus": []`.
-- **Linux sources.** CPU utilization is measured from `/proc/stat` over a real
-  interval (busy delta / total delta between two reads); RAM comes from
-  `/proc/meminfo` (`MemTotal` − `MemAvailable`). GPU numbers come from
-  `nvidia-smi` (`csv,noheader,nounits`, MiB converted to bytes).
-- **Latest sample only.** The server stores the newest sample per worker
-  (`telemetry` + `telemetry_updated_at`). A heartbeat without `telemetry`
-  clears both fields — stale numbers must never present as current. Presence
-  of an old sample on an offline worker only means "last reported", and the
-  UI is responsible for staleness decisions.
-- Re-registration clears any stored sample.
-
 ## Observability
 
 Record:

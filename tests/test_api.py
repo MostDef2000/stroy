@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from uuid import uuid4
 
@@ -19,7 +18,6 @@ from stroy.db.models import (
     JobRow,
     ProjectRow,
     RenderManifestRow,
-    WorkerRow,
 )
 from stroy.editing.mask import render_replacement_mask
 from stroy.editing.replacement import ReplacementRegion
@@ -3000,191 +2998,6 @@ async def test_noop_revision_conflict_returns_409(settings, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_telemetry_roundtrip_then_cleared_by_plain_heartbeat(settings):
-    app = create_app(settings=settings, object_store=MemoryObjectStore())
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            # GET /api/v1/workers is owner-only; login sets the session cookie.
-            await login(client)
-            worker_headers = {"Authorization": "Bearer worker-secret"}
-
-            register = await client.post(
-                "/api/v1/workers/register",
-                headers=worker_headers,
-                json={
-                    "worker_id": "worker-tel",
-                    "capabilities": ["llm"],
-                    "models": [],
-                    "runtimes": {},
-                },
-            )
-            assert register.status_code == 200
-
-            telemetry = {
-                "cpu": {"utilization_percent": 37.5},
-                "memory": {"used_bytes": 8_589_934_592, "total_bytes": 17_179_869_184},
-                "gpus": [
-                    {
-                        "name": "NVIDIA GeForce RTX 4090",
-                        "utilization_percent": 64.0,
-                        "memory_used_bytes": 1_073_741_824,
-                        "memory_total_bytes": 25_769_803_776,
-                    }
-                ],
-            }
-            heartbeat = await client.post(
-                "/api/v1/workers/heartbeat",
-                headers=worker_headers,
-                json={"worker_id": "worker-tel", "telemetry": telemetry},
-            )
-            assert heartbeat.status_code == 200
-
-            entry = (await client.get("/api/v1/workers")).json()[0]
-            assert entry["id"] == "worker-tel"
-            assert entry["online"] is True
-            assert entry["telemetry"] == telemetry
-            assert entry["telemetry_updated_at"] is not None
-            assert entry["hardware"] == {}
-            assert entry["busy"] is False
-            assert entry["current_job"] is None
-
-            # A heartbeat without telemetry clears both fields: stale samples
-            # must never present as current.
-            plain = await client.post(
-                "/api/v1/workers/heartbeat",
-                headers=worker_headers,
-                json={"worker_id": "worker-tel"},
-            )
-            assert plain.status_code == 200
-            entry = (await client.get("/api/v1/workers")).json()[0]
-            assert entry["telemetry"] is None
-            assert entry["telemetry_updated_at"] is None
-
-            # Re-registration also clears stale samples.
-            heartbeat = await client.post(
-                "/api/v1/workers/heartbeat",
-                headers=worker_headers,
-                json={"worker_id": "worker-tel", "telemetry": telemetry},
-            )
-            assert heartbeat.status_code == 200
-            register = await client.post(
-                "/api/v1/workers/register",
-                headers=worker_headers,
-                json={"worker_id": "worker-tel", "capabilities": ["llm"]},
-            )
-            assert register.status_code == 200
-            entry = (await client.get("/api/v1/workers")).json()[0]
-            assert entry["telemetry"] is None
-            assert entry["telemetry_updated_at"] is None
-
-
-@pytest.mark.asyncio
-async def test_worker_telemetry_cpu_only_gpus_empty(settings):
-    app = create_app(settings=settings, object_store=MemoryObjectStore())
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            # GET /api/v1/workers is owner-only; login sets the session cookie.
-            await login(client)
-            worker_headers = {"Authorization": "Bearer worker-secret"}
-            register = await client.post(
-                "/api/v1/workers/register",
-                headers=worker_headers,
-                json={"worker_id": "worker-cpu"},
-            )
-            assert register.status_code == 200
-
-            heartbeat = await client.post(
-                "/api/v1/workers/heartbeat",
-                headers=worker_headers,
-                json={
-                    "worker_id": "worker-cpu",
-                    "telemetry": {"cpu": {"utilization_percent": 5.0}, "gpus": []},
-                },
-            )
-            assert heartbeat.status_code == 200
-
-            entry = (await client.get("/api/v1/workers")).json()[0]
-            assert entry["telemetry"] == {
-                "cpu": {"utilization_percent": 5.0},
-                "gpus": [],
-            }
-            assert entry["telemetry_updated_at"] is not None
-
-
-@pytest.mark.asyncio
-async def test_worker_telemetry_invalid_samples_rejected(settings):
-    app = create_app(settings=settings, object_store=MemoryObjectStore())
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            worker_headers = {"Authorization": "Bearer worker-secret"}
-            invalid_payloads = [
-                {"cpu": {"utilization_percent": 100.5}},
-                {"cpu": {"utilization_percent": -1.0}},
-                {"memory": {"used_bytes": -1}},
-                {"memory": {"total_bytes": -5}},
-                {"memory": {"used_bytes": 200, "total_bytes": 100}},
-                {"gpus": [{"memory_used_bytes": 300, "memory_total_bytes": 200}]},
-                {"gpus": [{"utilization_percent": 150}]},
-            ]
-            for telemetry in invalid_payloads:
-                response = await client.post(
-                    "/api/v1/workers/heartbeat",
-                    headers=worker_headers,
-                    json={"worker_id": "worker-any", "telemetry": telemetry},
-                )
-                assert response.status_code == 422, telemetry
-
-
-@pytest.mark.asyncio
-async def test_worker_telemetry_offline_worker_still_reports_last_sample(settings):
-    app = create_app(settings=settings, object_store=MemoryObjectStore())
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            # GET /api/v1/workers is owner-only; login sets the session cookie.
-            await login(client)
-            worker_headers = {"Authorization": "Bearer worker-secret"}
-            register = await client.post(
-                "/api/v1/workers/register",
-                headers=worker_headers,
-                json={"worker_id": "worker-off"},
-            )
-            assert register.status_code == 200
-
-            telemetry = {
-                "cpu": {"utilization_percent": 42.0},
-                "gpus": [],
-            }
-            heartbeat = await client.post(
-                "/api/v1/workers/heartbeat",
-                headers=worker_headers,
-                json={"worker_id": "worker-off", "telemetry": telemetry},
-            )
-            assert heartbeat.status_code == 200
-
-            # Force the worker offline by pushing the heartbeat into the past.
-            async with app.state.session_factory() as db:
-                row = await db.get(WorkerRow, "worker-off")
-                assert row is not None
-                row.last_heartbeat = datetime.now(timezone.utc) - timedelta(hours=2)
-                await db.commit()
-
-            entry = (await client.get("/api/v1/workers")).json()[0]
-            assert entry["online"] is False
-            # The last sample and its timestamp are still returned raw;
-            # staleness decisions are the UI's concern.
-            assert entry["telemetry"] == telemetry
-            assert entry["telemetry_updated_at"] is not None
-
-
-@pytest.mark.asyncio
 async def test_worker_busy_and_current_job_derivation(settings):
     app = create_app(settings=settings, object_store=MemoryObjectStore())
     async with app.router.lifespan_context(app):
@@ -3287,20 +3100,14 @@ async def test_workers_endpoint_serializes_timestamps_with_utc_offset(settings):
             heartbeat = await client.post(
                 "/api/v1/workers/heartbeat",
                 headers=worker_headers,
-                json={
-                    "worker_id": "worker-tz",
-                    "telemetry": {"cpu": {"utilization_percent": 10.0}, "gpus": []},
-                },
+                json={"worker_id": "worker-tz"},
             )
             assert heartbeat.status_code == 200
 
             entry = (await client.get("/api/v1/workers")).json()[0]
             # sqlite round-trips tz-aware datetimes as naive; offset-less ISO
-            # strings parse as local time in browser Date() and make fresh
-            # telemetry read as stale. Both timestamps must carry +00:00.
+            # strings parse as local time in browser Date() and make a fresh
+            # heartbeat read as stale. The timestamp must carry +00:00.
             last_heartbeat = entry["last_heartbeat"]
-            telemetry_updated_at = entry["telemetry_updated_at"]
             assert last_heartbeat is not None
-            assert telemetry_updated_at is not None
             assert last_heartbeat.endswith("+00:00")
-            assert telemetry_updated_at.endswith("+00:00")
