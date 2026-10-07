@@ -66,6 +66,8 @@ async def persist_render_manifest(
         scene_revision_id=manifest.scene_revision_id,
         design_revision_id=manifest.design_revision_id,
         camera_id=manifest.camera_id,
+        # R4: variant linkage carried from the job payload (NULL legacy).
+        variant_id=job.payload.get("variant_id"),
         manifest_json=manifest_json,
     )
     session.add(row)

@@ -95,6 +95,7 @@ async def queue_design_generation(
     correlation_id: str | None,
     dispatcher: JobDispatcher | None,
     workflow_path: Path = DEFAULT_WORKFLOW_PATH,
+    variant_id: str | None = None,
 ) -> JobRow:
     workflow = load_default_workflow(workflow_path)
     generation_id = str(uuid4())
@@ -129,6 +130,9 @@ async def queue_design_generation(
         "affected_entity_ids": sorted(set(affected_entity_ids)),
         "regeneration_scope": scope,
     }
+    # R4: optional variant linkage rides the payload into the manifest row.
+    if variant_id is not None:
+        payload["variant_id"] = variant_id
     return await create_job(
         session,
         project_id=project_id,
@@ -181,6 +185,8 @@ async def persist_generation_manifest(
         scene_revision_id=manifest.scene_revision_id,
         design_revision_id=manifest.design_revision_id,
         camera_id=manifest.camera_id,
+        # R4: variant linkage carried from the job payload (NULL legacy).
+        variant_id=job.payload.get("variant_id"),
         manifest_json=manifest.model_dump(mode="json", exclude_none=True),
     )
     session.add(row)

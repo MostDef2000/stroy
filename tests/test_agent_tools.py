@@ -53,6 +53,11 @@ def test_tool_surface_contains_initial_contract() -> None:
         # R3: read-only product-candidate introspection.
         "list_product_candidates",
         "get_product_candidate",
+        # R4: read-only variant introspection.
+        "list_variants",
+        "get_variant",
+        "compare_variants",
+        "get_variant_budget",
     }
     for item in TOOL_DEFINITIONS:
         assert item["function"]["parameters"]["additionalProperties"] is False
@@ -170,6 +175,52 @@ def test_product_candidate_tools_are_read_only_service_executed() -> None:
         )
     with pytest.raises(ValueError, match="invalid arguments"):
         validate_tool_call({"name": "get_product_candidate", "arguments": {}})
+
+
+def test_variant_tools_are_read_only_service_executed() -> None:
+    from stroy.agent import READ_TOOL_NAMES
+
+    # R4: read-only variant introspection; never agent mutations.
+    assert {
+        "list_variants",
+        "get_variant",
+        "compare_variants",
+        "get_variant_budget",
+    } <= READ_TOOL_NAMES
+    for name, arguments in (
+        ("list_variants", {}),
+        ("get_variant", {"variant_id": "variant-1"}),
+        (
+            "compare_variants",
+            {"left_variant_id": "variant-1", "right_variant_id": "variant-2"},
+        ),
+        ("get_variant_budget", {"variant_id": "variant-1"}),
+    ):
+        with pytest.raises(ValueError, match="service execution"):
+            execute_read_tool(sample_scene(), {"name": name, "arguments": arguments})
+        with pytest.raises(ValueError, match="does not map"):
+            tool_call_to_command(
+                {"name": name, "arguments": arguments},
+                base_revision_id="revision-1",
+            )
+    # Typed args: status filter validates, bogus values rejected.
+    name, parsed = validate_tool_call(
+        {"name": "list_variants", "arguments": {"status": "shortlisted"}}
+    )
+    assert name == "list_variants"
+    assert parsed.status == "shortlisted"  # type: ignore[attr-defined]
+    assert parsed.include_archived is False  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="invalid arguments"):
+        validate_tool_call(
+            {"name": "list_variants", "arguments": {"status": "bogus"}}
+        )
+    with pytest.raises(ValueError, match="invalid arguments"):
+        validate_tool_call(
+            {
+                "name": "compare_variants",
+                "arguments": {"left_variant_id": "variant-1"},
+            }
+        )
 
 
 def test_agent_tool_becomes_typed_command() -> None:
