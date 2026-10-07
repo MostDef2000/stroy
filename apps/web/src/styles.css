@@ -87,9 +87,15 @@
   --st-color-glass-border: rgba(255, 255, 255, 0.08);
   --st-color-glass-border-strong: rgba(255, 255, 255, 0.14);
   --st-color-glass-highlight: rgba(255, 255, 255, 0.06);
+  /* #169: attention readiness card — translucent warm wash (the #151 opaque
+     danger-bg at 60% alpha) + a low-alpha warm glow. The wash is swapped for
+     an opaque surface in both fallback blocks below; the glow is a shadow and
+     composites correctly over opaque surfaces, so it is not swapped. */
+  --st-color-glass-attention-wash: rgba(53, 23, 21, 0.6);
   --st-color-lightbox-backdrop: rgba(0, 0, 0, 0.72);
   --st-shadow-glass: 0 24px 70px rgba(0, 0, 0, 0.36);
   --st-shadow-glass-soft: 0 14px 38px rgba(0, 0, 0, 0.28);
+  --st-shadow-glass-attention: 0 0 24px rgba(255, 180, 171, 0.1);
   --st-backdrop-blur: blur(14px) saturate(140%);
 
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -2673,16 +2679,21 @@ textarea.invalid {
   min-width: 0;
 }
 
-/* Emphasis model (#151): at most one item needs owner action — it gets the
-   strong treatment (tinted danger surface + primary-looking CTA); completed
-   cards stay quiet (existing muted surface + badge colors). Consumes only
-   --st-* tokens. */
+/* Emphasis model (#151, retuned by #169): at most one item needs owner action —
+   it gets the strong treatment; completed cards stay quiet (glass field +
+   ghost badges, see the #169 section at EOF). The strong treatment is the
+   same #168 glass base with a translucent warm wash instead of the old
+   opaque danger-bg fill — noticeable via tint + muted warm border + low-alpha
+   glow + badge + the primary-looking CTA below, never a saturated red block.
+   Consumes only --st-* tokens. */
 
 .overview-page .readiness-card.attention {
-  background: var(--st-color-danger-bg);
+  background: var(--st-color-glass-attention-wash);
   border-color: var(--st-color-danger-border);
   border-left-color: var(--st-color-danger);
-  box-shadow: var(--st-shadow-soft);
+  box-shadow:
+    inset 0 1px 0 var(--st-color-glass-highlight),
+    var(--st-shadow-glass-attention);
 }
 
 .overview-page .readiness-card.attention > button {
@@ -3567,7 +3578,58 @@ textarea.invalid {
   background: var(--st-color-glass-active);
 }
 
-/* Fallback A: no backdrop-filter support — swap the four translucent glass
+/* ===== #169: Overview readiness cards — lightweight glass status surfaces =====
+   Restyles the #151 compact readiness summary on top of the #168 base glass
+   recipe for .readiness-card. Readiness computation, navigation targets, data
+   flow and the #151 layout mechanism (.workspace:has(.overview-page),
+   content-sized cards, auto-fit one-row grid that wraps when narrow) are
+   untouched — visual hierarchy only:
+
+     ok / pending   secondary, visually QUIET: calmer field glass, hairline
+                    inset highlight only (no drop shadow), muted state edge,
+                    ghost outline badge — no color fills.
+     attention      the single actionable card stays the strongest surface:
+                    tinted glass wash (--st-color-glass-attention-wash, swapped
+                    opaque in both fallback blocks), muted warm border, gentle
+                    low-alpha glow, the one filled badge and the #151 accent
+                    CTA («Перейти»). No saturated dark-red card fill anywhere. */
+
+/* Completed / waiting cards drop to the calmer field glass and flatten: the
+   inset top highlight stays, the soft glass shadow goes, and the 4px semantic
+   left edge (kept by #168) is recolored to the muted -border tokens so it
+   reads as a whisper of state color instead of a bright bar. */
+.overview-page .readiness-card.ok,
+.overview-page .readiness-card.pending {
+  background: var(--st-color-glass-field);
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+.overview-page .readiness-card.ok {
+  border-left-color: var(--st-color-ok-border);
+}
+.overview-page .readiness-card.pending {
+  border-left-color: var(--st-color-warn-border);
+}
+
+/* Badges: success/waiting become restrained ghost outline pills (muted state
+   text, hairline state border, transparent fill); only the attention badge
+   keeps a fill, so it stays the single loud accent on the row. */
+.overview-page .readiness-card.ok .readiness-badge {
+  background: transparent;
+  border: 1px solid var(--st-color-ok-border);
+  color: var(--st-color-ok);
+}
+.overview-page .readiness-card.pending .readiness-badge {
+  background: transparent;
+  border: 1px solid var(--st-color-warn-border);
+  color: var(--st-color-warn);
+}
+.overview-page .readiness-card.attention .readiness-badge {
+  background: var(--st-color-danger-bg);
+  border: 1px solid var(--st-color-danger-border);
+  color: var(--st-color-danger);
+}
+
+/* Fallback A: no backdrop-filter support — swap the five translucent glass
    bg tokens for opaque surfaces and drop every blur. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root {
@@ -3575,6 +3637,8 @@ textarea.invalid {
     --st-color-glass-elevated: #1b2028;
     --st-color-glass-active: #252b32;
     --st-color-glass-field: #12161c;
+    /* #169: attention wash → 60% #351715 over the #0e1116 ambient. */
+    --st-color-glass-attention-wash: #251515;
   }
   .sidebar,
   .panel,
@@ -3603,6 +3667,8 @@ textarea.invalid {
     --st-color-glass-elevated: #1b2028;
     --st-color-glass-active: #252b32;
     --st-color-glass-field: #12161c;
+    /* #169: attention wash → 60% #351715 over the #0e1116 ambient. */
+    --st-color-glass-attention-wash: #251515;
   }
   .sidebar,
   .panel,
