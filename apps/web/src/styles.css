@@ -4177,3 +4177,127 @@ textarea.invalid {
 .design-check-group--info > h4 {
   color: var(--st-color-ok);
 }
+
+/* R3 product import: inline add-product flow (URL/image -> review -> place).
+   Token-only, mirrors the design-check / twin-panel language. The panel lives
+   in the page flow between the command bar and the main row — never a modal,
+   never on canvas. */
+.product-import {
+  margin-top: var(--st-space-3);
+  padding: var(--st-space-3);
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+  display: grid;
+  gap: var(--st-space-3);
+}
+.product-import-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--st-space-2) var(--st-space-3);
+}
+.product-import-head h3 {
+  margin: 0;
+  font-size: var(--st-text-base);
+  font-weight: var(--st-weight-semibold);
+}
+.product-import-head .hint {
+  margin: 0;
+}
+/* Command-bar toggle: mirrors .mode-switch button.active for the open state. */
+.product-import-toggle.active {
+  background: var(--st-color-selected-bg);
+  color: var(--st-color-selected-text);
+}
+.product-import-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--st-space-2) var(--st-space-3);
+}
+.product-import-url-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--st-space-2);
+  flex: 1 1 320px;
+}
+.product-import-url {
+  flex: 1 1 240px;
+}
+/* Image upload trigger: button-like label around a visually clipped (still
+   focusable) file input, so keyboard focus shows the ring via :focus-within —
+   the display:none .upload input pattern cannot receive focus. */
+.product-import-image {
+  position: relative;
+  background: var(--st-color-surface-elevated);
+  color: var(--st-color-text-secondary);
+  border: 1px solid var(--st-color-border-strong);
+  border-radius: var(--st-radius);
+  padding: 6px 9px;
+  font-size: var(--st-text-xs);
+  cursor: pointer;
+}
+.product-import-image:hover {
+  background: var(--st-color-selected-muted-bg);
+  color: var(--st-color-text);
+  border-color: var(--st-color-text-secondary);
+}
+.product-import-image:focus-within {
+  outline: 2px solid var(--st-focus-ring);
+  outline-offset: 2px;
+}
+.product-import-image input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+.product-import-review {
+  display: grid;
+  gap: var(--st-space-3);
+  border-top: 1px solid var(--st-color-border-subtle);
+  padding-top: var(--st-space-3);
+}
+.product-import-review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--st-space-2) var(--st-space-3);
+}
+.product-import-review-head h4 {
+  margin: 0 0 var(--st-space-1);
+  font-size: var(--st-text-base);
+  font-weight: var(--st-weight-semibold);
+}
+.product-import-review-head .hint {
+  margin: 0;
+  word-break: break-all;
+}
+.product-import-preview {
+  flex: 0 1 180px;
+  min-width: 120px;
+}
+.product-import-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--st-space-2) var(--st-space-3);
+}
+.product-import-field--missing {
+  border-color: var(--st-color-warn);
+}
+.product-import-field--missing:focus-visible {
+  outline-color: var(--st-color-warn);
+}
+.product-import-missing-hint {
+  margin: 0;
+  color: var(--st-color-warn);
+}
+.product-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-2);
+}
