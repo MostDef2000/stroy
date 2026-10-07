@@ -204,6 +204,12 @@ export function DesignPage({
   const [saveError, setSaveError] = useState("");
   const [placeBusy, setPlaceBusy] = useState(false);
   const [placeError, setPlaceError] = useState("");
+  // R4 variants: small command-bar action that seeds a variant from the
+  // current canonical head, then jumps to Results where the chip row lives.
+  const [variantOpen, setVariantOpen] = useState(false);
+  const [variantTitle, setVariantTitle] = useState("");
+  const [variantBusy, setVariantBusy] = useState(false);
+  const [variantError, setVariantError] = useState("");
   const advancedRef = useRef<HTMLDetailsElement | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
 
@@ -495,6 +501,26 @@ export function DesignPage({
     setPlaceError("");
   }
 
+  // R4: create a variant from the current canonical scene head and land on
+  // Results, where the variant chip row and detail pane live (SPA navigation,
+  // same onNavigate channel as every other page switch).
+  async function createVariantFromCurrent() {
+    const title = variantTitle.trim();
+    if (!title || variantBusy) return;
+    setVariantBusy(true);
+    setVariantError("");
+    try {
+      await api.createVariantFromCurrent(projectId, title);
+      setVariantTitle("");
+      setVariantOpen(false);
+      onNavigate("results");
+    } catch (reason) {
+      setVariantError(apiErrorText(reason));
+    } finally {
+      setVariantBusy(false);
+    }
+  }
+
   // Contextual rail (#154): the entity selected in the 3D scene, with its
   // actions one glance away instead of far below the canvas.
   const selectedEntity = selectedEntityId
@@ -595,6 +621,15 @@ export function DesignPage({
             onClick={() => setImportOpen((open) => !open)}
           >
             Добавить товар
+          </button>
+          {/* R4 variants: seed a variant from the current canonical head. */}
+          <button
+            type="button"
+            className={variantOpen ? "variant-create-toggle active" : "variant-create-toggle"}
+            aria-expanded={variantOpen}
+            onClick={() => setVariantOpen((open) => !open)}
+          >
+            Вариант из текущего
           </button>
           <label className="upload">
             Загрузить референс
@@ -840,6 +875,37 @@ export function DesignPage({
               </form>
             )}
           </section>
+        )}
+
+        {/* R4 variants: inline title input for the create-from-current action
+            (never a modal, never window.prompt). Success navigates to Results
+            where the variant chip row lives. */}
+        {variantOpen && (
+          <form
+            className="variant-create variant-create--page"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createVariantFromCurrent();
+            }}
+          >
+            <label className="variant-create-title">
+              Название варианта
+              <input
+                value={variantTitle}
+                onChange={(event) => setVariantTitle(event.target.value)}
+                placeholder="Например: Вариант с тёмным полом"
+                autoFocus
+              />
+            </label>
+            <button type="submit" disabled={variantBusy || !variantTitle.trim()}>
+              {variantBusy ? "Создаём…" : "Создать вариант"}
+            </button>
+            <p className="hint">
+              Вариант скопирует текущую версию сцены. Управление вариантами — на
+              странице «Результаты».
+            </p>
+            {variantError && <div className="error">{variantError}</div>}
+          </form>
         )}
 
         <div className="design-main">
