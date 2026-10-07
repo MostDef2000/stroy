@@ -2,6 +2,7 @@ from stroy.domain.commands import CommandConflict, CommandRejected, apply_comman
 from stroy.domain.models import (
     Camera,
     DesignCommand,
+    EntityIntent,
     EntityLocks,
     Scene,
     SceneEntity,
@@ -14,6 +15,7 @@ __all__ = [
     "CommandConflict",
     "CommandRejected",
     "DesignCommand",
+    "EntityIntent",
     "EntityLocks",
     "Scene",
     "SceneEntity",

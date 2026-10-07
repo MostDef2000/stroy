@@ -91,6 +91,10 @@
         "material": {
           "type": "boolean",
           "default": false
+        },
+        "existence": {
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -154,6 +158,15 @@
             "asis",
             "structure",
             "design"
+          ]
+        },
+        "intent": {
+          "default": null,
+          "enum": [
+            "keep",
+            "remove",
+            "replace",
+            null
           ]
         },
         "room_id": {
