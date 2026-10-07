@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from uuid import uuid4
@@ -86,6 +86,11 @@ class SetLightIntentArgs(ToolArgs):
     temperature_k: int | None = Field(default=None, ge=1000, le=20000)
 
 
+class SetStateArgs(ToolArgs):
+    target_id: str = Field(min_length=1)
+    state: Literal["asis", "structure", "design"]
+
+
 class CreateDesignRevisionArgs(ToolArgs):
     label: str | None = Field(default=None, max_length=200)
 
@@ -123,6 +128,11 @@ _TOOL_SPECS: list[tuple[str, str, type[ToolArgs]]] = [
         SetLightIntentArgs,
     ),
     (
+        "set_state",
+        "Set the state layer (asis, structure or design) of a scene entity.",
+        SetStateArgs,
+    ),
+    (
         "create_design_revision",
         "Return the current design revision after accepted edits.",
         CreateDesignRevisionArgs,
@@ -151,6 +161,7 @@ READ_TOOL_NAMES = {"get_scene", "get_room", "get_entity", "list_materials"}
 MUTATION_TOOL_NAMES = {
     "set_material",
     "set_color",
+    "set_state",
     "add_object",
     "remove_object",
     "replace_object_from_reference",

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from stroy.db.models import JobRow, PlanDraftRow, SceneRevisionRow
 from stroy.domain.models import (
+    EntityState,
     EntityKind,
     Provenance,
     ProvenanceSource,
@@ -169,6 +170,7 @@ def _build_floor_entities(
             SceneEntity(
                 id=wall.id,
                 kind=EntityKind.WALL,
+                state=EntityState.STRUCTURE,
                 room_id=wall_room.get(wall.id),
                 geometry={
                     "a": [wall.x1, wall.y1],
@@ -189,6 +191,7 @@ def _build_floor_entities(
                 SceneEntity(
                     id=opening.id,
                     kind=_OPENING_KINDS[opening.kind],
+                    state=EntityState.STRUCTURE,
                     room_id=wall_room.get(wall.id),
                     geometry={
                         "host_wall_id": wall.id,
@@ -210,6 +213,7 @@ def _build_floor_entities(
             SceneEntity(
                 id=room.id,
                 kind=EntityKind.ROOM,
+                state=EntityState.STRUCTURE,
                 display_name=room.name,
                 geometry={
                     "wall_ids": list(room.wall_ids),
@@ -231,6 +235,7 @@ def _build_floor_entities(
             SceneEntity(
                 id=f"floor.{room.id}",
                 kind=EntityKind.FLOOR,
+                state=EntityState.STRUCTURE,
                 room_id=room.id,
                 transform=Transform(
                     translation_mm=(center_x, center_y, floor.level_mm)
@@ -248,6 +253,7 @@ def _build_floor_entities(
             SceneEntity(
                 id=f"ceiling.{room.id}",
                 kind=EntityKind.CEILING,
+                state=EntityState.STRUCTURE,
                 room_id=room.id,
                 transform=Transform(
                     translation_mm=(

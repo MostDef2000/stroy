@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from stroy.db.base import Base
@@ -72,6 +83,37 @@ class AssetRow(Base):
     source_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
     duplicate_of_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AttachmentRow(Base):
+    __tablename__ = "attachments"
+    __table_args__ = (
+        # Composite lookup: list attachments of one target inside a project.
+        Index("ix_attachments_project_target", "project_id", "target_type", "target_id"),
+        # Composite lookup: filter by kind within a project (checklists etc.).
+        Index("ix_attachments_project_kind", "project_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    # Polymorphic target: "project" (target_id NULL), "room" or "entity".
+    target_type: Mapped[str] = mapped_column(String(20))
+    # Nullable by design: project-level attachments have no target row.
+    # String reference (no FK) so a plan recommit that rewrites the scene
+    # never orphans the row; dangling targets are surfaced by the API.
+    target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    # String reference to assets.id (kept as plain column so an asset can be
+    # deleted without cascading the note attached to it).
+    asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    done: Mapped[bool] = mapped_column(Boolean, default=False)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class StyleProfileRow(Base):

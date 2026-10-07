@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -21,9 +21,9 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
+from stroy.db.models import AssetRow, AttachmentRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
-from stroy.domain.models import Camera, DesignCommand, Scene
+from stroy.domain.models import Camera, DesignCommand, Scene, SceneEntity
 from stroy.domain.plan import PlanDraft
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
@@ -274,6 +274,39 @@ class RenderRequest(BaseModel):
 class SceneRevert(BaseModel):
     expected_base_revision_id: str
     target_revision_id: str
+
+
+class AttachmentCreate(BaseModel):
+    target_type: Literal["project", "room", "entity"]
+    target_id: str | None = Field(default=None, max_length=255)
+    kind: Literal["photo", "note", "file", "task"]
+    asset_id: str | None = Field(default=None, min_length=1)
+    body: str | None = Field(default=None, max_length=8000)
+    due_date: date | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_target_and_asset(self) -> "AttachmentCreate":
+        if self.target_type == "project":
+            if self.target_id is not None:
+                raise ValueError(
+                    "project-level attachments cannot carry target_id"
+                )
+        elif not self.target_id:
+            raise ValueError(
+                f"target_id is required for target_type={self.target_type}"
+            )
+        if self.kind in {"photo", "file"} and self.asset_id is None:
+            raise ValueError(f"kind={self.kind} requires asset_id")
+        return self
+
+
+class AttachmentPatch(BaseModel):
+    # R1: no retargeting (target_type/target_id/asset_id/kind are immutable).
+    body: str | None = Field(default=None, max_length=8000)
+    done: bool | None = None
+    due_date: date | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class JobCreate(BaseModel):
@@ -655,7 +688,7 @@ async def asset_upload(
 ):
     if await session.get(ProjectRow, project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
-    if role not in {"apartment", "reference", "derived"}:
+    if role not in {"apartment", "reference", "derived", "attachment"}:
         raise HTTPException(status_code=422, detail="invalid asset role")
     data, media_type = await _validated_upload(file, request)
     digest = hashlib.sha256(data).hexdigest()
@@ -734,6 +767,171 @@ async def asset_download(asset_id: str, request: Request, session: DbSession):
         media_type=row.media_type,
         headers={"Cache-Control": "private, max-age=60"},
     )
+
+
+def _attachment_view(row: AttachmentRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "project_id": row.project_id,
+        "target_type": row.target_type,
+        "target_id": row.target_id,
+        "kind": row.kind,
+        "asset_id": row.asset_id,
+        "body": row.body,
+        "due_date": row.due_date.isoformat() if row.due_date else None,
+        "done": row.done,
+        "metadata": row.metadata_json,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+async def _load_scene_entities(
+    session: AsyncSession, project_id: str
+) -> list[SceneEntity]:
+    """Return the entities of the project's current scene (may be empty)."""
+    current = await latest_revision(session, project_id)
+    if current is None:
+        return []
+    scene = Scene.model_validate(current.scene_json)
+    return scene.entities
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/attachments",
+    dependencies=[Depends(require_owner)],
+)
+async def attachment_list(
+    project_id: str,
+    session: DbSession,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    kind: str | None = None,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    # Dangling targets are intentional: a plan recommit can replace the scene
+    # and retire entity ids, but the attachment (a pin/measure note) survives.
+    # The list returns rows as-is; clients flag dangling targets themselves.
+    query = select(AttachmentRow).where(AttachmentRow.project_id == project_id)
+    if target_type is not None:
+        query = query.where(AttachmentRow.target_type == target_type)
+    if target_id is not None:
+        query = query.where(AttachmentRow.target_id == target_id)
+    if kind is not None:
+        query = query.where(AttachmentRow.kind == kind)
+    result = await session.execute(query.order_by(AttachmentRow.created_at.desc()))
+    return [_attachment_view(row) for row in result.scalars()]
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/attachments",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def attachment_create(
+    project_id: str,
+    payload: AttachmentCreate,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    if payload.asset_id is not None:
+        asset = await session.get(AssetRow, payload.asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_attachment_asset",
+                    "asset_id": payload.asset_id,
+                },
+            )
+
+    if payload.target_type in {"room", "entity"}:
+        entities = await _load_scene_entities(session, project_id)
+        target = next(
+            (entity for entity in entities if entity.id == payload.target_id),
+            None,
+        )
+        if target is None:
+            code = "unknown_room" if payload.target_type == "room" else "unknown_entity"
+            raise HTTPException(
+                status_code=422,
+                detail={"code": code, "entity_id": payload.target_id},
+            )
+        if payload.target_type == "room" and target.kind.value != "room":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_room_target",
+                    "detail": "target must be a room-kind entity",
+                    "entity_id": payload.target_id,
+                },
+            )
+
+    row = AttachmentRow(
+        project_id=project_id,
+        target_type=payload.target_type,
+        target_id=payload.target_id,
+        kind=payload.kind,
+        asset_id=payload.asset_id,
+        body=payload.body,
+        due_date=payload.due_date,
+        metadata_json=payload.metadata,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _attachment_view(row)
+
+
+@router.patch(
+    "/api/v1/projects/{project_id}/attachments/{attachment_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def attachment_update(
+    project_id: str,
+    attachment_id: str,
+    payload: AttachmentPatch,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    row = await session.get(AttachmentRow, attachment_id)
+    if row is None or row.project_id != project_id:
+        raise HTTPException(status_code=404, detail="attachment not found")
+    changes = payload.model_dump(exclude_unset=True)
+    if "body" in changes:
+        row.body = changes["body"]
+    if "done" in changes:
+        row.done = changes["done"]
+    if "due_date" in changes:
+        row.due_date = changes["due_date"]
+    if "metadata" in changes:
+        row.metadata_json = changes["metadata"]
+    await session.commit()
+    await session.refresh(row)
+    return _attachment_view(row)
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}/attachments/{attachment_id}",
+    status_code=204,
+    dependencies=[Depends(require_csrf)],
+)
+async def attachment_delete(
+    project_id: str,
+    attachment_id: str,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    row = await session.get(AttachmentRow, attachment_id)
+    if row is None or row.project_id != project_id:
+        raise HTTPException(status_code=404, detail="attachment not found")
+    await session.delete(row)
+    await session.commit()
+    return Response(status_code=204)
 
 
 @router.post(

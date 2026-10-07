@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from stroy.db.models import (
     AssetRow,
+    AttachmentRow,
     DesignCommandRow,
     GenerationManifestRow,
     GeometryDiagnosticRow,
@@ -37,6 +38,7 @@ class ProjectHasActiveJobsError(ValueError):
 #   geometry_diagnostics.job_id                   -> jobs.id
 #   geometry_diagnostics.reference/generated_asset_id -> assets.id
 #   plan_drafts.job_id                            -> jobs.id
+#   attachments.asset_id                          -> assets.id
 #   assets.source_asset_id / duplicate_of_asset_id -> assets.id (self)
 #   scene_revisions.parent_revision_id            -> scene_revisions.id (self)
 _CHILD_TABLES = (
@@ -46,6 +48,7 @@ _CHILD_TABLES = (
     GenerationManifestRow,
     RenderManifestRow,
     GeometryDiagnosticRow,
+    AttachmentRow,
     AssetRow,
     SceneRevisionRow,
     JobRow,
