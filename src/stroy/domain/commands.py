@@ -3,6 +3,8 @@ from __future__ import annotations
 from stroy.domain.models import (
     CommandOperation,
     DesignCommand,
+    EntityIntent,
+    EntityLocks,
     EntityState,
     Scene,
     SceneEntity,
@@ -52,12 +54,20 @@ def apply_command(scene: Scene, command: DesignCommand) -> Scene:
         # their own mutations only and never block a state change.
         raw_state = command.parameters.get("state")
         try:
-            target.state = EntityState(raw_state)
+            next_state = EntityState(raw_state)
         except ValueError as exc:
             raise CommandRejected(
                 f"set_state requires parameters.state to be one of "
                 f"asis/structure/design, got: {raw_state}"
             ) from exc
+        if (
+            next_state is EntityState.STRUCTURE
+            and target.intent in {EntityIntent.REMOVE, EntityIntent.REPLACE}
+        ):
+            # An object slated for removal/replacement cannot become part of
+            # the construction shell: the combination is invalid.
+            raise CommandRejected(f"entity is marked for {target.intent}: {target.id}")
+        target.state = next_state
         return result
 
     if op in {CommandOperation.SET_MATERIAL, CommandOperation.SET_COLOR}:
@@ -86,17 +96,64 @@ def apply_command(scene: Scene, command: DesignCommand) -> Scene:
         return result
 
     if op is CommandOperation.REMOVE_OBJECT:
+        if target.locks.existence:
+            raise CommandRejected(f"existence is locked: {target.id}")
+        if target.intent is EntityIntent.KEEP:
+            raise CommandRejected(f"entity is pinned by keep intent: {target.id}")
         if target.locks.geometry:
             raise CommandRejected(f"geometry is locked: {target.id}")
         result.entities = [entity for entity in result.entities if entity.id != target.id]
         return result
 
     if op is CommandOperation.REPLACE_OBJECT_FROM_REFERENCE:
+        if target.locks.existence:
+            raise CommandRejected(f"existence is locked: {target.id}")
+        if target.intent in {EntityIntent.KEEP, EntityIntent.REMOVE}:
+            raise CommandRejected(f"entity is marked for {target.intent}: {target.id}")
         if target.locks.geometry:
             raise CommandRejected(f"geometry is locked: {target.id}")
         if not command.reference_asset_ids:
             raise CommandRejected("replacement requires at least one reference asset")
         target.metadata["replacement_reference_asset_id"] = command.reference_asset_ids[0]
+        return result
+
+    if op is CommandOperation.SET_INTENT:
+        raw_intent = command.parameters.get("intent")
+        if raw_intent is None:
+            target.intent = None
+            return result
+        try:
+            next_intent = EntityIntent(raw_intent)
+        except ValueError as exc:
+            raise CommandRejected(
+                f"set_intent requires parameters.intent to be one of "
+                f"keep/remove/replace or null, got: {raw_intent}"
+            ) from exc
+        if (
+            target.state is EntityState.STRUCTURE
+            and next_intent in {EntityIntent.REMOVE, EntityIntent.REPLACE}
+        ):
+            # Construction shell is not a removal/replacement candidate.
+            raise CommandRejected(
+                f"structure entity cannot receive {next_intent.value} intent: {target.id}"
+            )
+        target.intent = next_intent
+        return result
+
+    if op is CommandOperation.SET_LOCKS:
+        # Lock bookkeeping is not guarded by the locks themselves: the owner
+        # must always be able to re-lock or unlock an entity.
+        raw_locks = command.parameters.get("locks")
+        if not isinstance(raw_locks, dict):
+            raise CommandRejected("set_locks requires parameters.locks object")
+        current = target.locks.model_dump()
+        for key, value in raw_locks.items():
+            if key not in current:
+                raise CommandRejected(f"unknown lock: {key}")
+            if not isinstance(value, bool):
+                raise CommandRejected(f"lock {key} requires a boolean value")
+            current[key] = value
+        target.locks = EntityLocks.model_validate(current)
         return result
 
     if op is CommandOperation.SET_LIGHT_INTENT:

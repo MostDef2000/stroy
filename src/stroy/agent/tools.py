@@ -91,6 +91,13 @@ class SetStateArgs(ToolArgs):
     state: Literal["asis", "structure", "design"]
 
 
+class GetDesignCheckArgs(ToolArgs):
+    # Read-only access to the spatial validation report: returns the latest
+    # persisted report for the revision (default: latest) or computes one.
+    scene_revision_id: str | None = None
+    min_walkway_mm: float | None = Field(default=None, gt=0)
+
+
 class CreateDesignRevisionArgs(ToolArgs):
     label: str | None = Field(default=None, max_length=200)
 
@@ -133,6 +140,12 @@ _TOOL_SPECS: list[tuple[str, str, type[ToolArgs]]] = [
         SetStateArgs,
     ),
     (
+        "get_design_check",
+        "Run or fetch the spatial design check (walkways, collisions, clearances) "
+        "for a scene revision.",
+        GetDesignCheckArgs,
+    ),
+    (
         "create_design_revision",
         "Return the current design revision after accepted edits.",
         CreateDesignRevisionArgs,
@@ -157,7 +170,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     for name, description, model in _TOOL_SPECS
 ]
 
-READ_TOOL_NAMES = {"get_scene", "get_room", "get_entity", "list_materials"}
+READ_TOOL_NAMES = {"get_scene", "get_room", "get_entity", "list_materials", "get_design_check"}
 MUTATION_TOOL_NAMES = {
     "set_material",
     "set_color",
@@ -203,6 +216,15 @@ def execute_read_tool(scene: Scene, call: dict[str, Any]) -> dict[str, Any]:
         raise AgentToolError(
             "invalid_tool_mode",
             f"tool is not read-only: {name}",
+            context={"tool_name": name},
+        )
+
+    if name == "get_design_check":
+        # Service-executed read: it needs the database (persisted report or
+        # compute) and is dispatched by services.agent, not scene-only here.
+        raise AgentToolError(
+            "invalid_tool_mode",
+            f"tool requires service execution: {name}",
             context={"tool_name": name},
         )
 

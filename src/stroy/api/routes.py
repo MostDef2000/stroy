@@ -23,7 +23,7 @@ from stroy.api.dependencies import (
 )
 from stroy.db.models import AssetRow, AttachmentRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
 from stroy.domain.commands import CommandConflict, CommandRejected
-from stroy.domain.models import Camera, DesignCommand, Scene, SceneEntity
+from stroy.domain.models import Camera, DesignCommand, EntityIntent, Scene, SceneEntity
 from stroy.domain.plan import PlanDraft
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
@@ -73,6 +73,13 @@ from stroy.services.scenes import (
     list_revisions,
     revert_scene,
 )
+from stroy.services.validation import (
+    ValidationConfigError,
+    ValidationRevisionNotFoundError,
+    latest_validation_report,
+    run_validation,
+    validation_view,
+)
 
 
 router = APIRouter()
@@ -87,6 +94,30 @@ def _domain_conflict(exc: ValueError) -> HTTPException:
         status_code=409,
         detail={"code": code, "detail": str(exc)},
     )
+
+
+# Room shell kinds are always off-limits for the image-edit pipeline.
+_PROTECTED_SHELL_KINDS = frozenset({"wall", "floor", "ceiling", "door", "window"})
+
+
+def _protected_entity_ids(scene: Scene, *, include_shell: bool) -> list[str]:
+    """Entities the image-edit pipeline must not touch.
+
+    R1 protected locked geometry/transform and room shells; R2 adds entities
+    with an existence lock or a keep intent (removal/replacement protection).
+    One shared helper serves every protected-ids call site.
+    """
+    return [
+        entity.id
+        for entity in scene.entities
+        if (
+            entity.locks.geometry
+            or entity.locks.transform
+            or entity.locks.existence
+            or entity.intent is EntityIntent.KEEP
+            or (include_shell and entity.kind.value in _PROTECTED_SHELL_KINDS)
+        )
+    ]
 
 
 def _media_type_allowed(media_type: str, configured: str) -> bool:
@@ -168,6 +199,13 @@ class GeometryDiagnosticRequest(BaseModel):
     edge_threshold: int = Field(default=24, ge=1, le=255)
     advisory_threshold: float = Field(default=0.72, ge=0, le=1)
     idempotency_key: str | None = Field(default=None, max_length=160)
+
+
+class ValidationRequest(BaseModel):
+    # Validation is read-only: it never mutates the scene. Omitting
+    # scene_revision_id validates the latest revision with the default config.
+    scene_revision_id: str | None = None
+    min_walkway_mm: float | None = None
 
 
 class ReplacementRequest(BaseModel):
@@ -1123,6 +1161,54 @@ async def render_get(render_id: str, session: DbSession):
 
 
 @router.post(
+    "/api/v1/projects/{project_id}/validation",
+    dependencies=[Depends(require_csrf)],
+)
+async def validation_create(
+    project_id: str,
+    payload: ValidationRequest,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    # Read-only by contract: this endpoint never writes a scene revision.
+    try:
+        row = await run_validation(
+            session,
+            project_id,
+            scene_revision_id=payload.scene_revision_id,
+            min_walkway_mm=payload.min_walkway_mm,
+        )
+    except ValidationConfigError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_validation_config", "detail": str(exc)},
+        ) from exc
+    except ValidationRevisionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return validation_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/validation/latest",
+    dependencies=[Depends(require_owner)],
+)
+async def validation_latest(
+    project_id: str,
+    session: DbSession,
+    scene_revision_id: str | None = None,
+):
+    try:
+        row = await latest_validation_report(
+            session, project_id, scene_revision_id=scene_revision_id
+        )
+    except ValidationRevisionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="validation report not found")
+    return validation_view(row)
+
+
+@router.post(
     "/api/v1/projects/{project_id}/replacements",
     status_code=201,
     dependencies=[Depends(require_csrf)],
@@ -1435,15 +1521,7 @@ async def replacement_create(
         queue_target_entity_id = None
         queue_camera_id = None
 
-    protected_entity_ids = [
-        entity.id
-        for entity in next_scene.entities
-        if (
-            entity.locks.geometry
-            or entity.locks.transform
-            or entity.kind.value in {"wall", "floor", "ceiling", "door", "window"}
-        )
-    ]
+    protected_entity_ids = _protected_entity_ids(next_scene, include_shell=True)
     edit_job = await queue_reference_edit(
         session,
         project_id=project_id,
@@ -1651,11 +1729,7 @@ async def generation_create(
                 detail={"code": "invalid_generation_asset", "asset_id": asset_id},
             )
 
-    protected_entity_ids = [
-        entity.id
-        for entity in scene.entities
-        if entity.locks.geometry or entity.locks.transform
-    ]
+    protected_entity_ids = _protected_entity_ids(scene, include_shell=False)
     row = await queue_design_generation(
         session,
         project_id=project_id,

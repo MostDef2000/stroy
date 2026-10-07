@@ -14,6 +14,15 @@ class EntityState(StrEnum):
     DESIGN = "design"
 
 
+class EntityIntent(StrEnum):
+    # R2 removal/replacement intents: keep pins an object against removal,
+    # remove marks it for deletion, replace marks it for swap. ``None``
+    # (absent on old snapshots) means "no explicit intent".
+    KEEP = "keep"
+    REMOVE = "remove"
+    REPLACE = "replace"
+
+
 class EntityKind(StrEnum):
     ROOM = "room"
     WALL = "wall"
@@ -45,6 +54,8 @@ class EntityLocks(BaseModel):
     geometry: bool = False
     transform: bool = False
     material: bool = False
+    # R2: pins the entity against remove/replace commands.
+    existence: bool = False
 
 
 class Transform(BaseModel):
@@ -61,6 +72,8 @@ class SceneEntity(BaseModel):
     # construction entities are tagged structure at build time and objects
     # added via add_object default to design (compat with old clients).
     state: EntityState = EntityState.ASIS
+    # R2 removal/replacement intent; None on old snapshots (field absent).
+    intent: EntityIntent | None = None
     room_id: str | None = None
     display_name: str | None = None
     transform: Transform = Field(default_factory=Transform)
@@ -136,6 +149,8 @@ class CommandOperation(StrEnum):
     SET_MATERIAL = "set_material"
     SET_COLOR = "set_color"
     SET_STATE = "set_state"
+    SET_INTENT = "set_intent"
+    SET_LOCKS = "set_locks"
     ADD_OBJECT = "add_object"
     REMOVE_OBJECT = "remove_object"
     REPLACE_OBJECT_FROM_REFERENCE = "replace_object_from_reference"
