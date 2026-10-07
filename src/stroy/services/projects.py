@@ -11,6 +11,7 @@ from stroy.db.models import (
     GeometryDiagnosticRow,
     JobRow,
     PlanDraftRow,
+    ProductCandidateRow,
     ProjectRow,
     RenderManifestRow,
     SceneRevisionRow,
@@ -40,6 +41,8 @@ class ProjectHasActiveJobsError(ValueError):
 #   geometry_diagnostics.reference/generated_asset_id -> assets.id
 #   plan_drafts.job_id                            -> jobs.id
 #   attachments.asset_id                          -> assets.id
+#   product_candidates.source_asset_id            -> assets.id
+#   product_candidates.preview_asset_id           -> assets.id
 #   validation_reports.scene_revision_id          -> scene_revisions.id
 #   assets.source_asset_id / duplicate_of_asset_id -> assets.id (self)
 #   scene_revisions.parent_revision_id            -> scene_revisions.id (self)
@@ -51,6 +54,9 @@ _CHILD_TABLES = (
     RenderManifestRow,
     GeometryDiagnosticRow,
     AttachmentRow,
+    # Candidates carry real FKs to assets (source_asset_id / preview_asset_id),
+    # so they must be removed BEFORE the assets they reference.
+    ProductCandidateRow,
     AssetRow,
     ValidationReportRow,
     SceneRevisionRow,
