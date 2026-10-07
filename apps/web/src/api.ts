@@ -8,6 +8,15 @@ import {
 } from "./attachments";
 import { deleteOutcomeFromStatus, type ProjectDeleteOutcome } from "./projectDelete";
 import type { ProductPatch } from "./productImport";
+import {
+  unwrapValidationReport,
+  type ValidationReportEnvelope
+} from "./sceneValidation";
+
+// Re-exported so UI code can unwrap validation envelopes without importing
+// the pure module directly (api.ts stays the single browser-side surface).
+export { unwrapValidationReport } from "./sceneValidation";
+export type { ValidationReportEnvelope } from "./sceneValidation";
 
 // Re-exported so UI code can keep importing attachment types from api.ts.
 export type {
@@ -113,10 +122,9 @@ export type RenderManifest = {
   /** Pass name (rgb, depth, …) → derived asset id. */
   passes: Record<string, string>;
   /**
-   * Not in the v0 render schema (which forbids extra keys); accepted
-   * defensively so a future/experimental worker value still displays.
+   * Render duration in seconds as reported by the worker (#188/R5 field).
    */
-  wall_seconds?: number | null;
+  render_seconds?: number | null;
 };
 
 export type RenderRecord = {
@@ -1129,21 +1137,29 @@ export const api = {
 
   // R2 design check: run the server-side rule checks for a scene revision
   // (defaults to the latest when scene_revision_id is omitted). CSRF write
-  // like every other POST via request().
-  validateScene(
+  // like every other POST via request(). The response is the stored-report
+  // envelope; unwrapValidationReport() extracts body.report (#188).
+  async validateScene(
     projectId: string,
     payload: { scene_revision_id?: string; min_walkway_mm?: number } = {}
-  ) {
-    return request<ValidationReport>(`/api/v1/projects/${projectId}/validation`, {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
+  ): Promise<ValidationReport> {
+    const envelope = await request<ValidationReportEnvelope>(
+      `/api/v1/projects/${projectId}/validation`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }
+    );
+    const report = unwrapValidationReport(envelope);
+    if (!report) throw new Error("validation report missing in response");
+    return report;
   },
 
   // Latest stored validation report for the project (optionally narrowed to
   // one scene revision via query filter, same convention as
   // listAttachments). Status-sensitive like scene()/getPlanDraft(): 404 means
-  // "no report yet" and resolves to null instead of throwing.
+  // "no report yet" and resolves to null instead of throwing. The unwrapped
+  // report body is returned (null when the envelope carries no report).
   async latestValidation(
     projectId: string,
     sceneRevisionId?: string
@@ -1157,7 +1173,7 @@ export const api = {
     );
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
-    return response.json();
+    return unwrapValidationReport((await response.json()) as ValidationReportEnvelope);
   },
 
   analyzePlan(projectId: string, assetIds: string[], hints: PlanAnalyzeHints = {}) {

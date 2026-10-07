@@ -3,7 +3,7 @@ import { api, Asset, Job, RenderRecord, SceneRevision } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
 import { LayerBadge } from "./LayerBadge";
-import { statusLabel } from "./copy";
+import { statusLabel, entityKindLabel, fileLabel, rendererProfileLabel, renderImageTag } from "./copy";
 import { entityState } from "./sceneLayers";
 import {
   apiErrorText,
@@ -307,7 +307,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
       return;
     }
     if (!selectedRgbId) {
-      setVariantError("У выбранного рендера нет rgb-пасса — вариант недоступен.");
+      setVariantError("У выбранного рендера нет изображения — вариант недоступен.");
       return;
     }
     setVariantError("");
@@ -377,7 +377,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
               </button>
             </div>
             <p className="hint">
-              Рендерер {RENDERER_PROFILE} · последняя версия сцены.
+              Рендерер: {rendererProfileLabel(RENDERER_PROFILE)} · последняя версия сцены.
             </p>
             {renderStatus && <p className="muted td-status">Задача рендера: {renderStatus}</p>}
             {renderError && <div className="error td-error">{renderError}</div>}
@@ -411,14 +411,21 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                       setSelectedRenderId(item.id === selectedRenderId ? null : item.id)
                     }
                   >
-                    <span className="td-item-id">#{item.id.slice(0, 8)}</span>
-                    <span className="td-item-camera">{item.camera_id}</span>
+                    <span className="td-item-label">Рендер вида</span>
                     <span className="td-item-summary">{formatRenderSummary(item.manifest)}</span>
                     <span className="td-item-time">
                       {new Date(item.created_at).toLocaleString()}
                     </span>
-                    <span className="tag">{rgbId ? "rgb" : "no rgb"}</span>
+                    <span className="tag">{renderImageTag(Boolean(rgbId))}</span>
                   </button>
+                  {/* DesignPanel render-row pattern (#188): raw id/camera_id
+                      never surface in the default row — collapsed per row. */}
+                  <details className="disclose-inline">
+                    <summary>Дополнительно</summary>
+                    <span className="hint">
+                      Камера: {item.camera_id} · id: {item.id}
+                    </span>
+                  </details>
                 </li>
               );
             })}
@@ -442,7 +449,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 }
               />
             ) : (
-              <p className="muted">У выбранного рендера нет rgb-пасса.</p>
+              <p className="muted">У выбранного рендера нет изображения.</p>
             )}
           </div>
         )}
@@ -455,12 +462,12 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
           </div>
           {!selectedRgbId ? (
             <p className="muted">
-              У выбранного рендера нет rgb-пасса — вариант дизайна недоступен.
+              У выбранного рендера нет изображения — вариант дизайна недоступен.
             </p>
           ) : (
             <div className="td-form">
               <p className="hint">
-                img2img по rgb-пассу рендера #{selectedRender.id.slice(0, 8)} · последняя версия сцены.
+                Вариант по изображению выбранного рендера · последняя версия сцены.
               </p>
               <label>
                 Инструкция
@@ -492,8 +499,8 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 >
                   <option value="">Нет — только инструкция</option>
                   {referenceAssets.map((asset) => (
-                    <option key={asset.id} value={asset.id}>
-                      {asset.original_name ?? asset.id.slice(0, 8)}
+                    <option key={asset.id} value={asset.id} title={asset.id}>
+                      {fileLabel(asset.original_name)}
                     </option>
                   ))}
                 </select>
@@ -548,7 +555,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
             {revision.scene.entities.map((entity) => (
               <li key={entity.id} className="td-entity-item">
                 <span className="td-entity-name">{entity.display_name ?? entity.id}</span>
-                <span className="td-entity-kind">{entity.kind}</span>
+                <span className="td-entity-kind">{entityKindLabel(entity.kind)}</span>
                 <LayerBadge state={entityState(entity)} />
               </li>
             ))}
@@ -598,7 +605,9 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
             </label>
           </div>
 
-          <p className="muted">Тип: мебель</p>
+          <p className="muted">
+            Тип: мебель <span className="approx-badge">размеры приблизительно</span>
+          </p>
 
           <details className="td-advanced">
             <summary>Точные параметры</summary>

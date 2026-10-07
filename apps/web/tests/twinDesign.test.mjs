@@ -35,13 +35,16 @@ test("renderRgbAssetId reads passes.rgb and rejects empty/missing passes", () =>
   assert.equal(renderRgbAssetId(null), null);
 });
 
-test("formatRenderSummary reports the renderer profile and optional wall seconds", () => {
+test("formatRenderSummary reports the renderer profile and optional render seconds", () => {
   assert.equal(
-    formatRenderSummary({ renderer_profile: "blender-cycles-v0", wall_seconds: 84.24 }),
-    "blender-cycles-v0 · 84.2 s"
+    formatRenderSummary({ renderer_profile: "blender-cycles-v0", render_seconds: 84.24 }),
+    "Фоторендер · 84.2 s"
   );
-  assert.equal(formatRenderSummary({ renderer_profile: "blender-cycles-v0" }), "blender-cycles-v0");
-  assert.equal(formatRenderSummary({}), "unknown profile");
+  assert.equal(formatRenderSummary({ renderer_profile: "blender-cycles-v0" }), "Фоторендер");
+  // #188: the profile segment goes through the glossary; unknown-but-present
+  // wire values pass through, a missing/empty profile reads «профиль не указан».
+  assert.equal(formatRenderSummary({ renderer_profile: "future-profile" }), "future-profile");
+  assert.equal(formatRenderSummary({}), "профиль не указан");
   assert.equal(formatRenderSummary(null), "no manifest");
 });
 

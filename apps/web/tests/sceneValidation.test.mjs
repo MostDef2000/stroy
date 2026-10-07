@@ -15,7 +15,8 @@ import {
   groupResults,
   ruleLabel,
   summaryLine,
-  topResults
+  topResults,
+  unwrapValidationReport
 } from "../build/sceneValidation.js";
 
 function check(overrides = {}) {
@@ -173,4 +174,30 @@ test("ruleLabel maps the v1 rule ids and passes unknown ids through", () => {
   // Unknown/future rule ids are shown as-is.
   assert.equal(ruleLabel("clearance.future_rule"), "clearance.future_rule");
   assert.equal(ruleLabel("totally.unknown"), "totally.unknown");
+});
+
+test("unwrapValidationReport unwraps the API envelope to its report (#188)", () => {
+  const inner = report([]);
+  const envelope = {
+    id: "val-1",
+    project_id: "project.1",
+    scene_revision_id: "rev-1",
+    scene_content_hash: "hash-1",
+    config_hash: "config-1",
+    report_hash: "report-1",
+    created_at: "2026-10-07T00:00:00Z",
+    report: inner
+  };
+  assert.equal(unwrapValidationReport(envelope), inner);
+});
+
+test("unwrapValidationReport treats null/undefined as null", () => {
+  assert.equal(unwrapValidationReport(null), null);
+  assert.equal(unwrapValidationReport(undefined), null);
+});
+
+test("unwrapValidationReport never throws on a missing or null report", () => {
+  // routes.py validation_view can store a row whose report body is absent.
+  assert.equal(unwrapValidationReport({ id: "val-1" }), null);
+  assert.equal(unwrapValidationReport({ id: "val-1", report: null }), null);
 });

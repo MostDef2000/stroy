@@ -13,6 +13,7 @@ import {
   Worker
 } from "./api";
 import { AppShell } from "./AppShell";
+import { styleAnalysisMaxMessage, styleAnalysisMinMessage } from "./copy";
 import { deleteConfirmText, nextStateAfterDelete } from "./projectDelete";
 import { type PageId } from "./nav";
 import { type ReadinessInput } from "./overview";
@@ -391,11 +392,11 @@ export default function App() {
       (asset) => asset.role === "reference" && asset.media_type.startsWith("image/")
     );
     if (references.length < 3) {
-      setMessage(`Для анализа стиля нужно минимум 3 reference-изображения (роль «reference»). Сейчас загружено: ${references.length}.`);
+      setMessage(styleAnalysisMinMessage(references.length));
       return;
     }
     if (references.length > 5) {
-      setMessage(`Для анализа стиля можно использовать максимум 5 reference-изображений. Сейчас выбрано: ${references.length}.`);
+      setMessage(styleAnalysisMaxMessage(references.length));
       return;
     }
     try {

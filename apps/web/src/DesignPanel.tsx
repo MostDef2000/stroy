@@ -199,13 +199,16 @@ function ValidationSection({
                       </span>
                     )}
                     {result.entity_ids.length > 0 && (
-                      <span className="design-check-ids">
-                        {result.entity_ids.map((id) => (
-                          <code key={id} className="design-check-id">
-                            {id}
-                          </code>
-                        ))}
-                      </span>
+                      <details className="disclose-inline">
+                        <summary>Дополнительно</summary>
+                        <span className="design-check-ids">
+                          {result.entity_ids.map((id) => (
+                            <code key={id} className="design-check-id">
+                              {id}
+                            </code>
+                          ))}
+                        </span>
+                      </details>
                     )}
                   </div>
                 ))}
@@ -714,10 +717,13 @@ function VariantDetail({
             {new Date(variant.updated_at).toLocaleString("ru-RU")}
           </span>
         </div>
-        <p className="hint">
-          Голова варианта: {shortId(variant.head_scene_revision_id)} · база:{" "}
-          {shortId(variant.base_scene_revision_id)}
-        </p>
+        <details className="disclose-inline">
+          <summary>Дополнительно</summary>
+          <p className="hint">
+            Голова варианта: {shortId(variant.head_scene_revision_id)} · база:{" "}
+            {shortId(variant.base_scene_revision_id)}
+          </p>
+        </details>
         {error && <div className="error">{error}</div>}
         <div className="variant-actions">
           <button
@@ -796,7 +802,7 @@ function VariantDetail({
         {renders &&
           renders.map((render) => {
             const assetId = renderRgbAssetId(render.manifest);
-            const title = `Рендер · камера ${render.camera_id}`;
+            const title = "Рендер вида";
             return (
               <div className="variant-render-row" key={render.id}>
                 {assetId ? (
@@ -819,6 +825,10 @@ function VariantDetail({
                     {new Date(render.created_at).toLocaleString("ru-RU")}
                   </span>
                 </div>
+                <details className="disclose-inline">
+                  <summary>Дополнительно</summary>
+                  <span className="hint">Камера: {render.camera_id}</span>
+                </details>
               </div>
             );
           })}
@@ -833,12 +843,15 @@ function VariantDetail({
             <div className="variant-lineage-row" key={node.revision_id}>
               <span className="rt-row-meta">
                 <span className="rt-row-label">
-                  {new Date(node.created_at).toLocaleString("ru-RU")} ·{" "}
-                  {shortId(node.revision_id)}
+                  {new Date(node.created_at).toLocaleString("ru-RU")}
                 </span>
                 {isHead && <span className="tag">голова</span>}
                 {isBase && !isHead && <span className="tag">база</span>}
               </span>
+              <details className="disclose-inline">
+                <summary>Дополнительно</summary>
+                <code>{node.revision_id}</code>
+              </details>
               {!isHead && (
                 <button
                   type="button"
@@ -920,35 +933,50 @@ function VariantCompareView({
 
       <details className="variant-compare-section" open>
         <summary>
-          Сущности · +{diff.entities.added.length} −
-          {diff.entities.removed.length} ~{diff.entities.modified.length}
+          Объекты · добавлено {diff.entities.added.length}, удалено{" "}
+          {diff.entities.removed.length}, изменено {diff.entities.modified.length}
         </summary>
         <div className="variant-compare-list">
-          {diff.entities.added.map((id) => (
-            <div key={id}>
-              <span className="tag">+ добавлен</span> <code>{id}</code>
-            </div>
-          ))}
-          {diff.entities.removed.map((id) => (
-            <div key={id}>
-              <span className="tag">− удалён</span> <code>{id}</code>
-            </div>
-          ))}
-          {diff.entities.modified.map((change) => (
-            <div key={change.id}>
-              <span className="tag">~ изменён</span> <code>{change.id}</code>
-              {change.changes.length > 0 && (
-                <span className="variant-compare-changes">
-                  {" "}
-                  ({change.changes.join(", ")})
-                </span>
-              )}
-            </div>
-          ))}
+          {diff.entities.added.length > 0 && (
+            <details className="disclose-inline">
+              <summary>Дополнительно</summary>
+              {diff.entities.added.map((id) => (
+                <div key={id}>
+                  <span className="tag">+ добавлен</span> <code>{id}</code>
+                </div>
+              ))}
+            </details>
+          )}
+          {diff.entities.removed.length > 0 && (
+            <details className="disclose-inline">
+              <summary>Дополнительно</summary>
+              {diff.entities.removed.map((id) => (
+                <div key={id}>
+                  <span className="tag">− удалён</span> <code>{id}</code>
+                </div>
+              ))}
+            </details>
+          )}
+          {diff.entities.modified.length > 0 && (
+            <details className="disclose-inline">
+              <summary>Дополнительно</summary>
+              {diff.entities.modified.map((change) => (
+                <div key={change.id}>
+                  <span className="tag">~ изменён</span> <code>{change.id}</code>
+                  {change.changes.length > 0 && (
+                    <span className="variant-compare-changes">
+                      {" "}
+                      ({change.changes.join(", ")})
+                    </span>
+                  )}
+                </div>
+              ))}
+            </details>
+          )}
           {diff.entities.added.length === 0 &&
             diff.entities.removed.length === 0 &&
             diff.entities.modified.length === 0 && (
-              <p className="muted">Сущности не различаются.</p>
+              <p className="muted">Объекты не различаются.</p>
             )}
         </div>
       </details>

@@ -11,6 +11,7 @@ import {
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { api, type SceneCamera, type SceneDocument, type SceneEntity } from "./api";
+import { entityKindLabel } from "./copy";
 import {
   buildMoveObjectCommand,
   buildRemoveObjectCommand,
@@ -429,15 +430,6 @@ export function SceneViewer({
       ? null
       : scene?.cameras.find((camera) => camera.id === cameraId) ?? null;
 
-  const liveTranslation =
-    (selectedId ? preview[selectedId]?.translation_mm : undefined) ??
-    selected?.transform?.translation_mm ??
-    null;
-  const liveRotation =
-    (selectedId ? preview[selectedId]?.rotation_deg : undefined) ??
-    selected?.transform?.rotation_deg ??
-    null;
-
   useEffect(() => {
     if (cameraId !== "overview" && !scene?.cameras.some((camera) => camera.id === cameraId)) {
       setCameraId("overview");
@@ -728,13 +720,14 @@ export function SceneViewer({
         >
           Общий вид
         </button>
-        {(scene?.cameras ?? []).map((camera) => (
+        {(scene?.cameras ?? []).map((camera, index) => (
           <button
             key={camera.id}
             className={cameraId === camera.id ? "secondary active" : "secondary"}
             onClick={() => setCameraId(camera.id)}
+            title={camera.id}
           >
-            {camera.id}
+            {`Камера ${index + 1}`}
           </button>
         ))}
         <button
@@ -800,21 +793,15 @@ export function SceneViewer({
         <div className="viewer-caption">
           {selected ? (
             <>
-              <strong>{selected.id}</strong>
+              <strong>{selected.display_name ?? selected.id}</strong>
               <span>
-                {selected.kind}
+                {entityKindLabel(selected.kind)}
                 {selected.locks?.geometry ? " · геометрия заблокирована" : ""}
                 {selected.locks?.transform ? " · перемещение заблокировано" : ""}
                 {selected.locks?.material ? " · материал заблокирован" : ""}
               </span>
-              {liveTranslation && (
-                <span>
-                  x {liveTranslation[0].toFixed(0)} · y{" "}
-                  {liveTranslation[1].toFixed(0)} · z{" "}
-                  {liveTranslation[2].toFixed(0)} mm
-                  {liveRotation ? ` · rz ${liveRotation[2].toFixed(0)}°` : ""}
-                  {canDragEntity(selected) ? " · перетащите, чтобы переместить · Shift — поворот" : ""}
-                </span>
+              {canDragEntity(selected) && (
+                <span>перетащите, чтобы переместить · Shift — поворот</span>
               )}
               {selected.kind === "furniture" && (
                 <div className="caption-actions">
@@ -853,16 +840,7 @@ export function SceneViewer({
               )}
             </>
           ) : calibrated ? (
-            <>
-              <strong>{calibrated.id}</strong>
-              <span>
-                fx {calibrated.intrinsics.fx.toFixed(1)} · fy{" "}
-                {calibrated.intrinsics.fy.toFixed(1)}
-                {calibrated.calibration?.residual != null
-                  ? ` · residual ${calibrated.calibration.residual.toFixed(2)} px`
-                  : ""}
-              </span>
-            </>
+            <span className="approx-badge">Камера сопоставлена приблизительно</span>
           ) : (
             "вращение — левая кнопка · зум — колесо · панорама — правая кнопка · клик по объекту — карточка"
           )}
