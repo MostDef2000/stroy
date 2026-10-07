@@ -3286,6 +3286,15 @@ textarea.invalid {
   grid-column: 1;
   grid-row: 1;
   min-width: 0;
+  /* The 3D surface must fill the shared center region, as in the base layout:
+     in the pre-#154 page .canvas-panel was a stretched grid item, so its
+     definite height propagated through .viewer-shell/.viewer (height:100%)
+     down to the r3f canvas. align-items:start on .design-main makes this
+     panel fit-content instead, capping it at its min-height floor
+     (max(560px, 55vh) + toolbar) whenever the row is taller — the canvas then
+     covers only the top strip of its region. Stretch the panel box back;
+     the rail keeps align-self:start from .design-main. */
+  align-self: stretch;
 }
 
 .design-rail {
