@@ -1,7 +1,9 @@
 import type { Generation, Job, RevisionSummary } from "../api";
 import { DesignPanel } from "../DesignPanel";
 
-// Results page: revision history / timeline / restore / re-render (#101).
+// Results page: horizontal master-detail workspace (#152) — the history list
+// on the left (internally scrollable), the selected entry's preview, details,
+// before/after and restore/re-render actions on the right (#101 semantics).
 export function ResultsPage({
   revisions,
   jobs,
@@ -29,16 +31,14 @@ export function ResultsPage({
   }
 
   return (
-    <section className="dashboard-grid">
-      <DesignPanel
-        revisions={revisions}
-        jobs={jobs}
-        generations={generations}
-        currentRevisionId={currentRevisionId}
-        cameraId={cameraId}
-        onRestore={onRestore}
-        onRerender={onRerender}
-      />
-    </section>
+    <DesignPanel
+      revisions={revisions}
+      jobs={jobs}
+      generations={generations}
+      currentRevisionId={currentRevisionId}
+      cameraId={cameraId}
+      onRestore={onRestore}
+      onRerender={onRerender}
+    />
   );
 }
