@@ -21,16 +21,17 @@
   --st-weight-medium: 500;
   --st-weight-semibold: 600;
 
-  /* Surfaces */
-  --st-color-page-bg: #0b0d0e;
-  --st-color-workspace-bg: #101213;
-  --st-color-sidebar-bg: #090a0b;
-  --st-color-sidebar-surface: #111315;
-  --st-color-surface: #151719;
-  --st-color-surface-elevated: #1b1e20;
-  --st-color-surface-inset: #0f1112;
-  --st-color-field: #101214;
-  --st-color-canvas: #191b1d;
+  /* Surfaces (#168 retune: graphite surfaces lifted toward blue-dark; the
+     sidebar/field layers go translucent so the ambient wash shows through) */
+  --st-color-page-bg: #0e1116;
+  --st-color-workspace-bg: #10141a;
+  --st-color-sidebar-bg: rgba(16, 20, 26, 0.72);
+  --st-color-sidebar-surface: rgba(22, 26, 32, 0.62);
+  --st-color-surface: #161a20;
+  --st-color-surface-elevated: #1b2028;
+  --st-color-surface-inset: #12161c;
+  --st-color-field: rgba(14, 17, 22, 0.74);
+  --st-color-canvas: #151922;
 
   /* Text */
   --st-color-text: #f1eee8;
@@ -38,10 +39,10 @@
   --st-color-muted-text: #918b82;
   --st-color-text-inverse: #101112;
 
-  /* Borders */
-  --st-color-border: #292c2f;
-  --st-color-border-strong: #3a3e42;
-  --st-color-border-subtle: #202326;
+  /* Borders (#168 retune: hairline whites instead of gray steps) */
+  --st-color-border: rgba(255, 255, 255, 0.08);
+  --st-color-border-strong: rgba(255, 255, 255, 0.14);
+  --st-color-border-subtle: rgba(255, 255, 255, 0.06);
 
   /* Neutral light primary action */
   --st-color-accent: #e7e1d6;
@@ -52,7 +53,7 @@
   /* Selected states */
   --st-color-selected-bg: #e7e1d6;
   --st-color-selected-text: #101112;
-  --st-color-selected-muted-bg: #25282b;
+  --st-color-selected-muted-bg: rgba(231, 225, 214, 0.1);
 
   /* Semantic */
   --st-color-danger: #ffb4ab;
@@ -68,10 +69,28 @@
   --st-color-processing-bg: #202326;
   --st-color-processing-border: #3a3e42;
 
-  /* Focus + elevation */
+  /* Focus + elevation (#168 retune: softer, larger falloffs) */
   --st-focus-ring: #f3d28b;
-  --st-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
-  --st-shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.28);
+  --st-shadow: 0 24px 70px rgba(0, 0, 0, 0.36);
+  --st-shadow-soft: 0 14px 38px rgba(0, 0, 0, 0.28);
+
+  /* Glass system (#168): translucent graphite layers over the ambient wash.
+     Additive only — no token renames. The four bg glass tokens are swapped
+     to opaque equivalents in the fallback blocks at EOF (no backdrop-filter
+     support / prefers-reduced-transparency). */
+  --st-color-bg-ambient-1: rgba(231, 225, 214, 0.055);
+  --st-color-bg-ambient-2: rgba(120, 138, 164, 0.05);
+  --st-color-glass: rgba(22, 26, 32, 0.58);
+  --st-color-glass-elevated: rgba(27, 32, 40, 0.68);
+  --st-color-glass-active: rgba(231, 225, 214, 0.12);
+  --st-color-glass-field: rgba(14, 17, 22, 0.74);
+  --st-color-glass-border: rgba(255, 255, 255, 0.08);
+  --st-color-glass-border-strong: rgba(255, 255, 255, 0.14);
+  --st-color-glass-highlight: rgba(255, 255, 255, 0.06);
+  --st-color-lightbox-backdrop: rgba(0, 0, 0, 0.72);
+  --st-shadow-glass: 0 24px 70px rgba(0, 0, 0, 0.36);
+  --st-shadow-glass-soft: 0 14px 38px rgba(0, 0, 0, 0.28);
+  --st-backdrop-blur: blur(14px) saturate(140%);
 
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--st-color-text);
@@ -81,7 +100,13 @@
 
 html, body, #root {
   min-height: 100%;
-  background: var(--st-color-page-bg);
+  /* #168 ambient backdrop: two soft radial washes (ambient tokens) over the
+     graphite gradient. Deliberately NOT background-attachment: fixed — the
+     washes scroll with the document, so the canvas never re-renders blur. */
+  background:
+    radial-gradient(1100px 620px at 14% -8%, var(--st-color-bg-ambient-1), transparent 62%),
+    radial-gradient(980px 560px at 86% 108%, var(--st-color-bg-ambient-2), transparent 60%),
+    linear-gradient(180deg, var(--st-color-page-bg), var(--st-color-workspace-bg), var(--st-color-page-bg));
 }
 
 * { box-sizing: border-box; }
@@ -191,20 +216,22 @@ button, input { font: inherit; }
 }
 
 input {
-  border: 1px solid var(--st-color-border-strong);
+  border: 1px solid var(--st-color-glass-border-strong);
   border-radius: var(--st-radius);
   padding: 11px 12px;
-  background: var(--st-color-field);
+  background: var(--st-color-glass-field);
   color: var(--st-color-text);
 }
 
 /* Selects and textareas share the same base appearance as inputs (#139);
-   per-component rules below only override padding, width and font. */
+   per-component rules below only override padding, width and font. #168:
+   forms consume the glass field/border tokens; focus rules stay untouched
+   and last in the cascade. */
 select,
 textarea {
-  border: 1px solid var(--st-color-border-strong);
+  border: 1px solid var(--st-color-glass-border-strong);
   border-radius: var(--st-radius);
-  background: var(--st-color-field);
+  background: var(--st-color-glass-field);
   color: var(--st-color-text);
   font: inherit;
 }
@@ -237,7 +264,9 @@ button:not([class]):active,
   min-height: 100vh;
   display: grid;
   grid-template-columns: 260px 1fr;
-  background: var(--st-color-page-bg);
+  /* #168: the shell is transparent so the ambient wash behind it shows
+     through the translucent sidebar glass. */
+  background: transparent;
 }
 
 .sidebar {
@@ -2766,7 +2795,9 @@ textarea.invalid {
   z-index: 100;
   display: grid;
   padding: var(--st-space-5);
-  background: rgba(0, 0, 0, 0.72);
+  /* #168: tokenized, still the same dark scrim — the stage above it stays
+     crisp (no glass on .lb-stage). */
+  background: var(--st-color-lightbox-backdrop);
 }
 
 .lb-dialog {
@@ -3455,5 +3486,139 @@ textarea.invalid {
   .design-pane .pe-controls-zone {
     grid-column: auto;
     grid-row: auto;
+  }
+}
+
+/* ===== #168: restrained soft dark liquid-glass system =====
+   Ambient washes are painted on html/body/#root in place (see the top of the
+   file); the shell (.app-shell) goes transparent and the sidebar reads as
+   graphite glass over the wash. Everything below is appended at EOF so the
+   glass recipe wins the cascade over the equal-specificity component rules
+   above without touching them. Geometry (radius/spacing/type) and z-indexes
+   (dropdown 20, sticky 1, lightbox 100, composer 4) are untouched; forms
+   swapped to the glass field/border tokens in place, focus rules still last.
+   Scroll regions and canvas/image surfaces are deliberately NOT glassed. */
+
+/* Shell layer: the sidebar is translucent graphite glass over the ambient
+   wash (its token was retuned in :root; only the blur is added here). */
+.sidebar {
+  backdrop-filter: var(--st-backdrop-blur);
+  -webkit-backdrop-filter: var(--st-backdrop-blur);
+}
+
+/* Page tabs: inset shell glass — the dark field glass, calmer than panel
+   glass (no blur, no shadow, no border). */
+.page-tabs {
+  background: var(--st-color-glass-field);
+}
+
+/* Base glass recipe: panel glass with a hairline border, an inset top
+   highlight, the soft glass shadow and the shared backdrop blur. Borders use
+   border-color only so per-element border styles survive (.empty-state keeps
+   its dashed drop-zone affordance, .readiness-card its 4px semantic left
+   edge, re-colored by the state classes). */
+.panel,
+.status-panel,
+.login-card,
+.readiness-card,
+.page-upload-row,
+.empty-state,
+.design-advanced,
+.camera-advanced,
+.rt-header,
+.design-selected {
+  background: var(--st-color-glass);
+  border-color: var(--st-color-glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--st-color-glass-highlight),
+    var(--st-shadow-glass-soft);
+  backdrop-filter: var(--st-backdrop-blur);
+  -webkit-backdrop-filter: var(--st-backdrop-blur);
+}
+
+/* Elevated glass recipe: dropdown, lightbox dialog and the sticky composer
+   read one step above the panel glass (stronger hairline + deeper shadow). */
+.overflow-dropdown,
+.design-composer,
+.lb-dialog {
+  background: var(--st-color-glass-elevated);
+  border: 1px solid var(--st-color-glass-border-strong);
+  box-shadow: var(--st-shadow-glass);
+  backdrop-filter: var(--st-backdrop-blur);
+  -webkit-backdrop-filter: var(--st-backdrop-blur);
+}
+
+/* Contract exclusion: .rt-detail shares .panel chrome but is a scroll
+   surface — it keeps the opaque panel surface, no blur, no glass shadow. */
+.rt-detail {
+  background: var(--st-color-surface);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Secondary buttons: elevated glass instead of the opaque elevated surface;
+   the pressed state lights up with the glass-active tint. Primary buttons
+   stay ivory and .danger stays semantic — both untouched. */
+.secondary {
+  background: var(--st-color-glass-elevated);
+}
+.secondary:active {
+  background: var(--st-color-glass-active);
+}
+
+/* Fallback A: no backdrop-filter support — swap the four translucent glass
+   bg tokens for opaque surfaces and drop every blur. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --st-color-glass: #161a20;
+    --st-color-glass-elevated: #1b2028;
+    --st-color-glass-active: #252b32;
+    --st-color-glass-field: #12161c;
+  }
+  .sidebar,
+  .panel,
+  .status-panel,
+  .login-card,
+  .readiness-card,
+  .page-upload-row,
+  .empty-state,
+  .design-advanced,
+  .camera-advanced,
+  .rt-header,
+  .design-selected,
+  .overflow-dropdown,
+  .design-composer,
+  .lb-dialog {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* Fallback B: reduced-transparency preference — same opaque swap. The
+   existing prefers-reduced-motion blocks are untouched. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --st-color-glass: #161a20;
+    --st-color-glass-elevated: #1b2028;
+    --st-color-glass-active: #252b32;
+    --st-color-glass-field: #12161c;
+  }
+  .sidebar,
+  .panel,
+  .status-panel,
+  .login-card,
+  .readiness-card,
+  .page-upload-row,
+  .empty-state,
+  .design-advanced,
+  .camera-advanced,
+  .rt-header,
+  .design-selected,
+  .overflow-dropdown,
+  .design-composer,
+  .lb-dialog {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }
