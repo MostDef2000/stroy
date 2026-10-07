@@ -481,6 +481,7 @@ export default function App() {
 
       {selected && page === "results" && (
         <ResultsPage
+          projectId={selected}
           revisions={revisions}
           jobs={jobs}
           generations={generations}

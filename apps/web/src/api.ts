@@ -173,6 +173,8 @@ export type SceneEntity = {
   kind: string;
   /** R1 design layer: "asis" | "structure" | "design"; absent = legacy as-is. */
   state?: string | null;
+  /** R2 design intent: "keep" | "remove" | "replace"; absent = not expressed. */
+  intent?: "keep" | "remove" | "replace" | null;
   display_name?: string | null;
   transform?: {
     translation_mm?: [number, number, number];
@@ -182,6 +184,7 @@ export type SceneEntity = {
   geometry?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   locks?: {
+    existence?: boolean;
     geometry?: boolean;
     transform?: boolean;
     material?: boolean;
@@ -232,6 +235,35 @@ export type SceneRevision = {
   parent_revision_id?: string | null;
   content_hash: string;
   scene: SceneDocument;
+};
+
+// R2 design check: one server-side rule violation. rule_id is a stable
+// identifier (e.g. "clearance.walkway_min"); measured/expected are
+// rule-dependent and may be absent or null.
+export type CheckSeverity = "info" | "warning" | "error";
+
+export type CheckResult = {
+  severity: CheckSeverity;
+  /** Entities the violation applies to (e.g. the blockage pair). */
+  entity_ids: string[];
+  rule_id: string;
+  measured_mm?: number | null;
+  expected_min_mm?: number | null;
+  explanation: string;
+  suggestion?: string | null;
+};
+
+export type ValidationConfig = {
+  min_walkway_mm?: number;
+};
+
+export type ValidationReport = {
+  schema_version: string;
+  scene_revision_id: string;
+  scene_content_hash: string;
+  config: ValidationConfig;
+  summary: { info: number; warning: number; error: number };
+  results: CheckResult[];
 };
 
 export type AffectedRegion = {
@@ -671,6 +703,39 @@ export const api = {
         body: JSON.stringify(command)
       }
     );
+  },
+
+  // R2 design check: run the server-side rule checks for a scene revision
+  // (defaults to the latest when scene_revision_id is omitted). CSRF write
+  // like every other POST via request().
+  validateScene(
+    projectId: string,
+    payload: { scene_revision_id?: string; min_walkway_mm?: number } = {}
+  ) {
+    return request<ValidationReport>(`/api/v1/projects/${projectId}/validation`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+
+  // Latest stored validation report for the project (optionally narrowed to
+  // one scene revision via query filter, same convention as
+  // listAttachments). Status-sensitive like scene()/getPlanDraft(): 404 means
+  // "no report yet" and resolves to null instead of throwing.
+  async latestValidation(
+    projectId: string,
+    sceneRevisionId?: string
+  ): Promise<ValidationReport | null> {
+    const query = sceneRevisionId
+      ? `?scene_revision_id=${encodeURIComponent(sceneRevisionId)}`
+      : "";
+    const response = await fetch(
+      apiPath(`/api/v1/projects/${projectId}/validation/latest${query}`),
+      { credentials: "include" }
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+    return response.json();
   },
 
   analyzePlan(projectId: string, assetIds: string[], hints: PlanAnalyzeHints = {}) {

@@ -3946,3 +3946,234 @@ textarea.invalid {
 .overview-attachment a {
   white-space: nowrap;
 }
+
+/* R2 design intents + design check (selected-entity rail and results
+   detail): token-only styling. Intent toggles reuse the mode-switch
+   language (#169/#170); the check card is a compact progressive-disclosure
+   details like .design-advanced. Severity colors map to the existing
+   semantic tokens (danger/warn/ok, #139). */
+.design-intent-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-1);
+  margin-top: var(--st-space-2);
+}
+.design-intent-toggle {
+  padding: 3px 10px;
+  font-size: var(--st-text-sm);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-color-surface-inset);
+  color: var(--st-color-text-secondary);
+}
+.design-intent-toggle:hover {
+  background: var(--st-color-selected-muted-bg);
+}
+.design-intent-toggle.active {
+  background: var(--st-color-selected-bg);
+  color: var(--st-color-selected-text);
+}
+.design-intent-toggle:disabled,
+.design-intent-clear:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.design-intent-clear {
+  margin-top: var(--st-space-1);
+  padding: 3px 10px;
+  font-size: var(--st-text-sm);
+}
+.design-intent-conflict {
+  color: var(--st-color-warn);
+}
+
+.design-intent-locks {
+  margin-top: var(--st-space-2);
+  border-top: 1px solid var(--st-color-border-subtle);
+  padding-top: var(--st-space-2);
+}
+.design-intent-locks > summary {
+  cursor: pointer;
+  font-size: var(--st-text-sm);
+  color: var(--st-color-muted-text);
+  list-style: none;
+}
+.design-intent-locks > summary::-webkit-details-marker {
+  display: none;
+}
+.design-intent-locks > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 120ms ease;
+}
+.design-intent-locks[open] > summary::before {
+  transform: rotate(90deg);
+}
+.design-intent-locks > summary:hover {
+  color: var(--st-color-text-secondary);
+}
+.design-intent-lock {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  padding: 3px 0;
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+
+.design-check {
+  margin-top: var(--st-space-3);
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+  padding: var(--st-space-2) var(--st-space-3);
+}
+.design-check > summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--st-space-2);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+  list-style: none;
+  margin: calc(-1 * var(--st-space-2)) calc(-1 * var(--st-space-3));
+  padding: var(--st-space-2) var(--st-space-3);
+  border-radius: var(--st-radius);
+}
+.design-check > summary::-webkit-details-marker {
+  display: none;
+}
+.design-check > summary::before {
+  content: "▸";
+  display: inline-block;
+  transition: transform 120ms ease;
+}
+.design-check[open] > summary::before {
+  transform: rotate(90deg);
+}
+.design-check > summary:hover {
+  background: var(--st-color-selected-muted-bg);
+}
+/* <summary> is not covered by the global :focus-visible selector list. */
+.design-check > summary:focus-visible {
+  outline: 2px solid var(--st-focus-ring);
+  outline-offset: -2px;
+}
+.design-check-title {
+  font-weight: var(--st-weight-semibold);
+}
+.design-check-summary {
+  color: var(--st-color-muted-text);
+}
+.design-check-counts {
+  display: inline-flex;
+  gap: var(--st-space-1);
+}
+.design-check-count {
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: var(--st-text-xs);
+  line-height: 18px;
+}
+.design-check-count--error {
+  color: var(--st-color-danger);
+  background: var(--st-color-danger-bg);
+  border: 1px solid var(--st-color-danger-border);
+}
+.design-check-count--warning {
+  color: var(--st-color-warn);
+  background: var(--st-color-warn-bg);
+  border: 1px solid var(--st-color-warn-border);
+}
+.design-check-count--info {
+  color: var(--st-color-ok);
+  background: var(--st-color-ok-bg);
+  border: 1px solid var(--st-color-ok-border);
+}
+.design-check-run {
+  margin-top: var(--st-space-2);
+  padding: 5px 10px;
+  font-size: var(--st-text-sm);
+}
+
+.design-check-list {
+  list-style: none;
+  margin: var(--st-space-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--st-space-2);
+}
+.design-check-item {
+  border-left: 2px solid var(--st-color-border-strong);
+  padding-left: var(--st-space-2);
+  display: grid;
+  gap: 2px;
+}
+.design-check-item--error {
+  border-left-color: var(--st-color-danger);
+}
+.design-check-item--warning {
+  border-left-color: var(--st-color-warn);
+}
+.design-check-item--info {
+  border-left-color: var(--st-color-ok);
+}
+.design-check-rule {
+  font-size: var(--st-text-sm);
+  font-weight: var(--st-weight-semibold);
+}
+.design-check-item--error .design-check-rule {
+  color: var(--st-color-danger);
+}
+.design-check-item--warning .design-check-rule {
+  color: var(--st-color-warn);
+}
+.design-check-item--info .design-check-rule {
+  color: var(--st-color-ok);
+}
+.design-check-explanation {
+  margin: 0;
+  color: var(--st-color-text-secondary);
+  font-size: var(--st-text-sm);
+}
+.design-check-mm {
+  color: var(--st-color-muted-text);
+  font-size: var(--st-text-xs);
+}
+.design-check-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-1);
+}
+.design-check-id {
+  font-size: var(--st-text-xs);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--st-color-glass-highlight);
+  border: 1px solid var(--st-color-border-subtle);
+  color: var(--st-color-muted-text);
+}
+
+/* Results-detail variant: full grouped list instead of the rail top-3. */
+.design-check--detail {
+  margin-top: var(--st-space-3);
+}
+.design-check-groups {
+  display: grid;
+  gap: var(--st-space-3);
+  margin-top: var(--st-space-2);
+}
+.design-check-group > h4 {
+  margin: 0 0 var(--st-space-1);
+  font-size: var(--st-text-sm);
+}
+.design-check-group--error > h4 {
+  color: var(--st-color-danger);
+}
+.design-check-group--warning > h4 {
+  color: var(--st-color-warn);
+}
+.design-check-group--info > h4 {
+  color: var(--st-color-ok);
+}

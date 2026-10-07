@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { api, type Asset, type AssetRole, type Generation, type Job, type SceneDocument, type SceneRevision } from "../api";
+import { api, type Asset, type AssetRole, type Generation, type Job, type SceneDocument, type SceneRevision, type ValidationReport } from "../api";
 import { AttachmentSection } from "../AttachmentSection";
 import { LayerBadge } from "../LayerBadge";
 import { computeCameraReadiness } from "../cameraReadiness";
@@ -17,6 +17,16 @@ import {
   filterEntitiesByState,
   type EntityState
 } from "../sceneLayers";
+import {
+  buildSetIntentCommand,
+  buildSetLocksCommand,
+  entityIntent,
+  intentActionBlocked,
+  INTENT_LABELS,
+  type DesignIntent,
+  type EntityLocksPatch
+} from "../sceneIntent";
+import { ruleLabel, summaryLine, topResults } from "../sceneValidation";
 import { apiErrorText, uniqueId } from "../twinDesign";
 import type { PageId } from "../nav";
 
@@ -26,6 +36,15 @@ const KIND_LABELS: Record<string, string> = {
   wall: "Стена",
   furniture: "Мебель"
 };
+
+// Rail display order for the intent toggles (keep first: it is the neutral
+// "leave as is" choice; clear is rendered separately when an intent is set).
+const INTENT_ORDER: readonly DesignIntent[] = ["keep", "replace", "remove"];
+
+function isConflict(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /^409:/.test(message);
+}
 
 // The structural shell (floors/walls/rooms) always reaches SceneViewer even
 // when its layer is hidden: planOverview() frames the overview camera from
@@ -79,6 +98,16 @@ export function DesignPage({
   const [visibleStates, setVisibleStates] = useState<EntityState[]>([...ENTITY_STATES]);
   const [stateBusy, setStateBusy] = useState(false);
   const [stateError, setStateError] = useState("");
+  // R2 intents/locks: one command channel shared by the intent toggles and
+  // the locks checkboxes (same freshness rule and error surface as set_state).
+  const [intentBusy, setIntentBusy] = useState(false);
+  const [intentError, setIntentError] = useState("");
+  const [intentConflict, setIntentConflict] = useState(false);
+  // R2 design check: the report is fetched only on demand (manual button);
+  // drags and commits never re-run it.
+  const [checkReport, setCheckReport] = useState<ValidationReport | null>(null);
+  const [checkBusy, setCheckBusy] = useState(false);
+  const [checkError, setCheckError] = useState("");
   const advancedRef = useRef<HTMLDetailsElement | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
 
@@ -158,6 +187,83 @@ export function DesignPage({
     }
   }
 
+  // R2 set_intent / set_locks: the builders return the exact command core
+  // (operation/target_id/parameters); this dispatcher wraps it into the full
+  // DesignCommand envelope — schema_version, fresh base_revision_id, user
+  // origin — mirroring buildSetStateCommand's field-for-field shape.
+  async function applyEntityCommand(command: {
+    operation: "set_intent" | "set_locks";
+    target_id: string;
+    parameters: Record<string, unknown>;
+  }) {
+    if (intentBusy) return;
+    setIntentBusy(true);
+    setIntentError("");
+    setIntentConflict(false);
+    try {
+      const fresh = await api.scene(projectId);
+      if (!fresh) {
+        setIntentError("Сцена ещё не инициализирована.");
+        return;
+      }
+      await api.applySceneCommand(projectId, {
+        schema_version: "0.1.0",
+        command_id: uniqueId(),
+        base_revision_id: fresh.revision_id,
+        operation: command.operation,
+        target_id: command.target_id,
+        parameters: command.parameters,
+        reference_asset_ids: [],
+        origin: "user",
+        request_text: null
+      });
+      await onChanged();
+    } catch (reason) {
+      setIntentError(apiErrorText(reason));
+      setIntentConflict(isConflict(reason));
+    } finally {
+      setIntentBusy(false);
+    }
+  }
+
+  function applyIntent(intent: DesignIntent | null) {
+    if (!selectedEntity) return;
+    void applyEntityCommand(buildSetIntentCommand(selectedEntity.id, intent));
+  }
+
+  // Partial lock merge: send only the single toggled key, never the whole
+  // locks object (the backend merges the patch into the entity's locks).
+  function applyLock(
+    key: keyof EntityLocksPatch,
+    value: boolean
+  ) {
+    if (!selectedEntity) return;
+    const patch: EntityLocksPatch = {};
+    patch[key] = value;
+    void applyEntityCommand(buildSetLocksCommand(selectedEntity.id, patch));
+  }
+
+  // R2 design check: manual run against the current latest revision.
+  async function runDesignCheck() {
+    if (checkBusy) return;
+    setCheckBusy(true);
+    setCheckError("");
+    try {
+      const fresh = await api.scene(projectId);
+      if (!fresh) {
+        setCheckError("Сцена ещё не инициализирована.");
+        return;
+      }
+      setCheckReport(
+        await api.validateScene(projectId, { scene_revision_id: fresh.revision_id })
+      );
+    } catch (reason) {
+      setCheckError(apiErrorText(reason));
+    } finally {
+      setCheckBusy(false);
+    }
+  }
+
   // Contextual rail (#154): the entity selected in the 3D scene, with its
   // actions one glance away instead of far below the canvas.
   const selectedEntity = selectedEntityId
@@ -176,6 +282,9 @@ export function DesignPage({
     if (node) node.open = false;
     canvasRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // Compact rail card list: top-3 results in severity order (computed once).
+  const checkTopResults = checkReport ? topResults(checkReport) : [];
 
   return (
     <>
@@ -328,6 +437,97 @@ export function DesignPage({
                     </select>
                   </label>
                   {stateError && <div className="error">{stateError}</div>}
+                  {/* R2: design intent for the selected object — the UI
+                      mirror of the backend set_intent command and its guard
+                      matrix. Structural entities (Слой: Structure) may only
+                      be kept. */}
+                  <div className="design-intent-row" role="group" aria-label="Намерение по объекту">
+                    {INTENT_ORDER.map((intent) => {
+                      const active = entityIntent(selectedEntity) === intent;
+                      return (
+                        <button
+                          key={intent}
+                          type="button"
+                          className={"design-intent-toggle" + (active ? " active" : "")}
+                          aria-pressed={active}
+                          disabled={
+                            intentBusy ||
+                            (intent !== "keep" &&
+                              intentActionBlocked(selectedEntity, intent))
+                          }
+                          onClick={() => void applyIntent(intent)}
+                        >
+                          {INTENT_LABELS[intent]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {entityIntent(selectedEntity) !== null && (
+                    <button
+                      type="button"
+                      className="secondary design-intent-clear"
+                      disabled={intentBusy}
+                      onClick={() => void applyIntent(null)}
+                    >
+                      Сбросить
+                    </button>
+                  )}
+                  {intentError && <div className="error">{intentError}</div>}
+                  {intentConflict && (
+                    <p className="hint design-intent-conflict">
+                      Сервер отклонил изменение (409) — проверьте блокировки и
+                      запустите «Проверку дизайна».
+                    </p>
+                  )}
+                  {/* R2: per-entity locks via set_locks; each checkbox sends
+                      only its own key (partial merge on the backend). */}
+                  <details className="design-intent-locks">
+                    <summary>Блокировки</summary>
+                    <label className="design-intent-lock">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntity.locks?.existence ?? false}
+                        disabled={intentBusy}
+                        onChange={(event) =>
+                          void applyLock("existence", event.target.checked)
+                        }
+                      />
+                      Должен остаться
+                    </label>
+                    <label className="design-intent-lock">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntity.locks?.transform ?? false}
+                        disabled={intentBusy}
+                        onChange={(event) =>
+                          void applyLock("transform", event.target.checked)
+                        }
+                      />
+                      Положение
+                    </label>
+                    <label className="design-intent-lock">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntity.locks?.geometry ?? false}
+                        disabled={intentBusy}
+                        onChange={(event) =>
+                          void applyLock("geometry", event.target.checked)
+                        }
+                      />
+                      Геометрия/размеры
+                    </label>
+                    <label className="design-intent-lock">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntity.locks?.material ?? false}
+                        disabled={intentBusy}
+                        onChange={(event) =>
+                          void applyLock("material", event.target.checked)
+                        }
+                      />
+                      Материал/цвет
+                    </label>
+                  </details>
                   <div className="design-selected-actions">
                     <button
                       type="button"
@@ -361,6 +561,75 @@ export function DesignPage({
                   Выберите объект в сцене — действия появятся здесь.
                 </p>
               )}
+
+              {/* R2 design check: compact scene-level card in the rail (never
+                  on canvas). Manual run only — drags and commits never
+                  refresh the report. */}
+              <details className="design-check">
+                <summary>
+                  <span className="design-check-title">Проверка дизайна</span>
+                  {checkReport && (
+                    <span className="design-check-summary">
+                      {summaryLine(checkReport)}
+                    </span>
+                  )}
+                  {checkReport && (
+                    <span className="design-check-counts">
+                      {(["error", "warning", "info"] as const).map((severity) => (
+                        <span
+                          key={severity}
+                          className={`design-check-count design-check-count--${severity}`}
+                        >
+                          {checkReport.summary[severity]}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </summary>
+                {checkTopResults.length > 0 && (
+                  <ul className="design-check-list">
+                    {checkTopResults.map((result, index) => (
+                      <li
+                        key={`${result.rule_id}-${index}`}
+                        className={`design-check-item design-check-item--${result.severity}`}
+                      >
+                        <span className="design-check-rule">
+                          {ruleLabel(result.rule_id)}
+                        </span>
+                        {(result.measured_mm != null ||
+                          result.expected_min_mm != null) && (
+                          <span className="design-check-mm">
+                            {result.measured_mm != null
+                              ? `${result.measured_mm} мм`
+                              : "—"}
+                            {result.expected_min_mm != null
+                              ? ` · мин. ${result.expected_min_mm} мм`
+                              : ""}
+                          </span>
+                        )}
+                        {result.entity_ids.length > 0 && (
+                          <span className="design-check-ids">
+                            {result.entity_ids.map((id) => (
+                              <code key={id} className="design-check-id">
+                                {id}
+                              </code>
+                            ))}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {checkError && <div className="error">{checkError}</div>}
+                <button
+                  type="button"
+                  className="secondary design-check-run"
+                  disabled={checkBusy}
+                  onClick={() => void runDesignCheck()}
+                >
+                  {checkBusy ? "Проверяем…" : "Запустить проверку"}
+                </button>
+              </details>
             </aside>
           )}
         </div>
