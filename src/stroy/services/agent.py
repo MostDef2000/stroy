@@ -23,6 +23,14 @@ from stroy.services.jobs import create_job
 from stroy.services.products import candidate_view, get_candidate, list_candidates
 from stroy.services.scenes import apply_scene_command, latest_revision
 from stroy.services.validation import execute_design_check_tool
+from stroy.services.variants import (
+    VariantError,
+    compare_variants,
+    get_variant,
+    list_variants,
+    variant_view,
+)
+from stroy.services.budget import BudgetError, budget_report
 
 
 async def apply_design_agent_result(
@@ -112,6 +120,81 @@ async def apply_design_agent_result(
                         "index": index,
                         "name": name,
                         "result": {"candidate": candidate_view(row)},
+                    }
+                )
+                continue
+            if name == "list_variants":
+                rows = await list_variants(
+                    session,
+                    job.project_id,
+                    status=parsed.status,  # type: ignore[attr-defined]
+                    include_archived=parsed.include_archived,  # type: ignore[attr-defined]
+                )
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": {"variants": [variant_view(row) for row in rows]},
+                    }
+                )
+                continue
+            if name == "get_variant":
+                variant_id = parsed.variant_id  # type: ignore[attr-defined]
+                row = await get_variant(session, job.project_id, variant_id)
+                if row is None:
+                    raise AgentToolError(
+                        "unknown_entity",
+                        f"unknown variant: {variant_id}",
+                        context={"variant_id": variant_id},
+                    )
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": {"variant": variant_view(row)},
+                    }
+                )
+                continue
+            if name == "compare_variants":
+                try:
+                    comparison = await compare_variants(
+                        session,
+                        job.project_id,
+                        parsed.left_variant_id,  # type: ignore[attr-defined]
+                        parsed.right_variant_id,  # type: ignore[attr-defined]
+                    )
+                except VariantError as exc:
+                    raise AgentToolError(
+                        "unknown_entity",
+                        exc.detail,
+                        context={"code": exc.code},
+                    ) from exc
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": {"comparison": comparison},
+                    }
+                )
+                continue
+            if name == "get_variant_budget":
+                try:
+                    report = await budget_report(
+                        session,
+                        job.project_id,
+                        parsed.variant_id,  # type: ignore[attr-defined]
+                    )
+                except BudgetError as exc:
+                    raise AgentToolError(
+                        "unknown_entity",
+                        exc.detail,
+                        context={"code": exc.code},
+                    ) from exc
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": {"budget": report},
                     }
                 )
                 continue

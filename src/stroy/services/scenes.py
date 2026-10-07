@@ -4,7 +4,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from stroy.db.models import DesignCommandRow, ProjectRow, SceneRevisionRow
+from stroy.db.models import (
+    DesignCommandRow,
+    ProjectRow,
+    SceneRevisionRow,
+    SceneVariantRow,
+)
 from stroy.domain.commands import CommandConflict, apply_command
 from stroy.domain.models import DesignCommand, Scene, canonical_hash
 
@@ -37,11 +42,59 @@ async def initialize_scene(
     return row
 
 
+async def _variant_owned_revision_ids(
+    session: AsyncSession, project_id: str
+) -> set[str]:
+    """Revision ids living on variant branch segments of the project.
+
+    A variant owns the revisions strictly between its fork base (EXCLUSIVE —
+    the base stays shared with the canonical chain) and its head (inclusive):
+    ``lineage(head) − lineage(base)``. Shared ancestry and forks-of-forks stay
+    canonical-owned, so segments overlap safely through the ``owned`` set.
+
+    Known limitation (inherent to the approved R4 schema — revisions carry no
+    variant marker): after a variant ROW is deleted, its former branch
+    revisions become structurally indistinguishable from canonical ones and
+    are no longer excluded.
+    """
+    variants = (
+        await session.execute(
+            select(SceneVariantRow).where(SceneVariantRow.project_id == project_id)
+        )
+    ).scalars().all()
+    owned: set[str] = set()
+    for variant in variants:
+        seen: set[str] = set()
+        current_id: str | None = variant.head_scene_revision_id
+        # Walk down the parent chain, stopping BEFORE the fork base.
+        while (
+            current_id is not None
+            and current_id != variant.base_scene_revision_id
+            and current_id not in seen
+        ):
+            seen.add(current_id)
+            owned.add(current_id)
+            revision = await session.get(SceneRevisionRow, current_id)
+            current_id = revision.parent_revision_id if revision else None
+    return owned
+
+
 async def latest_revision(session: AsyncSession, project_id: str) -> SceneRevisionRow | None:
+    """Latest revision of the project's CANONICAL scene.
+
+    R4: revisions appended along variant branches (see
+    ``_variant_owned_revision_ids``) never surface here — the canonical tip
+    is invisible to variant activity, and variant activity is invisible to
+    the canonical scene. With no variants this is the plain newest revision.
+    Every consumer (scene GET/commands, cameras, plans, validation, agent,
+    default render target, variant seeding) shares this single definition.
+    """
+    owned = await _variant_owned_revision_ids(session, project_id)
+    stmt = select(SceneRevisionRow).where(SceneRevisionRow.project_id == project_id)
+    if owned:
+        stmt = stmt.where(SceneRevisionRow.id.not_in(owned))
     result = await session.execute(
-        select(SceneRevisionRow)
-        .where(SceneRevisionRow.project_id == project_id)
-        .order_by(SceneRevisionRow.created_at.desc(), SceneRevisionRow.id.desc())
+        stmt.order_by(SceneRevisionRow.created_at.desc(), SceneRevisionRow.id.desc())
         .limit(1)
     )
     return result.scalar_one_or_none()
