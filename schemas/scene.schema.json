@@ -148,6 +148,14 @@
             "utility"
           ]
         },
+        "state": {
+          "default": "asis",
+          "enum": [
+            "asis",
+            "structure",
+            "design"
+          ]
+        },
         "room_id": {
           "type": [
             "string",

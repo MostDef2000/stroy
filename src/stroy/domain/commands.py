@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from stroy.domain.models import CommandOperation, DesignCommand, Scene, SceneEntity, Transform
+from stroy.domain.models import (
+    CommandOperation,
+    DesignCommand,
+    EntityState,
+    Scene,
+    SceneEntity,
+    Transform,
+)
 
 
 class CommandRejected(ValueError):
@@ -31,10 +38,27 @@ def apply_command(scene: Scene, command: DesignCommand) -> Scene:
             raise CommandRejected("target_id must equal added entity.id")
         if any(existing.id == entity.id for existing in result.entities):
             raise CommandConflict(f"entity already exists: {entity.id}")
+        if "state" not in raw:
+            # Old clients predate the state layers: everything they add is a
+            # design object. Set explicitly (the SceneEntity default is asis).
+            entity.state = EntityState.DESIGN
         result.entities.append(entity)
         return result
 
     target = _entity(result, command.target_id)
+
+    if op is CommandOperation.SET_STATE:
+        # State is bookkeeping, not geometry/material/transform: locks guard
+        # their own mutations only and never block a state change.
+        raw_state = command.parameters.get("state")
+        try:
+            target.state = EntityState(raw_state)
+        except ValueError as exc:
+            raise CommandRejected(
+                f"set_state requires parameters.state to be one of "
+                f"asis/structure/design, got: {raw_state}"
+            ) from exc
+        return result
 
     if op in {CommandOperation.SET_MATERIAL, CommandOperation.SET_COLOR}:
         if target.locks.material:
