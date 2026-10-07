@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +46,29 @@ from stroy.services.products import (
     list_candidates,
     missing_candidate_fields,
     patch_candidate,
+)
+from stroy.services.budget import (
+    BudgetError,
+    add_budget_item,
+    budget_item_view,
+    budget_report,
+    delete_budget_item,
+    list_budget_items,
+    patch_budget_item,
+)
+from stroy.services.variants import (
+    VariantError,
+    apply_variant_command,
+    compare_variants,
+    create_variant_from_current,
+    delete_variant,
+    fork_variant,
+    get_variant,
+    list_variants,
+    patch_variant,
+    restore_variant_revision,
+    variant_lineage_ids,
+    variant_view,
 )
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, EntityIntent, Scene, SceneEntity
@@ -323,6 +346,9 @@ class GenerationRequest(BaseModel):
     camera_id: str = Field(min_length=1)
     prompt: str = Field(default="redesign room", min_length=1, max_length=4000)
     reference_asset_ids: list[str] = Field(default_factory=list)
+    # R4: link the generation to a scene variant (revision must lie in the
+    # variant's lineage when supplied).
+    variant_id: str | None = Field(default=None, min_length=1)
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
@@ -331,6 +357,9 @@ class RenderRequest(BaseModel):
     design_revision_id: str | None = None
     camera_id: str = Field(min_length=1)
     renderer_profile: str = "blender-cycles-v0"
+    # R4: link the render to a scene variant (revision must lie in the
+    # variant's lineage when supplied; defaults to the variant head).
+    variant_id: str | None = Field(default=None, min_length=1)
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
@@ -403,6 +432,50 @@ class ProductCandidatePatch(BaseModel):
     height_mm: float | None = Field(default=None, gt=0)
     material_descriptors: list[str] | None = None
     color_descriptors: list[str] | None = None
+
+
+class VariantCreateFromCurrent(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class VariantForkRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    from_revision_id: str | None = Field(default=None, min_length=1)
+
+
+class VariantPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    status: str | None = Field(default=None, max_length=20)
+
+
+class VariantRestoreRevision(BaseModel):
+    target_revision_id: str = Field(min_length=1)
+    expected_head_revision_id: str = Field(min_length=1)
+
+
+class VariantCommandRequest(BaseModel):
+    # Command envelope: the design command plus the optimistic-lock head the
+    # caller observed. The command applies to the VARIANT head scene.
+    command: DesignCommand
+    expected_head_revision_id: str = Field(min_length=1)
+
+
+class BudgetItemCreate(BaseModel):
+    kind: str = Field(min_length=1, max_length=20)
+    product_candidate_id: str | None = Field(default=None, min_length=1)
+    label: str = Field(min_length=1, max_length=200)
+    amount: float | None = Field(default=None, ge=0, le=9_999_999_999.99)
+    currency: str | None = Field(default=None, max_length=12)
+    quantity: float | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BudgetItemPatch(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=200)
+    amount: float | None = Field(default=None, ge=0, le=9_999_999_999.99)
+    currency: str | None = Field(default=None, max_length=12)
+    quantity: float | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] | None = None
 
 
 class JobCreate(BaseModel):
@@ -1203,6 +1276,364 @@ async def product_delete(
     return Response(status_code=204)
 
 
+# ---------------------------------------------------------------------------
+# scene variants (R4) + variant budget
+# ---------------------------------------------------------------------------
+
+
+def _variant_http_error(exc: VariantError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "detail": exc.detail},
+    )
+
+
+def _budget_http_error(exc: BudgetError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "detail": exc.detail},
+    )
+
+
+async def _resolve_variant_scoped_revision(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    variant_id: str,
+    revision_id: str | None,
+    revision_field: str,
+) -> SceneRevisionRow:
+    """Resolve the revision a variant-scoped render/generation targets.
+
+    An explicit revision must lie in the variant's lineage (409
+    ``revision_not_in_lineage``); without one, the variant HEAD is used —
+    the global latest revision is never read for variant-scoped jobs.
+    """
+    variant = await get_variant(session, project_id, variant_id)
+    if variant is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    if revision_id is not None:
+        revision = await session.get(SceneRevisionRow, revision_id)
+        if revision is None or revision.project_id != project_id:
+            raise HTTPException(
+                status_code=404, detail=f"{revision_field} not found"
+            )
+        if revision_id != variant.head_scene_revision_id:
+            lineage = await variant_lineage_ids(
+                session, variant.head_scene_revision_id
+            )
+            if revision_id not in lineage:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "revision_not_in_lineage",
+                        "detail": (
+                            f"revision {revision_id} is not in the lineage "
+                            f"of variant {variant_id}"
+                        ),
+                    },
+                )
+        return revision
+    revision = await session.get(SceneRevisionRow, variant.head_scene_revision_id)
+    if revision is None:
+        raise HTTPException(status_code=409, detail="scene is not initialized")
+    return revision
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/variants:create-from-current",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def variant_create_from_current(
+    project_id: str,
+    payload: VariantCreateFromCurrent,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        row = await create_variant_from_current(session, project_id, payload.title)
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+    except (ValueError, CommandRejected) as exc:
+        # Uninitialized scene → 409 via the shared domain mapping.
+        raise _domain_conflict(exc) from exc
+    return variant_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/variants",
+    dependencies=[Depends(require_owner)],
+)
+async def variant_list(
+    project_id: str,
+    session: DbSession,
+    status: str | None = None,
+    include_archived: bool = False,
+):
+    rows = await list_variants(
+        session, project_id, status=status, include_archived=include_archived
+    )
+    return [variant_view(row) for row in rows]
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/variants/compare",
+    dependencies=[Depends(require_owner)],
+)
+async def variants_compare(
+    project_id: str,
+    session: DbSession,
+    left: str = Query(min_length=1),
+    right: str = Query(min_length=1),
+):
+    # NOTE: registered before /variants/{variant_id} so "compare" is never
+    # captured as a variant id.
+    try:
+        return await compare_variants(session, project_id, left, right)
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/variants/{variant_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def variant_get(project_id: str, variant_id: str, session: DbSession):
+    row = await get_variant(session, project_id, variant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    return variant_view(row)
+
+
+@router.patch(
+    "/api/v1/projects/{project_id}/variants/{variant_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def variant_patch(
+    project_id: str,
+    variant_id: str,
+    payload: VariantPatch,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    try:
+        row = await patch_variant(session, project_id, variant_id, updates)
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    return variant_view(row)
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}/variants/{variant_id}",
+    status_code=204,
+    dependencies=[Depends(require_csrf)],
+)
+async def variant_delete(
+    project_id: str, variant_id: str, session: DbSession, owner: OwnerSession
+):
+    deleted = await delete_variant(session, project_id, variant_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="variant not found")
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/variants/{variant_id}:fork",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def variant_fork(
+    project_id: str,
+    variant_id: str,
+    payload: VariantForkRequest,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        row = await fork_variant(
+            session,
+            project_id,
+            variant_id,
+            title=payload.title,
+            from_revision_id=payload.from_revision_id,
+        )
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    return variant_view(row)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/revisions:restore",
+    dependencies=[Depends(require_csrf)],
+)
+async def variant_restore_revision(
+    project_id: str,
+    variant_id: str,
+    payload: VariantRestoreRevision,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        revision = await restore_variant_revision(
+            session,
+            project_id,
+            variant_id,
+            target_revision_id=payload.target_revision_id,
+            expected_head_revision_id=payload.expected_head_revision_id,
+        )
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+    except (ValueError, CommandRejected) as exc:
+        raise _domain_conflict(exc) from exc
+    return {
+        "revision_id": revision.id,
+        "parent_revision_id": revision.parent_revision_id,
+        "content_hash": revision.content_hash,
+        "scene": revision.scene_json,
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/revisions",
+    dependencies=[Depends(require_csrf)],
+)
+async def variant_command(
+    project_id: str,
+    variant_id: str,
+    payload: VariantCommandRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    # Variant-scoped application reusing the existing command engine: same
+    # ops, same locks/intents. The canonical scene is never read or written.
+    try:
+        revision = await apply_variant_command(
+            session,
+            project_id,
+            variant_id,
+            payload.command,
+            expected_head_revision_id=payload.expected_head_revision_id,
+            correlation_id=request.state.request_id,
+        )
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+    except (ValueError, CommandRejected) as exc:
+        raise _domain_conflict(exc) from exc
+    return {
+        "revision_id": revision.id,
+        "parent_revision_id": revision.parent_revision_id,
+        "content_hash": revision.content_hash,
+        "scene": revision.scene_json,
+        "variant_head_scene_revision_id": revision.id,
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/budget/items",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def budget_item_create(
+    project_id: str,
+    variant_id: str,
+    payload: BudgetItemCreate,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        row = await add_budget_item(
+            session, project_id, variant_id, payload.model_dump(exclude_none=True)
+        )
+    except BudgetError as exc:
+        raise _budget_http_error(exc) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    return budget_item_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/budget/items",
+    dependencies=[Depends(require_owner)],
+)
+async def budget_item_list(
+    project_id: str, variant_id: str, session: DbSession
+):
+    if await get_variant(session, project_id, variant_id) is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    rows = await list_budget_items(session, project_id, variant_id)
+    return [budget_item_view(row) for row in rows]
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/budget/report",
+    dependencies=[Depends(require_owner)],
+)
+async def budget_item_report(
+    project_id: str, variant_id: str, session: DbSession
+):
+    try:
+        return await budget_report(session, project_id, variant_id)
+    except BudgetError as exc:
+        raise _budget_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/budget/items/{item_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def budget_item_update(
+    project_id: str,
+    variant_id: str,
+    item_id: str,
+    payload: BudgetItemPatch,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        row = await patch_budget_item(
+            session,
+            project_id,
+            variant_id,
+            item_id,
+            payload.model_dump(exclude_unset=True),
+        )
+    except BudgetError as exc:
+        raise _budget_http_error(exc) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="budget item not found")
+    return budget_item_view(row)
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}/variants/{variant_id}/budget/items/{item_id}",
+    status_code=204,
+    dependencies=[Depends(require_csrf)],
+)
+async def budget_item_delete(
+    project_id: str,
+    variant_id: str,
+    item_id: str,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        deleted = await delete_budget_item(session, project_id, variant_id, item_id)
+    except BudgetError as exc:
+        raise _budget_http_error(exc) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="budget item not found")
+    return Response(status_code=204)
+
+
 @router.post(
     "/api/v1/projects/{project_id}/geometry-diagnostics",
     status_code=201,
@@ -1311,7 +1742,15 @@ async def render_create(
     if await session.get(ProjectRow, project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
 
-    if payload.scene_revision_id:
+    if payload.variant_id:
+        revision = await _resolve_variant_scoped_revision(
+            session,
+            project_id,
+            variant_id=payload.variant_id,
+            revision_id=payload.scene_revision_id,
+            revision_field="scene revision",
+        )
+    elif payload.scene_revision_id:
         revision = await session.get(SceneRevisionRow, payload.scene_revision_id)
         if revision is None or revision.project_id != project_id:
             raise HTTPException(status_code=404, detail="scene revision not found")
@@ -1341,6 +1780,7 @@ async def render_create(
             "camera_id": payload.camera_id,
             "renderer_profile": payload.renderer_profile,
             "scene": revision.scene_json,
+            "variant_id": payload.variant_id,
         },
         idempotency_key=payload.idempotency_key,
         correlation_id=request.state.request_id,
@@ -1362,6 +1802,7 @@ async def render_list(project_id: str, session: DbSession):
             "scene_revision_id": row.scene_revision_id,
             "design_revision_id": row.design_revision_id,
             "camera_id": row.camera_id,
+            "variant_id": row.variant_id,
             "created_at": row.created_at,
             "render_seconds": (row.manifest_json or {}).get("render_seconds"),
             "manifest": row.manifest_json,
@@ -1385,6 +1826,7 @@ async def render_get(render_id: str, session: DbSession):
         "scene_revision_id": row.scene_revision_id,
         "design_revision_id": row.design_revision_id,
         "camera_id": row.camera_id,
+        "variant_id": row.variant_id,
         "created_at": row.created_at,
         "render_seconds": (row.manifest_json or {}).get("render_seconds"),
         "manifest": row.manifest_json,
@@ -1936,7 +2378,15 @@ async def generation_create(
     session: DbSession,
     owner: OwnerSession,
 ):
-    if payload.design_revision_id:
+    if payload.variant_id:
+        revision = await _resolve_variant_scoped_revision(
+            session,
+            project_id,
+            variant_id=payload.variant_id,
+            revision_id=payload.design_revision_id,
+            revision_field="design revision",
+        )
+    elif payload.design_revision_id:
         revision = await session.get(SceneRevisionRow, payload.design_revision_id)
         if revision is None or revision.project_id != project_id:
             raise HTTPException(status_code=404, detail="design revision not found")
@@ -1972,6 +2422,7 @@ async def generation_create(
         reference_asset_ids=payload.reference_asset_ids,
         correlation_id=request.state.request_id,
         dispatcher=request.app.state.job_dispatcher,
+        variant_id=payload.variant_id,
     )
     return job_view(row)
 
@@ -1989,6 +2440,7 @@ async def generation_list(project_id: str, session: DbSession):
             "scene_revision_id": row.scene_revision_id,
             "design_revision_id": row.design_revision_id,
             "camera_id": row.camera_id,
+            "variant_id": row.variant_id,
             "created_at": row.created_at,
             "manifest": row.manifest_json,
         }
@@ -2011,6 +2463,7 @@ async def generation_get(generation_id: str, session: DbSession):
         "scene_revision_id": row.scene_revision_id,
         "design_revision_id": row.design_revision_id,
         "camera_id": row.camera_id,
+        "variant_id": row.variant_id,
         "created_at": row.created_at,
         "manifest": row.manifest_json,
     }

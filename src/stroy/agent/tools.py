@@ -116,6 +116,25 @@ class GetProductCandidateArgs(ToolArgs):
     candidate_id: str = Field(min_length=1)
 
 
+class ListVariantsArgs(ToolArgs):
+    # Read-only variant listing; archived variants are hidden unless requested.
+    status: Literal["draft", "shortlisted", "approved", "archived"] | None = None
+    include_archived: bool = False
+
+
+class GetVariantArgs(ToolArgs):
+    variant_id: str = Field(min_length=1)
+
+
+class CompareVariantsArgs(ToolArgs):
+    left_variant_id: str = Field(min_length=1)
+    right_variant_id: str = Field(min_length=1)
+
+
+class GetVariantBudgetArgs(ToolArgs):
+    variant_id: str = Field(min_length=1)
+
+
 _TOOL_SPECS: list[tuple[str, str, type[ToolArgs]]] = [
     ("get_scene", "Read the current project-scoped canonical scene.", GetSceneArgs),
     ("get_room", "Read one room and its project-scoped entities.", GetRoomArgs),
@@ -175,6 +194,29 @@ _TOOL_SPECS: list[tuple[str, str, type[ToolArgs]]] = [
         "Read one product candidate by ID (facts, dimensions, provenance).",
         GetProductCandidateArgs,
     ),
+    (
+        "list_variants",
+        "List scene variants of the project (isolated design branches); "
+        "archived variants are hidden unless requested.",
+        ListVariantsArgs,
+    ),
+    (
+        "get_variant",
+        "Read one scene variant by ID (title, status, base/head revisions).",
+        GetVariantArgs,
+    ),
+    (
+        "compare_variants",
+        "Deterministically compare the head scenes of two variants "
+        "(entities, materials, validation warnings, budget, renders).",
+        CompareVariantsArgs,
+    ),
+    (
+        "get_variant_budget",
+        "Read the budget report of one scene variant (totals, takeoff, "
+        "incomplete items).",
+        GetVariantBudgetArgs,
+    ),
 ]
 
 TOOL_ARGUMENT_MODELS = {name: model for name, _, model in _TOOL_SPECS}
@@ -190,8 +232,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     for name, description, model in _TOOL_SPECS
 ]
 
-# Read-only tools. Product-candidate tools need the database (project-scoped
-# rows) and are dispatched by services.agent, like get_design_check.
+# Read-only tools. Database-backed reads (persisted reports, candidates,
+# variants, budget) are dispatched by services.agent, like get_design_check.
 READ_TOOL_NAMES = {
     "get_scene",
     "get_room",
@@ -200,6 +242,10 @@ READ_TOOL_NAMES = {
     "get_design_check",
     "list_product_candidates",
     "get_product_candidate",
+    "list_variants",
+    "get_variant",
+    "compare_variants",
+    "get_variant_budget",
 }
 MUTATION_TOOL_NAMES = {
     "set_material",
@@ -249,9 +295,18 @@ def execute_read_tool(scene: Scene, call: dict[str, Any]) -> dict[str, Any]:
             context={"tool_name": name},
         )
 
-    if name in {"get_design_check", "list_product_candidates", "get_product_candidate"}:
+    if name in {
+        "get_design_check",
+        "list_product_candidates",
+        "get_product_candidate",
+        "list_variants",
+        "get_variant",
+        "compare_variants",
+        "get_variant_budget",
+    }:
         # Service-executed reads: they need the database (persisted reports /
-        # candidates) and are dispatched by services.agent, not scene-only here.
+        # candidates / variants) and are dispatched by services.agent, not
+        # scene-only here.
         raise AgentToolError(
             "invalid_tool_mode",
             f"tool requires service execution: {name}",

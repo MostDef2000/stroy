@@ -43,7 +43,13 @@ class SceneRevisionRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    parent_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
+    # R4: plain index only. The R1-era UNIQUE lock (one child per parent) was
+    # dropped by migration 0015 so scene variants can branch a revision into
+    # siblings; linear-history protection now lives in the service layer
+    # (expected-head checks), not in the schema.
+    parent_revision_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
     command_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     schema_version: Mapped[str] = mapped_column(String(20), default="0.1.0")
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -205,6 +211,8 @@ class GenerationManifestRow(Base):
     scene_revision_id: Mapped[str] = mapped_column(String(36), index=True)
     design_revision_id: Mapped[str] = mapped_column(String(36), index=True)
     camera_id: Mapped[str] = mapped_column(String(255))
+    # R4: variant linkage (NULL for legacy/canonical-scoped generations).
+    variant_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     manifest_json: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -218,6 +226,8 @@ class RenderManifestRow(Base):
     scene_revision_id: Mapped[str] = mapped_column(String(36), index=True)
     design_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     camera_id: Mapped[str] = mapped_column(String(255))
+    # R4: variant linkage (NULL for legacy/canonical-scoped renders).
+    variant_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     manifest_json: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -302,6 +312,75 @@ class ValidationReportRow(Base):
     config_hash: Mapped[str] = mapped_column(String(64), index=True)
     report_hash: Mapped[str] = mapped_column(String(64), index=True)
     report_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SceneVariantRow(Base):
+    """R4 scene variant: an isolated design branch over immutable revisions.
+
+    Lineage is the variant head plus the parent-chain walk over
+    ``scene_revisions`` (revisions stay immutable and shared with the
+    canonical scene). ``base_scene_revision_id`` is the fork point;
+    ``head_scene_revision_id`` is the variant's current tip. Variant-scoped
+    appends create sibling revisions under the old unique-lock schema's
+    successor: the expected-head optimistic guard lives in
+    ``services.variants`` (migration 0015 dropped the DB-level UNIQUE).
+    """
+
+    __tablename__ = "scene_variants"
+    __table_args__ = (
+        Index("ix_scene_variants_project_status", "project_id", "status"),
+        Index("ix_scene_variants_project_head", "project_id", "head_scene_revision_id"),
+        Index("ix_scene_variants_project_base", "project_id", "base_scene_revision_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    base_scene_revision_id: Mapped[str] = mapped_column(String(36))
+    head_scene_revision_id: Mapped[str] = mapped_column(String(36))
+    # draft | shortlisted | approved | archived (state machine in services.variants).
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class BudgetItemRow(Base):
+    """R4 budget line bound to one variant at creation time.
+
+    ``scene_revision_id`` records the variant-head revision the item was
+    created against (explicit binding, never re-resolved to "latest").
+    ``variant_id`` is a plain string reference (no FK) so variant deletion
+    stays a row-only operation; ``product_candidate_id`` is a real FK, so the
+    project cascade must remove budget items BEFORE product candidates.
+    """
+
+    __tablename__ = "budget_items"
+    __table_args__ = (
+        Index("ix_budget_items_project_variant", "project_id", "variant_id"),
+        Index("ix_budget_items_variant_revision", "variant_id", "scene_revision_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    variant_id: Mapped[str] = mapped_column(String(36), index=True)
+    scene_revision_id: Mapped[str] = mapped_column(String(36))
+    # candidate | lighting | manual | material (validated in services.budget).
+    kind: Mapped[str] = mapped_column(String(20))
+    product_candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("product_candidates.id"), nullable=True
+    )
+    label: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # Required when amount is present (service-validated; default RUB).
+    currency: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Takeoff parameters for material items: coverage_unit (m2|linear_m|each),
+    # waste_factor, package_size, unit_price, target_id.
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from stroy.db.models import (
     AssetRow,
     AttachmentRow,
+    BudgetItemRow,
     DesignCommandRow,
     GenerationManifestRow,
     GeometryDiagnosticRow,
@@ -15,6 +16,7 @@ from stroy.db.models import (
     ProjectRow,
     RenderManifestRow,
     SceneRevisionRow,
+    SceneVariantRow,
     StyleProfileRow,
     ValidationReportRow,
 )
@@ -44,6 +46,11 @@ class ProjectHasActiveJobsError(ValueError):
 #   product_candidates.source_asset_id            -> assets.id
 #   product_candidates.preview_asset_id           -> assets.id
 #   validation_reports.scene_revision_id          -> scene_revisions.id
+#   budget_items.product_candidate_id             -> product_candidates.id
+#   budget_items.variant_id                       -> scene_variants.id (string)
+#   budget_items.scene_revision_id                -> scene_revisions.id (string)
+#   scene_variants.project_id                     -> projects.id
+#   scene_variants.base/head_scene_revision_id    -> scene_revisions.id (string)
 #   assets.source_asset_id / duplicate_of_asset_id -> assets.id (self)
 #   scene_revisions.parent_revision_id            -> scene_revisions.id (self)
 _CHILD_TABLES = (
@@ -54,11 +61,18 @@ _CHILD_TABLES = (
     RenderManifestRow,
     GeometryDiagnosticRow,
     AttachmentRow,
+    # Budget items carry a real FK to product_candidates, so they must be
+    # removed BEFORE the candidates they reference (R4).
+    BudgetItemRow,
     # Candidates carry real FKs to assets (source_asset_id / preview_asset_id),
     # so they must be removed BEFORE the assets they reference.
     ProductCandidateRow,
     AssetRow,
     ValidationReportRow,
+    # Variants reference revisions via string columns only, but stay ahead of
+    # scene_revisions to keep the cascade order correct if they are ever
+    # promoted to real FKs (R4).
+    SceneVariantRow,
     SceneRevisionRow,
     JobRow,
 )
