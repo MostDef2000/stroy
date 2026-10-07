@@ -8,6 +8,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class EntityState(StrEnum):
+    ASIS = "asis"
+    STRUCTURE = "structure"
+    DESIGN = "design"
+
+
 class EntityKind(StrEnum):
     ROOM = "room"
     WALL = "wall"
@@ -50,6 +56,11 @@ class Transform(BaseModel):
 class SceneEntity(BaseModel):
     id: str = Field(min_length=1)
     kind: EntityKind
+    # R1 state layers: asis (measured reality), structure (construction shell),
+    # design (finish/furnishing). Entities default to asis; plan-built
+    # construction entities are tagged structure at build time and objects
+    # added via add_object default to design (compat with old clients).
+    state: EntityState = EntityState.ASIS
     room_id: str | None = None
     display_name: str | None = None
     transform: Transform = Field(default_factory=Transform)
@@ -124,6 +135,7 @@ class Scene(BaseModel):
 class CommandOperation(StrEnum):
     SET_MATERIAL = "set_material"
     SET_COLOR = "set_color"
+    SET_STATE = "set_state"
     ADD_OBJECT = "add_object"
     REMOVE_OBJECT = "remove_object"
     REPLACE_OBJECT_FROM_REFERENCE = "replace_object_from_reference"

@@ -41,6 +41,7 @@ def test_tool_surface_contains_initial_contract() -> None:
         "list_materials",
         "set_material",
         "set_color",
+        "set_state",
         "add_object",
         "remove_object",
         "replace_object_from_reference",
