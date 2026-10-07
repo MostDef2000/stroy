@@ -7,6 +7,7 @@ import {
   type AttachmentTargetType
 } from "./attachments";
 import { deleteOutcomeFromStatus, type ProjectDeleteOutcome } from "./projectDelete";
+import type { ProductPatch } from "./productImport";
 
 // Re-exported so UI code can keep importing attachment types from api.ts.
 export type {
@@ -393,6 +394,45 @@ export type PlanCommitResponse = {
   content_hash: string;
 };
 
+// R3 product import: a product candidate extracted from a product URL (or
+// created manually from a reference image) that the design page reviews and
+// places into the scene. provenance is server-derived: "extracted" for URL
+// import, "manual" for image-created candidates, "mixed" once a manually
+// patched candidate has extracted fields too.
+export type ProductProvenance = "extracted" | "manual" | "mixed";
+
+export type ProductCandidate = {
+  id: string;
+  project_id: string;
+  source_url?: string | null;
+  source_asset_id?: string | null;
+  title?: string | null;
+  brand?: string | null;
+  model?: string | null;
+  price?: number | null;
+  currency?: string | null;
+  width_mm?: number | null;
+  depth_mm?: number | null;
+  height_mm?: number | null;
+  material_descriptors?: string[] | null;
+  color_descriptors?: string[] | null;
+  provenance: ProductProvenance;
+  extraction_confidence?: number | null;
+  preview_asset_id?: string | null;
+  three_d_ref?: string | null;
+  // Wire name is "metadata" (candidate_view emits row.metadata_json under
+  // that key, always present).
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImportUrlResponse = {
+  candidate: ProductCandidate;
+  missing_fields: string[];
+  extraction: { status: string; confidence?: number | null };
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
 
@@ -693,6 +733,54 @@ export const api = {
     return request<void>(`/api/v1/projects/${projectId}/attachments/${attachmentId}`, {
       method: "DELETE"
     });
+  },
+
+  // R3 product import: candidate CRUD + URL extraction, same project-scoped
+  // conventions as the other project child resources. URL-guard rejections
+  // (private addresses, timeouts, …) surface as 422 {code:"url_rejected",
+  // reason} — DesignPage maps them to friendly text via
+  // productImport.rejectReasonLabel.
+  importProductUrl(projectId: string, url: string) {
+    return request<ImportUrlResponse>(
+      `/api/v1/projects/${projectId}/products/import-url`,
+      { method: "POST", body: JSON.stringify({ url }) }
+    );
+  },
+
+  createProduct(
+    projectId: string,
+    payload: ProductPatch & { source_url?: string; source_asset_id?: string }
+  ) {
+    return request<ProductCandidate>(`/api/v1/projects/${projectId}/products`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+
+  patchProduct(projectId: string, candidateId: string, patch: ProductPatch) {
+    return request<ProductCandidate>(
+      `/api/v1/projects/${projectId}/products/${candidateId}`,
+      { method: "PATCH", body: JSON.stringify(patch) }
+    );
+  },
+
+  deleteProduct(projectId: string, candidateId: string) {
+    return request<void>(`/api/v1/projects/${projectId}/products/${candidateId}`, {
+      method: "DELETE"
+    });
+  },
+
+  // Opaque pass-through query filters (server-defined); empty values are
+  // dropped like listAttachments does for its typed filters.
+  listProducts(projectId: string, filters: Record<string, string> = {}) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) params.set(key, value);
+    }
+    const query = params.toString();
+    return request<ProductCandidate[]>(
+      `/api/v1/projects/${projectId}/products${query ? `?${query}` : ""}`
+    );
   },
 
   applySceneCommand(projectId: string, command: Record<string, unknown>) {
