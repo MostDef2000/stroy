@@ -106,6 +106,16 @@ class RenderPreviewArgs(ToolArgs):
     camera_id: str | None = None
 
 
+class ListProductCandidatesArgs(ToolArgs):
+    # Read-only product-candidate listing; "url" matches extracted and mixed
+    # provenance alike.
+    source: Literal["manual", "url"] | None = None
+
+
+class GetProductCandidateArgs(ToolArgs):
+    candidate_id: str = Field(min_length=1)
+
+
 _TOOL_SPECS: list[tuple[str, str, type[ToolArgs]]] = [
     ("get_scene", "Read the current project-scoped canonical scene.", GetSceneArgs),
     ("get_room", "Read one room and its project-scoped entities.", GetRoomArgs),
@@ -155,6 +165,16 @@ _TOOL_SPECS: list[tuple[str, str, type[ToolArgs]]] = [
         "Request a deterministic preview render of the current scene revision.",
         RenderPreviewArgs,
     ),
+    (
+        "list_product_candidates",
+        "List product candidates collected for the project (imported or manual).",
+        ListProductCandidatesArgs,
+    ),
+    (
+        "get_product_candidate",
+        "Read one product candidate by ID (facts, dimensions, provenance).",
+        GetProductCandidateArgs,
+    ),
 ]
 
 TOOL_ARGUMENT_MODELS = {name: model for name, _, model in _TOOL_SPECS}
@@ -170,7 +190,17 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     for name, description, model in _TOOL_SPECS
 ]
 
-READ_TOOL_NAMES = {"get_scene", "get_room", "get_entity", "list_materials", "get_design_check"}
+# Read-only tools. Product-candidate tools need the database (project-scoped
+# rows) and are dispatched by services.agent, like get_design_check.
+READ_TOOL_NAMES = {
+    "get_scene",
+    "get_room",
+    "get_entity",
+    "list_materials",
+    "get_design_check",
+    "list_product_candidates",
+    "get_product_candidate",
+}
 MUTATION_TOOL_NAMES = {
     "set_material",
     "set_color",
@@ -219,9 +249,9 @@ def execute_read_tool(scene: Scene, call: dict[str, Any]) -> dict[str, Any]:
             context={"tool_name": name},
         )
 
-    if name == "get_design_check":
-        # Service-executed read: it needs the database (persisted report or
-        # compute) and is dispatched by services.agent, not scene-only here.
+    if name in {"get_design_check", "list_product_candidates", "get_product_candidate"}:
+        # Service-executed reads: they need the database (persisted reports /
+        # candidates) and are dispatched by services.agent, not scene-only here.
         raise AgentToolError(
             "invalid_tool_mode",
             f"tool requires service execution: {name}",

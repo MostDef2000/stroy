@@ -6,6 +6,7 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from stroy.agent import (
+    AgentToolError,
     CONTROL_TOOL_NAMES,
     MUTATION_TOOL_NAMES,
     READ_TOOL_NAMES,
@@ -19,6 +20,7 @@ from stroy.domain.models import Scene
 from stroy.services.dispatch import JobDispatcher
 from stroy.services.generations import queue_design_generation
 from stroy.services.jobs import create_job
+from stroy.services.products import candidate_view, get_candidate, list_candidates
 from stroy.services.scenes import apply_scene_command, latest_revision
 from stroy.services.validation import execute_design_check_tool
 
@@ -79,6 +81,37 @@ async def apply_design_agent_result(
                             scene_revision_id=parsed.scene_revision_id,  # type: ignore[attr-defined]
                             min_walkway_mm=parsed.min_walkway_mm,  # type: ignore[attr-defined]
                         ),
+                    }
+                )
+                continue
+            if name == "list_product_candidates":
+                rows = await list_candidates(
+                    session,
+                    job.project_id,
+                    source=parsed.source,  # type: ignore[attr-defined]
+                )
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": {"candidates": [candidate_view(row) for row in rows]},
+                    }
+                )
+                continue
+            if name == "get_product_candidate":
+                candidate_id = parsed.candidate_id  # type: ignore[attr-defined]
+                row = await get_candidate(session, job.project_id, candidate_id)
+                if row is None:
+                    raise AgentToolError(
+                        "unknown_entity",
+                        f"unknown product candidate: {candidate_id}",
+                        context={"candidate_id": candidate_id},
+                    )
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": {"candidate": candidate_view(row)},
                     }
                 )
                 continue

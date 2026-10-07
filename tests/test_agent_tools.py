@@ -50,6 +50,9 @@ def test_tool_surface_contains_initial_contract() -> None:
         "set_light_intent",
         "create_design_revision",
         "render_preview",
+        # R3: read-only product-candidate introspection.
+        "list_product_candidates",
+        "get_product_candidate",
     }
     for item in TOOL_DEFINITIONS:
         assert item["function"]["parameters"]["additionalProperties"] is False
@@ -130,6 +133,43 @@ def test_design_check_cannot_run_scene_only_or_as_mutation() -> None:
             {"name": "get_design_check", "arguments": {}},
             base_revision_id="revision-1",
         )
+
+
+def test_product_candidate_tools_are_read_only_service_executed() -> None:
+    from stroy.agent import READ_TOOL_NAMES
+
+    # R3: read-only product introspection; never agent mutations.
+    assert {"list_product_candidates", "get_product_candidate"} <= READ_TOOL_NAMES
+    with pytest.raises(ValueError, match="service execution"):
+        execute_read_tool(
+            sample_scene(),
+            {"name": "list_product_candidates", "arguments": {}},
+        )
+    with pytest.raises(ValueError, match="service execution"):
+        execute_read_tool(
+            sample_scene(),
+            {
+                "name": "get_product_candidate",
+                "arguments": {"candidate_id": "candidate-1"},
+            },
+        )
+    with pytest.raises(ValueError, match="does not map"):
+        tool_call_to_command(
+            {"name": "list_product_candidates", "arguments": {}},
+            base_revision_id="revision-1",
+        )
+    # Typed args: source filter validates, bogus values rejected.
+    name, parsed = validate_tool_call(
+        {"name": "list_product_candidates", "arguments": {"source": "manual"}}
+    )
+    assert name == "list_product_candidates"
+    assert parsed.source == "manual"  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="invalid arguments"):
+        validate_tool_call(
+            {"name": "list_product_candidates", "arguments": {"source": "bogus"}}
+        )
+    with pytest.raises(ValueError, match="invalid arguments"):
+        validate_tool_call({"name": "get_product_candidate", "arguments": {}})
 
 
 def test_agent_tool_becomes_typed_command() -> None:

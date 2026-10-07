@@ -21,7 +21,32 @@ from stroy.api.dependencies import (
     require_owner,
     require_worker,
 )
-from stroy.db.models import AssetRow, AttachmentRow, AuthSessionRow, GenerationManifestRow, GeometryDiagnosticRow, JobRow, ProjectRow, RenderManifestRow, SceneRevisionRow, StyleProfileRow, WorkerRow
+from stroy.db.models import (
+    AssetRow,
+    AttachmentRow,
+    AuthSessionRow,
+    GenerationManifestRow,
+    GeometryDiagnosticRow,
+    JobRow,
+    ProjectRow,
+    RenderManifestRow,
+    SceneRevisionRow,
+    StyleProfileRow,
+    WorkerRow,
+)
+from stroy.adapters.products.generic import GenericHtmlExtractor
+from stroy.net.guard import GuardError
+from stroy.services.products import (
+    candidate_view,
+    create_candidate,
+    create_from_url,
+    delete_candidate,
+    extraction_status,
+    get_candidate,
+    list_candidates,
+    missing_candidate_fields,
+    patch_candidate,
+)
 from stroy.domain.commands import CommandConflict, CommandRejected
 from stroy.domain.models import Camera, DesignCommand, EntityIntent, Scene, SceneEntity
 from stroy.domain.plan import PlanDraft
@@ -345,6 +370,39 @@ class AttachmentPatch(BaseModel):
     done: bool | None = None
     due_date: date | None = None
     metadata: dict[str, Any] | None = None
+
+
+class ProductImportUrlRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class ProductCandidateCreate(BaseModel):
+    source_asset_id: str | None = Field(default=None, min_length=1)
+    title: str | None = Field(default=None, max_length=300)
+    brand: str | None = Field(default=None, max_length=160)
+    model: str | None = Field(default=None, max_length=160)
+    # Numeric(12,2) column scale caps the magnitude at 9_999_999_999.99.
+    price: float | None = Field(default=None, ge=0, le=9_999_999_999.99)
+    currency: str | None = Field(default=None, max_length=12)
+    width_mm: float | None = Field(default=None, gt=0)
+    depth_mm: float | None = Field(default=None, gt=0)
+    height_mm: float | None = Field(default=None, gt=0)
+    material_descriptors: list[str] | None = None
+    color_descriptors: list[str] | None = None
+    three_d_ref: str | None = Field(default=None, max_length=2000)
+
+
+class ProductCandidatePatch(BaseModel):
+    title: str | None = Field(default=None, max_length=300)
+    brand: str | None = Field(default=None, max_length=160)
+    model: str | None = Field(default=None, max_length=160)
+    price: float | None = Field(default=None, ge=0, le=9_999_999_999.99)
+    currency: str | None = Field(default=None, max_length=12)
+    width_mm: float | None = Field(default=None, gt=0)
+    depth_mm: float | None = Field(default=None, gt=0)
+    height_mm: float | None = Field(default=None, gt=0)
+    material_descriptors: list[str] | None = None
+    color_descriptors: list[str] | None = None
 
 
 class JobCreate(BaseModel):
@@ -726,7 +784,15 @@ async def asset_upload(
 ):
     if await session.get(ProjectRow, project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
-    if role not in {"apartment", "reference", "derived", "attachment"}:
+    if role not in {
+        "apartment",
+        "reference",
+        "derived",
+        "attachment",
+        # R3: previews are normally created internally by the import flow,
+        # but the upload endpoint keeps the role validation consistent.
+        "product_preview",
+    }:
         raise HTTPException(status_code=422, detail="invalid asset role")
     data, media_type = await _validated_upload(file, request)
     digest = hashlib.sha256(data).hexdigest()
@@ -969,6 +1035,171 @@ async def attachment_delete(
         raise HTTPException(status_code=404, detail="attachment not found")
     await session.delete(row)
     await session.commit()
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Product candidates (R3)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/products/import-url",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def product_import_url(
+    project_id: str,
+    payload: ProductImportUrlRequest,
+    request: Request,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    state = request.app.state
+    # Test seams: app.state.product_url_extractor / product_image_fetcher
+    # override the guard-backed defaults (product API tests).
+    extractor = getattr(state, "product_url_extractor", None) or GenericHtmlExtractor()
+    image_fetcher = getattr(state, "product_image_fetcher", None)
+    try:
+        row = await create_from_url(
+            session,
+            project_id,
+            payload.url,
+            extractor=extractor,
+            object_store=state.object_store,
+            image_fetcher=image_fetcher,
+        )
+    except GuardError as exc:
+        # SSRF/transport policy violations are client-visible 422s, never 500.
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "url_rejected", "reason": exc.reason},
+        ) from exc
+    return {
+        "candidate": candidate_view(row),
+        "missing_fields": missing_candidate_fields(row),
+        "extraction": {
+            "status": extraction_status(row.extraction_confidence),
+            "confidence": row.extraction_confidence,
+        },
+    }
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/products",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def product_create(
+    project_id: str,
+    payload: ProductCandidateCreate,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if payload.source_asset_id is not None:
+        asset = await session.get(AssetRow, payload.source_asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_product_source_asset"},
+            )
+    row = await create_candidate(
+        session,
+        project_id,
+        title=payload.title,
+        brand=payload.brand,
+        model=payload.model,
+        price=payload.price,
+        currency=payload.currency,
+        width_mm=payload.width_mm,
+        depth_mm=payload.depth_mm,
+        height_mm=payload.height_mm,
+        material_descriptors=payload.material_descriptors,
+        color_descriptors=payload.color_descriptors,
+        source_asset_id=payload.source_asset_id,
+        three_d_ref=payload.three_d_ref,
+    )
+    return candidate_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/products",
+    dependencies=[Depends(require_owner)],
+)
+async def product_list(
+    project_id: str,
+    session: DbSession,
+    source: str | None = None,
+    has_dimensions: bool | None = None,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if source is not None and source not in {"manual", "url"}:
+        raise HTTPException(status_code=422, detail="invalid source filter")
+    rows = await list_candidates(
+        session, project_id, source=source, has_dimensions=has_dimensions
+    )
+    return [candidate_view(row) for row in rows]
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/products/{candidate_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def product_get(
+    project_id: str,
+    candidate_id: str,
+    session: DbSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    row = await get_candidate(session, project_id, candidate_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="product candidate not found")
+    return candidate_view(row)
+
+
+@router.patch(
+    "/api/v1/projects/{project_id}/products/{candidate_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def product_patch(
+    project_id: str,
+    candidate_id: str,
+    payload: ProductCandidatePatch,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    row = await get_candidate(session, project_id, candidate_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="product candidate not found")
+    updated = await patch_candidate(
+        session,
+        project_id,
+        candidate_id,
+        payload.model_dump(exclude_unset=True),
+    )
+    return candidate_view(updated)
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}/products/{candidate_id}",
+    status_code=204,
+    dependencies=[Depends(require_csrf)],
+)
+async def product_delete(
+    project_id: str,
+    candidate_id: str,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    deleted = await delete_candidate(session, project_id, candidate_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="product candidate not found")
     return Response(status_code=204)
 
 

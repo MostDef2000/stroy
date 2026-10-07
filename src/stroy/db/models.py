@@ -8,9 +8,11 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -83,6 +85,55 @@ class AssetRow(Base):
     source_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
     duplicate_of_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProductCandidateRow(Base):
+    """R3 product candidate: a furniture item being imported into the project.
+
+    Provenance tracks the edit history of the facts:
+    ``extracted`` (URL import, unedited), ``manual`` (hand-entered), ``mixed``
+    (extracted facts later edited by the owner).
+    """
+
+    __tablename__ = "product_candidates"
+    __table_args__ = (
+        # Composite lookup: newest-first candidate listing per project.
+        Index("ix_product_candidates_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    # Origin URL of an extraction (NULL for fully manual candidates).
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Manual candidates may be seeded from an uploaded asset (e.g. a photo of
+    # the product); real FK so project cascade must remove candidates first.
+    source_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id"), nullable=True, index=True
+    )
+    # Extracted/user-entered facts; all nullable (partial imports persist).
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    width_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    depth_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    height_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    material_descriptors: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color_descriptors: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance: Mapped[str] = mapped_column(String(20), default="manual")
+    extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Preview image downloaded by the import pipeline into the asset store.
+    preview_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id"), nullable=True, index=True
+    )
+    # Opaque vendor/product reference for a future 3D model lookup (v1: passthrough).
+    three_d_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class AttachmentRow(Base):
