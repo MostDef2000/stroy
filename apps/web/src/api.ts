@@ -127,6 +127,12 @@ export type RenderRecord = {
   camera_id: string;
   created_at: string;
   manifest: RenderManifest;
+  /**
+   * R4: variant the render belongs to (server-derived wire key `variant_id`).
+   * Absent/null = legacy render shown in the canonical Results section as
+   * before.
+   */
+  variant_id?: string | null;
 };
 
 export type CreateRenderInput = {
@@ -431,6 +437,200 @@ export type ImportUrlResponse = {
   candidate: ProductCandidate;
   missing_fields: string[];
   extraction: { status: string; confidence?: number | null };
+};
+
+// R4 scene variants: one approved variant per project (the server auto-demotes
+// a previously approved variant when another one is approved — there is no
+// replace flag). The canonical /scene stays separate: a variant detail NEVER
+// redirects the canonical scene head.
+export type SceneVariantStatus = "draft" | "shortlisted" | "approved" | "archived";
+
+export type SceneVariant = {
+  id: string;
+  project_id: string;
+  title: string;
+  /** Canonical scene revision the variant forked from. */
+  base_scene_revision_id: string;
+  /** Variant-local head; commands and validation target this revision. */
+  head_scene_revision_id: string;
+  status: SceneVariantStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SceneVariantPatch = {
+  title?: string;
+  status?: SceneVariantStatus;
+};
+
+export type VariantListFilters = {
+  status?: SceneVariantStatus;
+  /** Archived variants are hidden by default (owner decision, R4). */
+  include_archived?: boolean;
+};
+
+export type VariantForkInput = {
+  title?: string;
+  /** Fork from an earlier revision of the same variant; default = head. */
+  from_revision_id?: string;
+};
+
+export type VariantRestoreInput = {
+  target_revision_id: string;
+  expected_head_revision_id: string;
+};
+
+/** Variant reference inside a comparison payload (variants/compare). */
+export type VariantRef = {
+  variant_id: string;
+  title: string;
+  status: SceneVariantStatus;
+  base_scene_revision_id: string;
+  head_scene_revision_id: string;
+};
+
+/** One modified entity in a diff: entity id + changed leaf paths (sorted). */
+export type VariantEntityChange = { id: string; changes: string[] };
+
+/** One warning-level check diff entry (rule + affected entities). */
+export type VariantWarningRef = { rule_id: string; entity_ids: string[] };
+
+/** Totals block of a budget report (backend rounds to 2 decimals). */
+export type BudgetTotals = {
+  known: number;
+  contingency: number;
+  grand_total: number;
+};
+
+/** Compact budget summary attached to each side of a comparison. */
+export type BudgetSummary = {
+  totals: BudgetTotals;
+  incomplete: boolean;
+  unknowns: string[];
+  currency: string | null;
+};
+
+/** One variant-linked render inside a comparison (image via manifest passes). */
+export type VariantRenderRef = {
+  id: string;
+  job_id: string;
+  scene_revision_id: string;
+  camera_id: string;
+  created_at: string;
+};
+
+/** Structured diff between two variant heads (left → right). budget.delta is
+ * null whenever either side's report is incomplete (incomparable). */
+export type VariantDiff = {
+  left: VariantRef;
+  right: VariantRef;
+  entities: {
+    /** Entity ids. */
+    added: string[];
+    removed: string[];
+    modified: VariantEntityChange[];
+  };
+  materials: {
+    /** Material refs. */
+    added: string[];
+    removed: string[];
+  };
+  validation: {
+    added: VariantWarningRef[];
+    resolved: VariantWarningRef[];
+  };
+  budget: {
+    left: BudgetSummary;
+    right: BudgetSummary;
+    delta: BudgetTotals | null;
+  };
+  renders: { left: VariantRenderRef[]; right: VariantRenderRef[] };
+};
+
+// R4 budget: items are variant-scoped on the wire (variant_id; the R4 routes
+// only serve variant-scoped budget collections). New items default to RUB
+// (owner decision) — the default lives in sceneVariants.DEFAULT_BUDGET_CURRENCY.
+// amount/currency/quantity are nullable: an incomplete item has no price facts
+// yet and surfaces through the report's unknowns instead of zero-coercing.
+export type BudgetItem = {
+  id: string;
+  project_id: string;
+  variant_id: string | null;
+  scene_revision_id: string | null;
+  kind: string;
+  product_candidate_id: string | null;
+  label: string;
+  amount: number | null;
+  currency: string | null;
+  quantity: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type BudgetItemPostBody = {
+  kind: string;
+  label: string;
+  amount?: number;
+  currency?: string;
+  quantity?: number;
+  product_candidate_id?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type BudgetItemPatch = Partial<
+  Pick<BudgetItemPostBody, "label" | "amount" | "currency" | "quantity" | "metadata">
+>;
+
+/** One priced item inside a budget report (derived view, not the raw item). */
+export type PricedBudgetItem = {
+  id: string;
+  kind: string;
+  label: string;
+  product_candidate_id: string | null;
+  scene_revision_id: string | null;
+  amount: number | null;
+  currency: string | null;
+  quantity: number | null;
+  effective_amount: number | null;
+  effective_currency: string | null;
+  effective_quantity: number | null;
+  contribution: number | null;
+  takeoff: Record<string, unknown> | null;
+  unknowns: string[];
+  incomplete: boolean;
+};
+
+export type BudgetReport = {
+  variant_id: string;
+  scene_revision_id: string;
+  totals: BudgetTotals;
+  currency: string | null;
+  currencies: string[];
+  incomplete: boolean;
+  /** Backend fact codes for missing data (missing_price, mixed_currency, …). */
+  unknowns: string[];
+  items: PricedBudgetItem[];
+};
+
+/** Response of POST /variants/{id}/revisions:restore — the new variant head
+ * revision. The refreshed variant itself is refetched by the caller. */
+export type VariantRestoreResponse = {
+  revision_id: string;
+  parent_revision_id: string | null;
+  content_hash: string;
+  scene: SceneDocument;
+};
+
+/** Response of a variant-scoped command: the new variant revision. The wire
+ * carries `variant_head_scene_revision_id` (no variant object) — callers
+ * refetch the variant to observe the moved head. */
+export type VariantCommandResponse = {
+  revision_id: string;
+  parent_revision_id: string | null;
+  content_hash: string;
+  scene: SceneDocument;
+  variant_head_scene_revision_id: string;
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -780,6 +980,140 @@ export const api = {
     const query = params.toString();
     return request<ProductCandidate[]>(
       `/api/v1/projects/${projectId}/products${query ? `?${query}` : ""}`
+    );
+  },
+
+  // R4 scene variants + variant budget. Wire cross-checked against the
+  // backend routes (variants are project children; budget collections are
+  // variant-scoped). Writes go through request() so the CSRF header is
+  // attached exactly like every other mutating client.
+  createVariantFromCurrent(projectId: string, title: string) {
+    return request<SceneVariant>(
+      `/api/v1/projects/${projectId}/variants:create-from-current`,
+      { method: "POST", body: JSON.stringify({ title }) }
+    );
+  },
+
+  // include_archived lifts the server-side archive exclusion (owner decision:
+  // archived variants are hidden by default; the UI toggle passes it).
+  listVariants(projectId: string, filters: VariantListFilters = {}) {
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.include_archived) params.set("include_archived", "true");
+    const query = params.toString();
+    return request<SceneVariant[]>(
+      `/api/v1/projects/${projectId}/variants${query ? `?${query}` : ""}`
+    );
+  },
+
+  // Status-sensitive like scene(): a variant deleted in another tab must not
+  // crash a poll-driven refetch — 404 resolves to null.
+  async getVariant(projectId: string, variantId: string): Promise<SceneVariant | null> {
+    const response = await fetch(
+      apiPath(`/api/v1/projects/${projectId}/variants/${variantId}`),
+      { credentials: "include" }
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+    return response.json();
+  },
+
+  patchVariant(projectId: string, variantId: string, patch: SceneVariantPatch) {
+    return request<SceneVariant>(
+      `/api/v1/projects/${projectId}/variants/${variantId}`,
+      { method: "PATCH", body: JSON.stringify(patch) }
+    );
+  },
+
+  deleteVariant(projectId: string, variantId: string) {
+    // 204 resolves to undefined via request() (same as the other DELETEs).
+    return request<void>(`/api/v1/projects/${projectId}/variants/${variantId}`, {
+      method: "DELETE"
+    });
+  },
+
+  forkVariant(projectId: string, variantId: string, input: VariantForkInput = {}) {
+    return request<SceneVariant>(
+      `/api/v1/projects/${projectId}/variants/${variantId}:fork`,
+      { method: "POST", body: JSON.stringify(input) }
+    );
+  },
+
+  compareVariants(projectId: string, leftId: string, rightId: string) {
+    const params = new URLSearchParams({ left: leftId, right: rightId });
+    return request<VariantDiff>(
+      `/api/v1/projects/${projectId}/variants/compare?${params.toString()}`
+    );
+  },
+
+  restoreVariantRevision(
+    projectId: string,
+    variantId: string,
+    input: VariantRestoreInput
+  ) {
+    return request<VariantRestoreResponse>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/revisions:restore`,
+      { method: "POST", body: JSON.stringify(input) }
+    );
+  },
+
+  // Variant-scoped command application: the command is the SAME DesignCommand
+  // envelope as the canonical scene (see
+  // sceneVariants.buildVariantCommandEnvelope), plus the optimistic-lock head
+  // the caller observed. The canonical scene is never touched.
+  applyVariantCommand(
+    projectId: string,
+    variantId: string,
+    command: Record<string, unknown>,
+    expectedHeadRevisionId: string
+  ) {
+    return request<VariantCommandResponse>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/revisions`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          command,
+          expected_head_revision_id: expectedHeadRevisionId
+        })
+      }
+    );
+  },
+
+  listBudgetItems(projectId: string, variantId: string) {
+    return request<BudgetItem[]>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/budget/items`
+    );
+  },
+
+  addBudgetItem(projectId: string, variantId: string, body: BudgetItemPostBody) {
+    return request<BudgetItem>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/budget/items`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  },
+
+  patchBudgetItem(
+    projectId: string,
+    variantId: string,
+    itemId: string,
+    patch: BudgetItemPatch
+  ) {
+    return request<BudgetItem>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/budget/items/${itemId}`,
+      { method: "PATCH", body: JSON.stringify(patch) }
+    );
+  },
+
+  deleteBudgetItem(projectId: string, variantId: string, itemId: string) {
+    return request<void>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/budget/items/${itemId}`,
+      { method: "DELETE" }
+    );
+  },
+
+  getBudgetReport(projectId: string, variantId: string) {
+    return request<BudgetReport>(
+      `/api/v1/projects/${projectId}/variants/${variantId}/budget/report`
     );
   },
 
