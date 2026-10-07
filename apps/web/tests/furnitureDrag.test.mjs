@@ -14,6 +14,7 @@ import {
   buildRemoveObjectCommand,
   buildRotateZCommand,
   canDragEntity,
+  dragPrecheckAABB,
   pointerAngleRad,
   ROTATION_STEP_DEG,
   rotationFromPointerAngles,
@@ -452,4 +453,134 @@ test("buildRemoveObjectCommand returns fresh objects per call", () => {
   assert.notEqual(first.parameters, second.parameters);
   assert.notEqual(first.reference_asset_ids, second.reference_asset_ids);
   assert.deepEqual(first, second);
+});
+
+// R2 drag pre-check: client-side floor-projected AABB hint only (ghost/warn
+// styling); the authoritative checks stay server-side. Axis-aligned cases
+// only — rotation is deliberately ignored client-side.
+const room = { min_x_mm: 0, min_y_mm: 0, max_x_mm: 5000, max_y_mm: 4000 };
+const armchair = {
+  id: "object.chair.left",
+  transform: { translation_mm: [2000, 2000, 0] },
+  width_mm: 800,
+  depth_mm: 800
+};
+
+test("dragPrecheckAABB reports inside when the footprint fits the room", () => {
+  // 1000x600 box centred at (1000, 500): [500..1500] x [200..800] — inside.
+  assert.deepEqual(
+    dragPrecheckAABB(
+      { width_mm: 1000, depth_mm: 600 },
+      [1000, 500, 0],
+      room,
+      [armchair]
+    ),
+    { inside: true, collides: false }
+  );
+  // Touching a wall face exactly is still inside (closed bounds).
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 1000, depth_mm: 1000 }, [500, 500, 0], room, []),
+    { inside: true, collides: false }
+  );
+});
+
+test("dragPrecheckAABB flags a footprint crossing the room bounds", () => {
+  // Half of the box pokes through the x=0 wall (minX = -100 < 0).
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 1000, depth_mm: 600 }, [400, 500, 0], room, []),
+    { inside: false, collides: false }
+  );
+  // And through the y max edge (maxY = 4100 > 4000; a centre of 3700 would
+  // only touch the closed bound and still read as inside).
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 1000, depth_mm: 600 }, [1000, 3800, 0], room, []),
+    { inside: false, collides: false }
+  );
+});
+
+test("dragPrecheckAABB detects collisions with other footprints", () => {
+  // 800x800 dragged box centred at (2400, 2000): [2000..2800] overlaps the
+  // armchair [1600..2400] on x and [1600..2400] on y.
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 800, depth_mm: 800 }, [2400, 2000, 0], room, [
+      armchair
+    ]),
+    { inside: true, collides: true }
+  );
+});
+
+test("dragPrecheckAABB treats touching footprints as clear", () => {
+  // Boxes that only share an edge do not overlap (strict inequality).
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 800, depth_mm: 800 }, [2800, 2000, 0], room, [
+      armchair
+    ]),
+    { inside: true, collides: false }
+  );
+});
+
+test("dragPrecheckAABB ignores far and malformed others", () => {
+  const far = {
+    id: "object.far",
+    transform: { translation_mm: [4500, 3500, 0] },
+    width_mm: 500,
+    depth_mm: 500
+  };
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 800, depth_mm: 800 }, [1000, 1000, 0], room, [
+      far,
+      { id: "object.broken", transform: {}, width_mm: 800, depth_mm: 800 },
+      { id: "object.no-translation", width_mm: 800, depth_mm: 800 },
+      {
+        id: "object.degenerate",
+        transform: { translation_mm: [1000, 1000, 0] },
+        width_mm: 0,
+        depth_mm: 800
+      }
+    ]),
+    { inside: true, collides: false }
+  );
+});
+
+test("dragPrecheckAABB works without room bounds and reports both flags", () => {
+  // No room info → no outside opinion, collisions still checked.
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 800, depth_mm: 800 }, [2000, 2000, 0], null, [
+      armchair
+    ]),
+    { inside: true, collides: true }
+  );
+  // Outside the room AND colliding at once.
+  const blocker = {
+    id: "object.blocker",
+    transform: { translation_mm: [5400, 2000, 0] },
+    width_mm: 1000,
+    depth_mm: 1000
+  };
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 800, depth_mm: 800 }, [5300, 2000, 0], room, [
+      blocker
+    ]),
+    { inside: false, collides: true }
+  );
+});
+
+test("dragPrecheckAABB treats degenerate footprints as no opinion", () => {
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 0, depth_mm: 800 }, [1000, 1000, 0], room, []),
+    { inside: true, collides: false }
+  );
+  assert.deepEqual(
+    dragPrecheckAABB(
+      { width_mm: Number.NaN, depth_mm: 800 },
+      [1000, 1000, 0],
+      room,
+      []
+    ),
+    { inside: true, collides: false }
+  );
+  assert.deepEqual(
+    dragPrecheckAABB({ width_mm: 800, depth_mm: 800 }, [1000, 1000, 0], null, []),
+    { inside: true, collides: false }
+  );
 });

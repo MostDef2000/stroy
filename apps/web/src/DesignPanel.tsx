@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Generation, Job, RevisionSummary } from "./api";
+import { api, Generation, Job, RevisionSummary, ValidationReport } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
 import { statusLabel } from "./copy";
+import {
+  CHECK_SEVERITIES,
+  groupResults,
+  ruleLabel,
+  summaryLine
+} from "./sceneValidation";
+import { apiErrorText } from "./twinDesign";
 import {
   buildTimelineEntries,
   comparePairFor,
@@ -22,6 +29,167 @@ import type { SelectionDetail } from "./resultsSelection";
 
 // Selection resolved against the app's full api types (camera_id etc.).
 type ResultsSelection = SelectionDetail<Generation, RevisionSummary>;
+
+// Group titles for the full validation list (severity order fixed by
+// CHECK_SEVERITIES).
+const CHECK_GROUP_TITLES: Record<string, string> = {
+  error: "Ошибки",
+  warning: "Предупреждения",
+  info: "Замечания"
+};
+
+// R2 design check for the selected revision: the latest stored report is
+// fetched on selection (404 → «Отчёта нет» + manual compute button); when a
+// report exists the summary plus the FULL grouped list is shown (not the
+// rail's top-3 cut).
+function ValidationSection({
+  projectId,
+  revisionId
+}: {
+  projectId: string;
+  revisionId: string;
+}) {
+  const [report, setReport] = useState<ValidationReport | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(true);
+  const [computing, setComputing] = useState(false);
+  const [error, setError] = useState("");
+
+  // Refetch when the selection moves to another revision. A cancelled flag
+  // guards against out-of-order resolutions while switching entries.
+  useEffect(() => {
+    let cancelled = false;
+    setReport(null);
+    setLoaded(false);
+    setError("");
+    setBusy(true);
+    api
+      .latestValidation(projectId, revisionId)
+      .then((latest) => {
+        if (cancelled) return;
+        setReport(latest);
+        setLoaded(true);
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setError(apiErrorText(reason));
+        setLoaded(true);
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, revisionId]);
+
+  async function runCheck() {
+    if (computing) return;
+    setComputing(true);
+    setError("");
+    try {
+      setReport(
+        await api.validateScene(projectId, { scene_revision_id: revisionId })
+      );
+    } catch (reason) {
+      setError(apiErrorText(reason));
+    } finally {
+      setComputing(false);
+    }
+  }
+
+  const grouped = report ? groupResults(report.results) : null;
+
+  return (
+    <details className="design-check design-check--detail">
+      <summary>
+        <span className="design-check-title">Проверка дизайна</span>
+        {report && (
+          <span className="design-check-summary">{summaryLine(report)}</span>
+        )}
+        {report && (
+          <span className="design-check-counts">
+            {(["error", "warning", "info"] as const).map((severity) => (
+              <span
+                key={severity}
+                className={`design-check-count design-check-count--${severity}`}
+              >
+                {report.summary[severity]}
+              </span>
+            ))}
+          </span>
+        )}
+      </summary>
+      {busy && <p className="muted">Загрузка отчёта…</p>}
+      {error && <div className="error">{error}</div>}
+      {loaded && !busy && !report && !error && (
+        <div className="design-check-empty">
+          <p className="muted">Отчёта нет</p>
+          <button
+            type="button"
+            className="secondary"
+            disabled={computing}
+            onClick={() => void runCheck()}
+          >
+            {computing ? "Проверяем…" : "Запустить проверку"}
+          </button>
+        </div>
+      )}
+      {report && grouped && (
+        <div className="design-check-groups">
+          {report.results.length === 0 && (
+            <p className="muted">Проблем не найдено.</p>
+          )}
+          {CHECK_SEVERITIES.map((severity) =>
+            grouped[severity].length > 0 ? (
+              <section
+                key={severity}
+                className={`design-check-group design-check-group--${severity}`}
+              >
+                <h4>
+                  {CHECK_GROUP_TITLES[severity]} · {grouped[severity].length}
+                </h4>
+                {grouped[severity].map((result, index) => (
+                  <div
+                    key={`${result.rule_id}-${index}`}
+                    className={`design-check-item design-check-item--${result.severity}`}
+                  >
+                    <span className="design-check-rule">
+                      {ruleLabel(result.rule_id)}
+                    </span>
+                    <p className="design-check-explanation">
+                      {result.explanation}
+                    </p>
+                    {(result.measured_mm != null ||
+                      result.expected_min_mm != null) && (
+                      <span className="design-check-mm">
+                        {result.measured_mm != null
+                          ? `${result.measured_mm} мм`
+                          : "—"}
+                        {result.expected_min_mm != null
+                          ? ` · мин. ${result.expected_min_mm} мм`
+                          : ""}
+                      </span>
+                    )}
+                    {result.entity_ids.length > 0 && (
+                      <span className="design-check-ids">
+                        {result.entity_ids.map((id) => (
+                          <code key={id} className="design-check-id">
+                            {id}
+                          </code>
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </section>
+            ) : null
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
 
 function outputAsset(generation: Generation | undefined) {
   return generation?.manifest.output_asset_ids?.[0] ?? null;
@@ -50,6 +218,7 @@ const RESTORE_WARNING =
   "Возврат откатит сцену к состоянию на выбранный момент; изменения после него будут отменены.";
 
 export function DesignPanel({
+  projectId,
   revisions,
   jobs,
   generations,
@@ -58,6 +227,7 @@ export function DesignPanel({
   onRestore,
   onRerender
 }: {
+  projectId: string;
   revisions: RevisionSummary[];
   jobs: Job[];
   generations: Generation[];
@@ -425,6 +595,9 @@ export function DesignPanel({
 
         {!assetId && <p className="muted">У этого рендера нет изображения.</p>}
 
+        {/* R2: design-check report for the revision this render belongs to. */}
+        <ValidationSection projectId={projectId} revisionId={entry.designRevisionId} />
+
         <details className="rt-details">
           <summary>Детали</summary>
           <div>Рендер: {entry.id}</div>
@@ -501,6 +674,11 @@ export function DesignPanel({
         ) : (
           <p className="muted">Для этой версии нет рендеров.</p>
         )}
+        {/* R2: design-check report for the selected revision. */}
+        <ValidationSection
+          projectId={projectId}
+          revisionId={selection.revision.revision_id}
+        />
         {generation && (
           <details className="rt-details">
             <summary>Детали</summary>

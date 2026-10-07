@@ -155,6 +155,111 @@ export function translationFromFloorPoints(input: {
   ];
 }
 
+/** Floor-projected footprint of one entity, canonical millimetres. */
+export type DragPrecheckDims = {
+  width_mm: number;
+  depth_mm: number;
+};
+
+/** Room bounds for the pre-check, floor-projected, canonical millimetres. */
+export type DragPrecheckRoomBBox = {
+  min_x_mm: number;
+  min_y_mm: number;
+  max_x_mm: number;
+  max_y_mm: number;
+};
+
+/**
+ * Structural view of another entity for the collision pre-check: its current
+ * floor position plus the same footprint shape as the dragged entity.
+ */
+export type DragPrecheckOtherLike = {
+  id: string;
+  transform?: EntityTransformLike | null;
+  width_mm?: number | null;
+  depth_mm?: number | null;
+};
+
+/** Client-side placement hint (never authoritative; see dragPrecheckAABB). */
+export type DragPrecheckResult = {
+  inside: boolean;
+  collides: boolean;
+};
+
+function positiveHalf(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number / 2 : null;
+}
+
+/**
+ * R2 client-side placement hint for a drag: is the floor-projected AABB of
+ * the dragged entity (approximated as an axis-aligned box centred at the
+ * given translation) inside the room bounds and clear of the other entities'
+ * footprints? Rotation is deliberately ignored (a rotated footprint reads as
+ * slightly larger than its AABB — an acceptable false positive for a styling
+ * hint) and heights are not considered at all.
+ *
+ * This is a ghost/warn styling hint ONLY: the authoritative inside/collision
+ * decisions stay with the backend. With missing or degenerate inputs (no
+ * room bounds, non-finite or non-positive footprint sides) the helper has no
+ * opinion and reports a clean result, so a hint can never block a drag.
+ */
+export function dragPrecheckAABB(
+  dims: DragPrecheckDims,
+  translation: [number, number, number],
+  roomBbox: DragPrecheckRoomBBox | null,
+  others: readonly DragPrecheckOtherLike[]
+): DragPrecheckResult {
+  const result: DragPrecheckResult = { inside: true, collides: false };
+  const [tx, ty] = translation;
+  const halfWidth = positiveHalf(dims?.width_mm);
+  const halfDepth = positiveHalf(dims?.depth_mm);
+  if (
+    halfWidth === null ||
+    halfDepth === null ||
+    !Number.isFinite(tx) ||
+    !Number.isFinite(ty)
+  ) {
+    return result;
+  }
+
+  const minX = tx - halfWidth;
+  const maxX = tx + halfWidth;
+  const minY = ty - halfDepth;
+  const maxY = ty + halfDepth;
+
+  if (roomBbox) {
+    result.inside =
+      minX >= roomBbox.min_x_mm &&
+      maxX <= roomBbox.max_x_mm &&
+      minY >= roomBbox.min_y_mm &&
+      maxY <= roomBbox.max_y_mm;
+  }
+
+  for (const other of others) {
+    const point = other?.transform?.translation_mm;
+    const otherHalfWidth = positiveHalf(other?.width_mm);
+    const otherHalfDepth = positiveHalf(other?.depth_mm);
+    if (
+      !point ||
+      otherHalfWidth === null ||
+      otherHalfDepth === null ||
+      !Number.isFinite(point[0]) ||
+      !Number.isFinite(point[1])
+    ) {
+      continue;
+    }
+    const overlapsX = minX < point[0] + otherHalfWidth && maxX > point[0] - otherHalfWidth;
+    const overlapsY = minY < point[1] + otherHalfDepth && maxY > point[1] - otherHalfDepth;
+    if (overlapsX && overlapsY) {
+      result.collides = true;
+      break;
+    }
+  }
+
+  return result;
+}
+
 /** Angle (radians) of `point` around `anchor` in the canonical XY plane. */
 export function pointerAngleRad(
   anchor: FloorPointMm,

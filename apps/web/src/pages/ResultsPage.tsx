@@ -5,6 +5,7 @@ import { DesignPanel } from "../DesignPanel";
 // on the left (internally scrollable), the selected entry's preview, details,
 // before/after and restore/re-render actions on the right (#101 semantics).
 export function ResultsPage({
+  projectId,
   revisions,
   jobs,
   generations,
@@ -13,6 +14,7 @@ export function ResultsPage({
   onRestore,
   onRerender
 }: {
+  projectId: string;
   revisions: RevisionSummary[];
   jobs: Job[];
   generations: Generation[];
@@ -32,6 +34,7 @@ export function ResultsPage({
 
   return (
     <DesignPanel
+      projectId={projectId}
       revisions={revisions}
       jobs={jobs}
       generations={generations}
