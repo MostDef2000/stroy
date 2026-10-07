@@ -88,6 +88,7 @@ test("buildAddFurnitureCommand emits the exact add_object payload", () => {
   assert.equal(entity.id, command.target_id);
   assert.equal(entity.kind, "furniture");
   assert.equal(entity.display_name, "Sofa");
+  assert.equal(entity.state, "design");
   assert.equal(entity.room_id, "room.living");
   assert.deepEqual(entity.geometry, { dimensions_mm: [2200, 900, 800] });
   assert.deepEqual(entity.transform, {
@@ -117,6 +118,7 @@ test("buildAddFurnitureCommand omits optional room/color/material fields", () =>
   assert.equal("room_id" in entity, false);
   assert.equal("metadata" in entity, false);
   assert.equal("material_ref" in entity, false);
+  assert.equal(entity.state, "design");
   assert.deepEqual(command.reference_asset_ids, []);
   assert.equal(command.request_text, null);
 });

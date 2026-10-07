@@ -1,12 +1,23 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import type { Asset, AssetRole, Generation, Job, SceneRevision } from "../api";
+import { api, type Asset, type AssetRole, type Generation, type Job, type SceneDocument, type SceneRevision } from "../api";
+import { AttachmentSection } from "../AttachmentSection";
+import { LayerBadge } from "../LayerBadge";
 import { computeCameraReadiness } from "../cameraReadiness";
 import { CameraPanel } from "../CameraPanel";
 import { PhotoEditPanel } from "../PhotoEditPanel";
 import { ReplacementPanel } from "../ReplacementPanel";
 import { SceneViewer } from "../SceneViewer";
 import { TwinDesignPanel } from "../TwinDesignPanel";
+import {
+  buildSetStateCommand,
+  ENTITY_STATES,
+  ENTITY_STATE_LABELS,
+  entityState,
+  filterEntitiesByState,
+  type EntityState
+} from "../sceneLayers";
+import { apiErrorText, uniqueId } from "../twinDesign";
 import type { PageId } from "../nav";
 
 const KIND_LABELS: Record<string, string> = {
@@ -15,6 +26,13 @@ const KIND_LABELS: Record<string, string> = {
   wall: "Стена",
   furniture: "Мебель"
 };
+
+// The structural shell (floors/walls/rooms) always reaches SceneViewer even
+// when its layer is hidden: planOverview() frames the overview camera from
+// wall entities and the shell is the context every layer sits in.
+function isShellEntity(entity: SceneDocument["entities"][number]): boolean {
+  return entity.kind === "floor" || entity.kind === "wall" || entity.kind === "room";
+}
 
 // Design page (#154): a persistent design-tool workspace — command bar on top
 // (3D/Фото mode switch + reference/analyze actions), a dominant center surface
@@ -56,6 +74,11 @@ export function DesignPage({
   const [mode, setMode] = useState<"3d" | "photo">("3d");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
+  // R1 layers: which entity states the 3D view shows. All visible by default
+  // (byte-equal scene passes through), at least one layer stays on.
+  const [visibleStates, setVisibleStates] = useState<EntityState[]>([...ENTITY_STATES]);
+  const [stateBusy, setStateBusy] = useState(false);
+  const [stateError, setStateError] = useState("");
   const advancedRef = useRef<HTMLDetailsElement | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
 
@@ -76,6 +99,64 @@ export function DesignPage({
   ).length;
 
   const readiness = computeCameraReadiness(revision.scene.cameras);
+
+  // R1 layer filter: hide the entities of the unchecked layers before the
+  // scene reaches SceneViewer. With every layer on, the original scene object
+  // passes through unchanged. Cameras are never filtered, so the camera
+  // toolbar and the calibrated-pose overlay are unaffected by the toggles.
+  const sceneForViewer = useMemo(() => {
+    const scene = revision.scene;
+    if (visibleStates.length === ENTITY_STATES.length) return scene;
+    const shell = scene.entities.filter(isShellEntity);
+    const content = filterEntitiesByState(
+      { ...scene, entities: scene.entities.filter((entity) => !isShellEntity(entity)) },
+      visibleStates
+    );
+    return { ...scene, entities: [...shell, ...content.entities] };
+  }, [revision.scene, visibleStates]);
+
+  function toggleState(state: EntityState) {
+    setVisibleStates((current) => {
+      if (current.includes(state)) {
+        // Keep at least one layer visible so the viewer never goes blank.
+        return current.length > 1
+          ? current.filter((item) => item !== state)
+          : current;
+      }
+      return ENTITY_STATES.filter(
+        (item) => item === state || current.includes(item)
+      );
+    });
+  }
+
+  // R1 set_state: same freshness rule as the other scene-command senders —
+  // the base_revision_id must equal the current latest revision.
+  async function applyState(entityId: string, state: EntityState) {
+    if (stateBusy) return;
+    setStateBusy(true);
+    setStateError("");
+    try {
+      const fresh = await api.scene(projectId);
+      if (!fresh) {
+        setStateError("Сцена ещё не инициализирована.");
+        return;
+      }
+      await api.applySceneCommand(
+        projectId,
+        buildSetStateCommand({
+          commandId: uniqueId(),
+          baseRevisionId: fresh.revision_id,
+          targetId: entityId,
+          state
+        })
+      );
+      await onChanged();
+    } catch (reason) {
+      setStateError(apiErrorText(reason));
+    } finally {
+      setStateBusy(false);
+    }
+  }
 
   // Contextual rail (#154): the entity selected in the 3D scene, with its
   // actions one glance away instead of far below the canvas.
@@ -126,6 +207,24 @@ export function DesignPage({
               Фото
             </button>
           </div>
+          {/* R1 layer toggles: filter the entities SceneViewer renders. The
+              structural shell (floors/walls/rooms) always stays visible. */}
+          <div className="mode-switch" role="group" aria-label="Слои сцены">
+            {ENTITY_STATES.map((state) => {
+              const active = visibleStates.includes(state);
+              return (
+                <button
+                  key={state}
+                  type="button"
+                  className={active ? "active" : ""}
+                  aria-pressed={active}
+                  onClick={() => toggleState(state)}
+                >
+                  {ENTITY_STATE_LABELS[state]}
+                </button>
+              );
+            })}
+          </div>
           <label className="upload">
             Загрузить референс
             <input
@@ -156,7 +255,7 @@ export function DesignPage({
           {mode === "3d" && (
             <section className="canvas-panel" ref={canvasRef}>
               <SceneViewer
-                scene={revision.scene}
+                scene={sceneForViewer}
                 projectId={projectId}
                 onChanged={onChanged}
                 selectedId={selectedEntityId}
@@ -206,7 +305,29 @@ export function DesignPage({
                   <p className="design-selected-name">
                     {selectedEntity.display_name ?? selectedEntity.id}
                   </p>
-                  <p className="hint">{KIND_LABELS[selectedEntity.kind] ?? selectedEntity.kind}</p>
+                  <p className="hint">
+                    <LayerBadge state={entityState(selectedEntity)} />{" "}
+                    {KIND_LABELS[selectedEntity.kind] ?? selectedEntity.kind}
+                  </p>
+                  {/* R1: move the selected object between the as-is /
+                      structure / design layers via the set_state command. */}
+                  <label className="design-state-select">
+                    Слой
+                    <select
+                      value={entityState(selectedEntity)}
+                      disabled={stateBusy}
+                      onChange={(event) =>
+                        void applyState(selectedEntity.id, event.target.value as EntityState)
+                      }
+                    >
+                      {ENTITY_STATES.map((state) => (
+                        <option key={state} value={state}>
+                          {ENTITY_STATE_LABELS[state]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {stateError && <div className="error">{stateError}</div>}
                   <div className="design-selected-actions">
                     <button
                       type="button"
@@ -226,6 +347,13 @@ export function DesignPage({
                       Снять выделение
                     </button>
                   </div>
+                  {/* R1: attachments pinned to the selected entity. */}
+                  <AttachmentSection
+                    projectId={projectId}
+                    targetType="entity"
+                    targetId={selectedEntity.id}
+                    scene={revision.scene}
+                  />
                   <p className="hint">Перетащите объект в сцене, чтобы разместить.</p>
                 </section>
               ) : (

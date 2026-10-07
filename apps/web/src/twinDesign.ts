@@ -263,6 +263,8 @@ export function uniqueId(): string {
  * Build the authoritative `add_object` DesignCommand payload. The backend
  * requires `target_id === parameters.entity.id` and validates the entity
  * against the SceneEntity schema, so only schema-known fields are emitted.
+ * User/agent additions land on the design layer (R1 contract), so the created
+ * entity always carries `state: "design"`.
  */
 export function buildAddFurnitureCommand(
   input: AddFurnitureInput
@@ -271,6 +273,7 @@ export function buildAddFurnitureCommand(
     id: input.entityId,
     kind: "furniture",
     display_name: input.label,
+    state: "design",
     transform: {
       translation_mm: input.positionMm,
       rotation_deg: [0, 0, input.rotationZdeg],
