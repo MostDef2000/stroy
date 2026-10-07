@@ -3248,3 +3248,203 @@ textarea.invalid {
     grid-template-columns: 1fr;
   }
 }
+
+/* ===== Design canvas + contextual workspace (#154) =====
+   Design becomes a persistent design-tool workspace, mirroring the #153
+   split conventions: command bar on top (3D/Фото switch + reference/analyze
+   actions), a dominant center surface SHARED by both modes (SceneViewer in
+   3D, the photo stage in Фото — same grid region, stable spatial model), a
+   contextual right rail (320-380px), the collapsed advanced strip and the
+   persistent bottom AI composer. The PhotoEditPanel keeps its mount-across-
+   modes contract (design-pane + pane-hidden); its internal grid only
+   re-houses the stage into the center region and the controls into the rail
+   region — the img/overlay pointer surface itself is untouched. Advanced
+   stays a full-width strip (CameraPanel's calibration wizard and
+   TwinDesignPanel's render list need more than 380px) so its panels never
+   remount when the mode flips. Narrow screens collapse to one column at
+   1100px, matching #152/#153. */
+
+.design-workspace {
+  display: grid;
+  gap: var(--st-space-3);
+}
+
+/* Command bar: mode switch left, analyze actions pushed to the right edge. */
+.design-command-bar .style-analyze-group {
+  margin-left: auto;
+}
+
+/* Main row: shared center surface + contextual rail. */
+.design-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 380px);
+  gap: var(--st-space-3);
+  align-items: start;
+}
+
+.design-main .canvas-panel {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.design-rail {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  display: grid;
+  gap: var(--st-space-3);
+  align-content: start;
+}
+
+.design-rail .camera-readiness {
+  margin: 0;
+}
+
+/* Contextual selected-entity card (#154): the actions for the object picked
+   in the 3D scene, one glance away instead of far below the canvas. */
+.design-selected {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius-lg);
+  background: var(--st-color-surface);
+}
+
+.design-selected h3 {
+  margin: 0;
+  font-size: var(--st-text-xs);
+  font-weight: var(--st-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--st-color-text-secondary);
+}
+
+.design-selected-name {
+  margin: 0;
+  font-weight: var(--st-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.design-selected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.design-selected .hint {
+  margin: 0;
+}
+
+/* Photo mode: the pane spans the whole main row; its internal grid reuses the
+   design-main column template so the stage lands exactly in the center-surface
+   region and the controls in the rail region. Panel chrome is dropped so the
+   stage reads as the surface, same as .canvas-panel in 3D. */
+.design-pane {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.design-pane .photo-edit-panel {
+  padding: 0;
+  border: none;
+  background: transparent;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 380px);
+  align-items: stretch;
+}
+
+.design-pane .pe-stage-zone {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  display: grid;
+}
+
+.design-pane .pe-controls-zone {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.design-pane .pe-stage {
+  border-radius: 16px;
+}
+
+.design-pane .pe-heading {
+  flex-wrap: wrap;
+}
+
+.design-pane .pe-heading select {
+  max-width: 100%;
+}
+
+/* Persistent composer (#154): always the last workspace row, kept reachable
+   (sticky) even when the advanced strip is expanded. */
+.design-composer {
+  position: sticky;
+  bottom: var(--st-space-3);
+  z-index: 4;
+}
+
+.design-composer::before {
+  content: "✦";
+  align-self: center;
+  color: var(--st-color-accent);
+  font-size: 16px;
+}
+
+@media (min-width: 1101px) {
+  /* Desktop: the center surface dominates (same floor as .canvas-panel) and
+     the rail follows the #153 scroll-capping intent. */
+  .design-pane .pe-stage {
+    min-height: max(560px, 55vh);
+  }
+
+  .design-rail {
+    max-height: min(72vh, 780px);
+    overflow-y: auto;
+  }
+
+  /* Photo controls live in the rail region in photo mode — same scroll cap
+     as the 3D rail and the #153 inspector. */
+  .design-pane .pe-controls-zone {
+    max-height: min(72vh, 780px);
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  /* Narrow screens: one column — surface on top, rail/controls below,
+     advanced strip, composer last (DOM order). Explicit desktop placements
+     are reset so nothing overlaps. */
+  .design-main {
+    grid-template-columns: 1fr;
+  }
+
+  .design-main .canvas-panel,
+  .design-rail,
+  .design-pane {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .design-rail {
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .design-pane .photo-edit-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .design-pane .pe-stage-zone,
+  .design-pane .pe-controls-zone {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}

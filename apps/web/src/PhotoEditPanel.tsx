@@ -241,33 +241,14 @@ export function PhotoEditPanel({
     </>
   );
 
+  // #154 workspace layout: the article splits into a stage zone (the shared
+  // center photo surface, same region as the 3D canvas) and a controls zone
+  // (the contextual rail region). Pure re-housing — the stage's img/overlay
+  // and its pointer handlers are untouched, and all state lives on as before.
   return (
-    <article className="panel photo-edit-panel">
-      <div className="panel-heading pe-heading">
-        <h2>Редактор фото</h2>
-        <select aria-label="Рабочее фото" value={resolvedPhotoId} onChange={(event) => setPhotoId(event.target.value)}>
-          {imageAssets.photos.length === 0 && <option value="">Фотографий пока нет</option>}
-          {resolvedPhotoId && !imageAssets.photos.some((asset) => asset.id === resolvedPhotoId) && (
-            <option value={resolvedPhotoId}>текущее фото</option>
-          )}
-          {imageAssets.photos.map((asset) => (
-            <option key={asset.id} value={asset.id}>{asset.original_name ?? asset.id.slice(0, 8)}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="pe-upload-row">
-        <label className="upload">
-          Загрузить фото
-          <input type="file" accept="image/*" onChange={(event) => void handlePhoto(event.target.files?.[0] ?? null)} />
-        </label>
-        {photoProgress !== null && <span className="muted">Загрузка фото… {photoProgress}%</span>}
-      </div>
-
-      {!resolvedPhotoId && <p className="muted">Загрузите фото комнаты, чтобы начать редактирование.</p>}
-
-      {resolvedPhotoId && (
-        <>
+    <article className="panel photo-edit-panel pe-workspace">
+      <div className="pe-stage-zone">
+        {resolvedPhotoId && (
           <div className="pe-stage">
             <div className="pe-image-wrap">
               <img ref={imgRef} src={api.assetUrl(resolvedPhotoId)} alt="Рабочее фото" draggable={false} />
@@ -282,7 +263,34 @@ export function PhotoEditPanel({
               </div>
             </div>
           </div>
+        )}
+      </div>
 
+      <div className="pe-controls-zone">
+        <div className="panel-heading pe-heading">
+          <h2>Редактор фото</h2>
+          <select aria-label="Рабочее фото" value={resolvedPhotoId} onChange={(event) => setPhotoId(event.target.value)}>
+            {imageAssets.photos.length === 0 && <option value="">Фотографий пока нет</option>}
+            {resolvedPhotoId && !imageAssets.photos.some((asset) => asset.id === resolvedPhotoId) && (
+              <option value={resolvedPhotoId}>текущее фото</option>
+            )}
+            {imageAssets.photos.map((asset) => (
+              <option key={asset.id} value={asset.id}>{asset.original_name ?? asset.id.slice(0, 8)}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="pe-upload-row">
+          <label className="upload">
+            Загрузить фото
+            <input type="file" accept="image/*" onChange={(event) => void handlePhoto(event.target.files?.[0] ?? null)} />
+          </label>
+          {photoProgress !== null && <span className="muted">Загрузка фото… {photoProgress}%</span>}
+        </div>
+
+        {!resolvedPhotoId && <p className="muted">Загрузите фото комнаты, чтобы начать редактирование.</p>}
+
+        {resolvedPhotoId && (
           <div className="pe-toolbar">
             {rect ? (
               <div className="pe-chips">
@@ -348,46 +356,46 @@ export function PhotoEditPanel({
               </>
             )}
           </div>
-        </>
-      )}
+        )}
 
-      {iteration && (
-        <div className="pe-result">
-          <div className="compare-grid">
-            {([["До", iteration.baseAssetId, "рабочее фото"],
-              ["После", iteration.resultAssetId, `ревизия ${iteration.resultRevisionId.slice(0, 8)}`]] as const).map(
-              ([label, assetId, caption]) => (
-                <figure key={label}>
-                  <figcaption><strong>{label}</strong><span>{caption}</span></figcaption>
-                  <ImagePreview
-                    variant="bounded"
-                    src={api.assetUrl(assetId)}
-                    alt={`${label} — ${caption}`}
-                    expandable
-                    onExpand={(trigger) =>
-                      openLightbox(
-                        api.assetUrl(assetId),
-                        `${label} — ${caption}`,
-                        `Правка фото — ${label}`,
-                        trigger
-                      )
-                    }
-                  />
-                </figure>
-              )
-            )}
+        {iteration && (
+          <div className="pe-result">
+            <div className="compare-grid">
+              {([["До", iteration.baseAssetId, "рабочее фото"],
+                ["После", iteration.resultAssetId, `ревизия ${iteration.resultRevisionId.slice(0, 8)}`]] as const).map(
+                ([label, assetId, caption]) => (
+                  <figure key={label}>
+                    <figcaption><strong>{label}</strong><span>{caption}</span></figcaption>
+                    <ImagePreview
+                      variant="bounded"
+                      src={api.assetUrl(assetId)}
+                      alt={`${label} — ${caption}`}
+                      expandable
+                      onExpand={(trigger) =>
+                        openLightbox(
+                          api.assetUrl(assetId),
+                          `${label} — ${caption}`,
+                          `Правка фото — ${label}`,
+                          trigger
+                        )
+                      }
+                    />
+                  </figure>
+                )
+              )}
+            </div>
+            <button type="button" onClick={applyResultAsBase}>Сделать основным</button>
           </div>
-          <button type="button" onClick={applyResultAsBase}>Сделать основным</button>
-        </div>
-      )}
+        )}
 
-      {pending && (
-        <p className={activeJob?.status === "failed" ? "error" : "muted"}>
-          Правка: {statusLabel(activeJob?.status ?? "pending")}{progressText ? ` · ${progressText}` : ""}
-        </p>
-      )}
-      {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
-      {error && <div className="error">{error}</div>}
+        {pending && (
+          <p className={activeJob?.status === "failed" ? "error" : "muted"}>
+            Правка: {statusLabel(activeJob?.status ?? "pending")}{progressText ? ` · ${progressText}` : ""}
+          </p>
+        )}
+        {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
+        {error && <div className="error">{error}</div>}
+      </div>
 
       <ImageLightbox
         open={lightbox !== null}
