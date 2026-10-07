@@ -3578,6 +3578,120 @@ textarea.invalid {
   background: var(--st-color-glass-active);
 }
 
+/* ===== #170 — glass workspaces chrome =====
+   Visual integration of the #152/#153/#154 workspaces into the #168 glass
+   system. Chrome only: every rule below swaps an opaque chrome surface to an
+   existing glass token or adds the glass hairline/top-highlight. ZERO
+   geometry drift (no padding/gap/font/radius values added or changed), zero
+   z-index changes, zero TSX/structure changes, and — deliberately — ZERO new
+   backdrop-filter consumers and ZERO new translucent tokens (everything
+   consumes the four glass bg tokens already swapped to opaque in both
+   fallback blocks below, so no fallback edits were needed).
+
+   The three big scrolling surfaces (readability principle, decided per
+   surface, blur excluded everywhere):
+   - .rt-detail (Results detail body): keeps the opaque #168 retuned surface
+     (--st-color-surface) — it carries metadata text and the compare images;
+     gains only the glass border + inset top highlight, no blur, no outer
+     shadow (#168 contract kept). Its header scrolls with the content, so
+     "glass on the header only" is not available here.
+   - .pl-side/.pl-inspector (Plan inspector rail): keeps the opaque elevated
+     surface — it carries form inputs and raw wall coordinates; gains only the
+     glass border + inset top highlight, no blur.
+   - .design-rail and .design-pane .pe-controls-zone (Design rails): stay
+     clean transparent containers; the glass chrome is carried by their
+     children instead (camera-readiness pill, selected card (#168), advanced
+     disclosures), so a scroll container never gets a blur/tint of its own.
+
+   Nested chrome inside an already-blurred .panel (Plan toolbar, asset strip,
+   disclosure) gets glass tokens WITHOUT backdrop-filter — the panel already
+   blurs the same backdrop, a second blur layer is pure cost with no visual
+   benefit (same call as .page-tabs in #168). */
+
+/* Plan — command toolbar: inset field-glass strip (page-tabs treatment:
+   darker field glass, no blur, no border; geometry untouched). */
+.pl-toolbar {
+  background: var(--st-color-glass-field);
+}
+
+/* Plan — inspector rail (see decision above). */
+.pl-inspector {
+  background: var(--st-color-surface-elevated);
+  border-color: var(--st-color-glass-border);
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+
+/* Plan — progressive-disclosure zone inside the inspector: the darker field
+   glass marks the advanced region without touching its layout. */
+.pl-advanced {
+  background: var(--st-color-glass-field);
+}
+
+/* Plan — compact source/plan selector strip: field glass on its existing
+   border/radius (token swap only). */
+.pl-asset-strip {
+  background: var(--st-color-glass-field);
+  border-color: var(--st-color-glass-border);
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+
+/* Plan/Results — semantic status banners (scale banner, restore warning):
+   warn/danger bg+border+text tokens stay (state meaning + readability);
+   only the glass top highlight is added. The JS-toggled attention ring on the
+   scale banner (.pl-scale-banner.focus, 0-2-0, styles.css:980) must always
+   win — the :not(.focus) exclusion keeps this rule from ever contending with
+   it, regardless of cascade order or future specificity churn. */
+.pl-scale-banner:not(.focus),
+.rt-warning {
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+
+/* Results — selected-result detail surface (see decision above; overrides the
+   #168 box-shadow:none with the highlight only). */
+.rt-detail {
+  background: var(--st-color-surface);
+  border-color: var(--st-color-glass-border);
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+
+/* Design — 3D/Фото mode switch inside the already-glass command bar. */
+.mode-switch {
+  background: var(--st-color-glass-field);
+}
+
+/* Design — camera readiness pill: glass chrome WITHOUT blur (it lives inside
+   the .design-rail scroll container). The .uncalibrated/.calibrated semantic
+   variants keep their warn/ok surfaces — their two-class specificity
+   outranks this base rule. */
+.camera-readiness {
+  background: var(--st-color-glass);
+  border-color: var(--st-color-glass-border);
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+
+/* Design — photo-mode advanced disclosure: joins .design-advanced's glass
+   recipe minus the blur (it sits inside the .pe-controls-zone scroll rail). */
+.pe-advanced {
+  background: var(--st-color-glass);
+  border-color: var(--st-color-glass-border);
+  box-shadow: inset 0 1px 0 var(--st-color-glass-highlight);
+}
+
+/* Design — upload/progress readout inside the command bar and the plan asset
+   strip (chrome inside already-glass surfaces). */
+.upload-progress {
+  background: var(--st-color-glass-field);
+  border-color: var(--st-color-glass-border);
+}
+
+/* Lightbox (#150) — toolbar buttons join the elevated glass recipe (the same
+   swap #168 gave .secondary). Dialog/backdrop/stage and all #150 behavior
+   are untouched; the stage stays crisp. */
+.lb-button {
+  background: var(--st-color-glass-elevated);
+  border-color: var(--st-color-glass-border-strong);
+}
+
 /* ===== #169: Overview readiness cards — lightweight glass status surfaces =====
    Restyles the #151 compact readiness summary on top of the #168 base glass
    recipe for .readiness-card. Readiness computation, navigation targets, data
@@ -3626,7 +3740,7 @@ textarea.invalid {
 .overview-page .readiness-card.attention .readiness-badge {
   background: var(--st-color-danger-bg);
   border: 1px solid var(--st-color-danger-border);
-  color: var(--st-color-danger);
+   color: var(--st-color-danger);
 }
 
 /* Fallback A: no backdrop-filter support — swap the five translucent glass
