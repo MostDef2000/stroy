@@ -232,6 +232,28 @@ class WorkerRow(Base):
     last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ValidationReportRow(Base):
+    __tablename__ = "validation_reports"
+    __table_args__ = (
+        # Composite lookup: latest report for one scene revision in a project.
+        Index(
+            "ix_validation_reports_project_revision_created",
+            "project_id",
+            "scene_revision_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    scene_revision_id: Mapped[str] = mapped_column(String(64), index=True)
+    scene_content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    config_hash: Mapped[str] = mapped_column(String(64), index=True)
+    report_hash: Mapped[str] = mapped_column(String(64), index=True)
+    report_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuthSessionRow(Base):
     __tablename__ = "auth_sessions"
 

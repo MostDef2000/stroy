@@ -20,6 +20,7 @@ from stroy.services.dispatch import JobDispatcher
 from stroy.services.generations import queue_design_generation
 from stroy.services.jobs import create_job
 from stroy.services.scenes import apply_scene_command, latest_revision
+from stroy.services.validation import execute_design_check_tool
 
 
 async def apply_design_agent_result(
@@ -67,6 +68,20 @@ async def apply_design_agent_result(
         name, parsed = validate_tool_call(raw_call)
 
         if name in READ_TOOL_NAMES:
+            if name == "get_design_check":
+                tool_results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "result": await execute_design_check_tool(
+                            session,
+                            job.project_id,
+                            scene_revision_id=parsed.scene_revision_id,  # type: ignore[attr-defined]
+                            min_walkway_mm=parsed.min_walkway_mm,  # type: ignore[attr-defined]
+                        ),
+                    }
+                )
+                continue
             tool_results.append(
                 {
                     "index": index,

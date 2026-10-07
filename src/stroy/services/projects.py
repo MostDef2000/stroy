@@ -15,6 +15,7 @@ from stroy.db.models import (
     RenderManifestRow,
     SceneRevisionRow,
     StyleProfileRow,
+    ValidationReportRow,
 )
 from stroy.services.jobs import TERMINAL_JOB_STATUSES
 
@@ -39,6 +40,7 @@ class ProjectHasActiveJobsError(ValueError):
 #   geometry_diagnostics.reference/generated_asset_id -> assets.id
 #   plan_drafts.job_id                            -> jobs.id
 #   attachments.asset_id                          -> assets.id
+#   validation_reports.scene_revision_id          -> scene_revisions.id
 #   assets.source_asset_id / duplicate_of_asset_id -> assets.id (self)
 #   scene_revisions.parent_revision_id            -> scene_revisions.id (self)
 _CHILD_TABLES = (
@@ -50,6 +52,7 @@ _CHILD_TABLES = (
     GeometryDiagnosticRow,
     AttachmentRow,
     AssetRow,
+    ValidationReportRow,
     SceneRevisionRow,
     JobRow,
 )
