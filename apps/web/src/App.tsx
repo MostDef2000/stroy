@@ -438,6 +438,8 @@ export default function App() {
       {selected && page === "overview" && (
         <OverviewPage
           readiness={readiness}
+          projectId={selected}
+          scene={revision?.scene ?? null}
           hasProject={Boolean(currentProject)}
           hasScene={revision !== null}
           preparingScene={preparingScene}

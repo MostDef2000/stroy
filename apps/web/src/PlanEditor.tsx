@@ -16,6 +16,7 @@ import {
   PlanRoom,
   PlanWall
 } from "./api";
+import { AttachmentSection } from "./AttachmentSection";
 import { computePlanStages } from "./plan-steps";
 import { statusLabel } from "./copy";
 
@@ -891,6 +892,15 @@ export function PlanEditor({
               onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })}
             />
           </label>
+          {/* R1: room attachments (notes/tasks/photos/files). PlanEditor has
+              no scene document — rooms here are plan-draft ids — so the
+              dangling-target mark is intentionally disabled in this context
+              (scene omitted → isDanglingTarget cannot verify → never shown). */}
+          <AttachmentSection
+            projectId={projectId}
+            targetType="room"
+            targetId={selectedRoom.id}
+          />
         </>
       )}
 

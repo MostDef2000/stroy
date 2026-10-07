@@ -3802,3 +3802,147 @@ textarea.invalid {
     -webkit-backdrop-filter: none;
   }
 }
+
+/* ===== R1: entity layers + project attachments (state/attachments frontend)
+   Hooks for the R1 feature. Tokens only — every color consumes an existing
+   :root semantic/glass token (no literal colors, no new tokens). The layer
+   badge reuses the #169 ghost-pill restraint (transparent fill, hairline
+   state border, muted state text): asis=processing, structure=warn,
+   design=ok. The Overview cards keep the #151 compact card chrome and the
+   quiet .readiness-card.ok field glass; the attachment list is height-capped
+   so a long backlog cannot stretch the card row. */
+
+/* Layer pill (design rail, twin panel entity list). */
+.layer-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--st-color-border-strong);
+  color: var(--st-color-muted-text);
+}
+.layer-badge-asis {
+  border-color: var(--st-color-processing-border);
+  color: var(--st-color-processing);
+}
+.layer-badge-structure {
+  border-color: var(--st-color-warn-border);
+  color: var(--st-color-warn);
+}
+.layer-badge-design {
+  border-color: var(--st-color-ok-border);
+  color: var(--st-color-ok);
+}
+
+/* Design rail: layer select under the badge (set_state command). */
+.design-state-select {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  margin: var(--st-space-2) 0;
+  font-size: var(--st-text-sm);
+  color: var(--st-color-muted-text);
+}
+.design-state-select select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Twin panel entity list rows (read-only scene mirror). */
+.td-entity-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-space-2);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--st-color-text-secondary);
+  background: var(--st-color-glass-field);
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: 9px;
+}
+.td-entity-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.td-entity-kind {
+  color: var(--st-color-muted-text);
+}
+
+/* Attachments section (plan room inspector + design entity rail). */
+.attachment-section {
+  margin-top: var(--st-space-3);
+  padding-top: var(--st-space-3);
+  border-top: 1px solid var(--st-color-border-subtle);
+}
+.attachment-list {
+  list-style: none;
+  margin: 0 0 var(--st-space-2);
+  padding: 0;
+  display: grid;
+  gap: var(--st-space-1);
+}
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  font-size: var(--st-text-sm);
+}
+.attachment-item-main {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attachment-item-main a {
+  margin-left: var(--st-space-2);
+}
+.attachment-done-text {
+  text-decoration: line-through;
+  color: var(--st-color-muted-text);
+}
+.attachment-overdue {
+  color: var(--st-color-warn);
+}
+.attachment-delete {
+  padding: 2px 7px;
+}
+.attachment-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-2);
+  margin-top: var(--st-space-2);
+}
+.attachment-form input:not([type="checkbox"]):not([type="date"]) {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+/* Overview attachments card (#151 compactness, #169 quietness). */
+.overview-attachment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--st-space-1);
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: var(--st-text-sm);
+}
+.overview-attachment {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  min-width: 0;
+}
+.overview-attachment > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overview-attachment small,
+.overview-attachment a {
+  white-space: nowrap;
+}

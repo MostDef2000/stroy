@@ -1,4 +1,22 @@
+import {
+  type Attachment,
+  type AttachmentFilters,
+  type AttachmentKind,
+  type AttachmentPatch,
+  type AttachmentPostBody,
+  type AttachmentTargetType
+} from "./attachments";
 import { deleteOutcomeFromStatus, type ProjectDeleteOutcome } from "./projectDelete";
+
+// Re-exported so UI code can keep importing attachment types from api.ts.
+export type {
+  Attachment,
+  AttachmentFilters,
+  AttachmentKind,
+  AttachmentPatch,
+  AttachmentPostBody,
+  AttachmentTargetType
+};
 
 export type Project = {
   id: string;
@@ -27,7 +45,8 @@ export type Worker = {
   current_job: WorkerCurrentJob | null;
 };
 
-export type AssetRole = "apartment" | "reference" | "derived";
+/** R1: attachment uploads carry the files referenced by photo/file attachments. */
+export type AssetRole = "apartment" | "reference" | "derived" | "attachment";
 
 export type Asset = {
   id: string;
@@ -152,6 +171,8 @@ export type RevisionSummary = {  revision_id: string;
 export type SceneEntity = {
   id: string;
   kind: string;
+  /** R1 design layer: "asis" | "structure" | "design"; absent = legacy as-is. */
+  state?: string | null;
   display_name?: string | null;
   transform?: {
     translation_mm?: [number, number, number];
@@ -601,6 +622,45 @@ export const api = {
 
   listRenders(projectId: string) {
     return request<RenderRecord[]>(`/api/v1/projects/${projectId}/renders`);
+  },
+
+  // R1 attachments: project-scoped collection, same conventions as the other
+  // project child resources. listAttachments narrows server-side via query
+  // filters; createAttachment takes the payload built by
+  // attachments.buildAttachmentPayload (validated, total shape).
+  listAttachments(projectId: string, filters: AttachmentFilters = {}) {
+    const params = new URLSearchParams();
+    if (filters.target_type) params.set("target_type", filters.target_type);
+    if (filters.target_id) params.set("target_id", filters.target_id);
+    if (filters.kind) params.set("kind", filters.kind);
+    const query = params.toString();
+    return request<Attachment[]>(
+      `/api/v1/projects/${projectId}/attachments${query ? `?${query}` : ""}`
+    );
+  },
+
+  createAttachment(projectId: string, body: AttachmentPostBody) {
+    return request<Attachment>(`/api/v1/projects/${projectId}/attachments`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  },
+
+  patchAttachment(projectId: string, attachmentId: string, patch: AttachmentPatch) {
+    return request<Attachment>(
+      `/api/v1/projects/${projectId}/attachments/${attachmentId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      }
+    );
+  },
+
+  deleteAttachment(projectId: string, attachmentId: string) {
+    // 204 responses resolve to undefined via request() (same as DELETE flows).
+    return request<void>(`/api/v1/projects/${projectId}/attachments/${attachmentId}`, {
+      method: "DELETE"
+    });
   },
 
   applySceneCommand(projectId: string, command: Record<string, unknown>) {

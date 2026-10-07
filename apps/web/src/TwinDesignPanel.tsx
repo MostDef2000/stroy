@@ -2,7 +2,9 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { api, Asset, Job, RenderRecord, SceneRevision } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
+import { LayerBadge } from "./LayerBadge";
 import { statusLabel } from "./copy";
+import { entityState } from "./sceneLayers";
 import {
   apiErrorText,
   buildAddFurnitureCommand,
@@ -532,6 +534,27 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
           )}
         </section>
       )}
+
+      {/* R1: scene entities with their layer badge — context for the
+          furniture form below and a read-only mirror of the 3D scene. */}
+      <section className="td-section">
+        <div className="td-head">
+          <h3>Объекты сцены</h3>
+        </div>
+        {revision.scene.entities.length === 0 ? (
+          <p className="muted">В сцене пока нет объектов.</p>
+        ) : (
+          <ul className="td-list">
+            {revision.scene.entities.map((entity) => (
+              <li key={entity.id} className="td-entity-item">
+                <span className="td-entity-name">{entity.display_name ?? entity.id}</span>
+                <span className="td-entity-kind">{entity.kind}</span>
+                <LayerBadge state={entityState(entity)} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <section className="td-section">
         <div className="td-head">
