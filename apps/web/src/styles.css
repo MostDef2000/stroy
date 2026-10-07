@@ -3117,3 +3117,134 @@ textarea.invalid {
     --imgpv-width: 56px;
   }
 }
+
+
+/* ===== Plan canvas + inspector split workspace (#153) =====
+   Editor phase becomes a desktop workspace: command toolbar on top, dominant
+   plan canvas on the left, contextual inspector on the right (320-380px),
+   compact plan-source strip along the bottom. The plan <img> + SVG overlay
+   keep their exact DOM relationship (pointer mapping goes through
+   getScreenCTM) — only their container is re-housed. Entry phase stays
+   vertical. Narrow screens collapse the split to canvas-over-inspector;
+   1100px matches the #152 workspace collapse. */
+
+.pl-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 380px);
+  gap: var(--st-space-3);
+  align-items: start;
+}
+
+.pl-canvas-col {
+  display: grid;
+  gap: var(--st-space-3);
+  min-width: 0;
+}
+
+/* Commit actions sit on the toolbar's right edge; wrapping keeps every
+   control reachable on narrower desktops. */
+.pl-toolbar-end {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* Rare technical fields (#153 progressive disclosure): raw wall coordinates
+   live under this disclosure instead of the always-visible inspector grid. */
+.pl-advanced {
+  border-top: 1px solid var(--st-color-border-subtle);
+  padding-top: 8px;
+}
+
+.pl-advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--st-color-text-secondary);
+}
+
+.pl-side-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pl-inspector h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Compact plan-source strip (footer row in both phases). Entry-phase chips
+   keep the multi-select order badge; editor-phase chips are read-only
+   indicators of the fixed plan underlay. */
+.pl-asset-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: 12px;
+  background: var(--st-color-surface);
+}
+
+.pl-asset-strip-label {
+  font-size: 12px;
+  color: var(--st-color-text-secondary);
+}
+
+.pl-asset-name {
+  overflow: hidden;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pl-asset.active {
+  background: var(--st-color-selected-bg);
+  color: var(--st-color-selected-text);
+}
+
+.pl-asset-add {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px dashed var(--st-color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--st-color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pl-asset-add:hover {
+  border-color: var(--st-color-accent);
+  color: var(--st-color-accent);
+}
+
+.pl-asset-add input {
+  display: none;
+}
+
+@media (min-width: 1101px) {
+  /* The plan canvas is the dominant working surface: tall plan images get a
+     viewport-bound height instead of stretching the page. The inspector
+     follows the same scroll-capping intent as #109/#152. */
+  .pl-workspace .pl-image-wrap img {
+    width: auto;
+    max-height: min(64vh, 700px);
+  }
+
+  .pl-side {
+    max-height: min(72vh, 780px);
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  /* Narrow screens: canvas on top, inspector below (DOM order). */
+  .pl-workspace {
+    grid-template-columns: 1fr;
+  }
+}

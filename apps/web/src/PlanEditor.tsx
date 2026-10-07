@@ -8,6 +8,7 @@ import {
 import {
   api,
   Asset,
+  AssetRole,
   Job,
   PlanDraft,
   PlanOpening,
@@ -119,12 +120,18 @@ export function PlanEditor({
   projectId,
   assets,
   jobs,
-  onChanged
+  onChanged,
+  onUpload,
+  uploadProgress = null
 }: {
   projectId: string;
   assets: Asset[];
   jobs: Job[];
   onChanged: () => Promise<void>;
+  // Plan-image upload (#153): rendered as the compact strip's «+ Добавить
+  // план» chip instead of a page-level upload row.
+  onUpload?: (file: File | null, role: AssetRole) => void;
+  uploadProgress?: number | null;
 }) {
   const apartmentImages = useMemo(
     () => assets.filter((asset) => asset.role === "apartment" && asset.media_type.startsWith("image/")),
@@ -630,6 +637,278 @@ export function PlanEditor({
     </>
   );
 
+  // Compact plan-source strip (#153): a footer row in both phases instead of
+  // vertical page space. Entry phase keeps the existing multi-select chips
+  // (order badge + toggleAsset); in the editor phase the underlay
+  // (planAssetId) is fixed, so chips are read-only indicators with the active
+  // one marked.
+  const assetStrip = (
+    <div className="pl-asset-strip">
+      <span className="pl-asset-strip-label">
+        {phase === "entry" ? "Планы для анализа:" : "Источник плана:"}
+      </span>
+      {apartmentImages.map((asset) => {
+        const index = selectedIds.indexOf(asset.id);
+        const isActive = asset.id === planAssetId;
+        const chipClass = [
+          "pl-asset",
+          phase === "entry" && index >= 0 ? "selected" : "",
+          phase === "editor" && isActive ? "active" : ""
+        ]
+          .filter(Boolean)
+          .join(" ");
+        if (phase === "editor") {
+          return (
+            <span
+              key={asset.id}
+              className={chipClass}
+              title="Подложка редактора плана"
+              aria-current={isActive ? "true" : undefined}
+            >
+              <span className="pl-asset-name">{asset.original_name ?? asset.id.slice(0, 8)}</span>
+            </span>
+          );
+        }
+        return (
+          <button
+            key={asset.id}
+            type="button"
+            className={chipClass}
+            aria-pressed={index >= 0}
+            onClick={() => toggleAsset(asset.id)}
+          >
+            <span className="pl-asset-order">{index >= 0 ? index + 1 : "·"}</span>
+            <span className="pl-asset-name">{asset.original_name ?? asset.id.slice(0, 8)}</span>
+          </button>
+        );
+      })}
+      {onUpload && (
+        <label className="pl-asset-add">
+          + Добавить план
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => {
+              onUpload(event.target.files?.[0] ?? null, "apartment");
+              event.target.value = "";
+            }}
+          />
+        </label>
+      )}
+      {uploadProgress !== null && (
+        <div className="upload-progress" aria-label="Upload progress">
+          <div style={{ width: `${uploadProgress}%` }} />
+          <span>{uploadProgress}%</span>
+        </div>
+      )}
+    </div>
+  );
+
+  // Command toolbar (#153): plan tools on the left, commit actions on the
+  // right edge. Same handlers and gating as before — re-housed, not rewritten.
+  const commandToolbar = (
+    <div className="pl-toolbar">
+      <button
+        type="button"
+        className={mode === "select" ? "secondary active" : "secondary"}
+        onClick={() => { setMode("select"); setPendingWallStart(null); }}
+      >
+        Выбрать
+      </button>
+      <button
+        type="button"
+        className={mode === "add-wall" ? "secondary active" : "secondary"}
+        onClick={() => { setMode(mode === "add-wall" ? "select" : "add-wall"); setPendingWallStart(null); }}
+      >
+        Добавить стену
+      </button>
+      <button
+        type="button"
+        className="secondary"
+        onClick={addOpening}
+        disabled={selection?.kind !== "wall"}
+      >
+        Добавить проём
+      </button>
+      <button type="button" className="danger" onClick={removeSelected} disabled={!selection}>
+        Удалить выбранное
+      </button>
+      <div className="pl-toolbar-end">
+        <button
+          type="button"
+          className={mode === "set-scale" ? "secondary active" : "secondary"}
+          onClick={() => {
+            if (mode === "set-scale") {
+              setMode("select");
+              setScalePoints([]);
+              setScaleInput("");
+            } else {
+              setMode("set-scale");
+              setScalePoints([]);
+              setSelection(null);
+            }
+          }}
+        >
+          Масштаб
+        </button>
+        <button type="button" className="secondary" onClick={() => setPhase("entry")} disabled={busy}>
+          Назад
+        </button>
+        <button type="button" onClick={() => void saveDraft()} disabled={busy || !draft}>
+          Сохранить план
+        </button>
+        <button type="button" onClick={() => void build3d()} disabled={busy || !draft || !scaleKnown}>
+          Создать / обновить 3D
+        </button>
+      </div>
+    </div>
+  );
+
+  // Inspector side panel (#153): the selection-specific controls that used to
+  // render below the stage. Same fields and the same disabled={!scaleKnown}
+  // product rules; rare raw coordinates moved under «Дополнительно».
+  const inspector = (
+    <aside className="pl-side pl-inspector" aria-label="Свойства выбранного элемента плана">
+      <h3>Свойства</h3>
+      {!selection && (
+        <p className="muted">
+          Выберите стену, проём или комнату на плане — здесь появятся её свойства.
+        </p>
+      )}
+      {selectedWall && selection?.kind === "wall" && (
+        <>
+          <h4>Стена {selectedWall.id}</h4>
+          <label>
+            Толщина ({unitLabel})
+            <input
+              type="number"
+              min={1}
+              disabled={!scaleKnown}
+              value={selectedWall.thickness_mm}
+              onChange={(event) => updateWall(selectedWall.id, { thickness_mm: numberInput(event.target.value, 1) })}
+            />
+          </label>
+          <details className="pl-advanced">
+            <summary>Дополнительно</summary>
+            <div className="pl-grid-2">
+              {(["x1", "y1", "x2", "y2"] as const).map((key) => (
+                <label key={key}>
+                  {key} ({unitLabel})
+                  <input
+                    type="number"
+                    disabled={!scaleKnown}
+                    value={selectedWall[key]}
+                    onChange={(event) => updateWall(selectedWall.id, { [key]: numberInput(event.target.value, Number.NEGATIVE_INFINITY) })}
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
+        </>
+      )}
+
+      {selectedOpening && selection?.kind === "opening" && (
+        <>
+          <h4>Проём {selectedOpening.id}</h4>
+          <label>
+            Тип
+            <select
+              value={selectedOpening.kind}
+              onChange={(event) =>
+                updateOpening(selection.wallId, selectedOpening.id, {
+                  kind: event.target.value as PlanOpeningKind
+                })
+              }
+            >
+              <option value="door">door</option>
+              <option value="window">window</option>
+              <option value="arch">arch</option>
+            </select>
+          </label>
+          <label>
+            Положение · {selectedOpening.t.toFixed(2)}
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={selectedOpening.t}
+              onChange={(event) =>
+                updateOpening(selection.wallId, selectedOpening.id, { t: Number(event.target.value) })
+              }
+            />
+          </label>
+          <div className="pl-grid-2">
+            <label>
+              Ширина ({unitLabel})
+              <input
+                type="number"
+                min={1}
+                disabled={!scaleKnown}
+                value={selectedOpening.width_mm}
+                onChange={(event) =>
+                  updateOpening(selection.wallId, selectedOpening.id, { width_mm: numberInput(event.target.value, 1) })
+                }
+              />
+            </label>
+            <label>
+              Высота ({unitLabel})
+              <input
+                type="number"
+                min={1}
+                disabled={!scaleKnown}
+                value={selectedOpening.height_mm}
+                onChange={(event) =>
+                  updateOpening(selection.wallId, selectedOpening.id, { height_mm: numberInput(event.target.value, 1) })
+                }
+              />
+            </label>
+            <label>
+              Подоконник ({unitLabel})
+              <input
+                type="number"
+                min={0}
+                disabled={!scaleKnown}
+                value={selectedOpening.sill_mm ?? 0}
+                onChange={(event) =>
+                  updateOpening(selection.wallId, selectedOpening.id, {
+                    sill_mm: numberInput(event.target.value, 0, Math.max(0, selectedOpening.height_mm - 1))
+                  })
+                }
+              />
+            </label>
+          </div>
+        </>
+      )}
+
+      {selectedRoom && selection?.kind === "room" && (
+        <>
+          <h4>Комната {selectedRoom.id}</h4>
+          <label>
+            Название
+            <input
+              value={selectedRoom.name}
+              onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })}
+            />
+          </label>
+        </>
+      )}
+
+      {selection && (
+        <div className="pl-side-actions">
+          {selection.kind === "wall" && (
+            <button type="button" className="secondary" onClick={addOpening}>
+              Добавить проём
+            </button>
+          )}
+          <button type="button" className="danger" onClick={removeSelected}>
+            Удалить выбранное
+          </button>
+        </div>
+      )}
+    </aside>
+  );
+
   if (phase === "entry") {
     return (
       <article className="panel pl-panel">
@@ -645,25 +924,6 @@ export function PlanEditor({
 
         {apartmentImages.length === 0 && (
           <p className="muted">Загрузите изображение плана квартиры, чтобы начать.</p>
-        )}
-
-        {apartmentImages.length > 0 && (
-          <div className="pl-asset-list">
-            {apartmentImages.map((asset) => {
-              const index = selectedIds.indexOf(asset.id);
-              return (
-                <button
-                  key={asset.id}
-                  type="button"
-                  className={index >= 0 ? "pl-asset selected" : "pl-asset"}
-                  onClick={() => toggleAsset(asset.id)}
-                >
-                  <span className="pl-asset-order">{index >= 0 ? index + 1 : "·"}</span>
-                  <span>{asset.original_name ?? asset.id.slice(0, 8)}</span>
-                </button>
-              );
-            })}
-          </div>
         )}
 
         <div className="pl-actions">
@@ -686,6 +946,8 @@ export function PlanEditor({
         {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
         {error && <div className="error">{error}</div>}
         {info && <p className="muted">{info}</p>}
+
+        {assetStrip}
       </article>
     );
   }
@@ -711,351 +973,208 @@ export function PlanEditor({
       </div>
       {stageStrip}
 
-      {!scaleKnown && (
-        <div
-          ref={scaleBannerRef}
-          className={scaleBannerFocus ? "pl-scale-banner focus" : "pl-scale-banner"}
-        >
-          <strong>Масштаб не задан.</strong> Реальные размеры недоступны, пока не задан масштаб.
-          <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
-            Задать масштаб
-          </button>
-        </div>
-      )}
+      <div className="pl-workspace">
+        <div className="pl-canvas-col">
+          {commandToolbar}
 
-      {scaleKnown && draft?.scale.source === "plan_label" && (
-        <p className="muted">
-          Масштаб: {mmPerPx?.toFixed(3)} мм/px — распознан с плана{" "}
-          <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
-            Изменить масштаб
-          </button>
-        </p>
-      )}
-
-      {mode === "set-scale" && (
-        <div className="pl-scale-tool">
-          <p className="hint">
-            Кликните две точки на плане ({scalePoints.length}/2), затем введите реальное расстояние
-            между ними.
-          </p>
-          {scalePoints.length === 2 && (
-            <div className="pl-scale-input">
-              <label>
-                Реальная длина (мм)
-                <input
-                  type="number"
-                  min={1}
-                  value={scaleInput}
-                  onChange={(event) => setScaleInput(event.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => applyScale(Number(scaleInput))}
-                disabled={!scaleInput || Number(scaleInput) <= 0}
-              >
-                Применить масштаб
+          {!scaleKnown && (
+            <div
+              ref={scaleBannerRef}
+              className={scaleBannerFocus ? "pl-scale-banner focus" : "pl-scale-banner"}
+            >
+              <strong>Масштаб не задан.</strong> Реальные размеры недоступны, пока не задан масштаб.
+              <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
+                Задать масштаб
               </button>
-                <button type="button" className="secondary" onClick={() => { setScalePoints([]); setScaleInput(""); }}>
-                  Отменить
-                </button>
+            </div>
+          )}
+
+          {scaleKnown && draft?.scale.source === "plan_label" && (
+            <p className="muted">
+              Масштаб: {mmPerPx?.toFixed(3)} мм/px — распознан с плана{" "}
+              <button type="button" className="secondary" onClick={() => { setMode("set-scale"); setScalePoints([]); setSelection(null); }}>
+                Изменить масштаб
+              </button>
+            </p>
+          )}
+
+          {mode === "set-scale" && (
+            <div className="pl-scale-tool">
+              <p className="hint">
+                Кликните две точки на плане ({scalePoints.length}/2), затем введите реальное расстояние
+                между ними.
+              </p>
+              {scalePoints.length === 2 && (
+                <div className="pl-scale-input">
+                  <label>
+                    Реальная длина (мм)
+                    <input
+                      type="number"
+                      min={1}
+                      value={scaleInput}
+                      onChange={(event) => setScaleInput(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => applyScale(Number(scaleInput))}
+                    disabled={!scaleInput || Number(scaleInput) <= 0}
+                  >
+                    Применить масштаб
+                  </button>
+                  <button type="button" className="secondary" onClick={() => { setScalePoints([]); setScaleInput(""); }}>
+                    Отменить
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {planAssetId && (
+            <div className="pl-stage">
+              <div className="pl-image-wrap">
+                <img
+                  src={api.assetUrl(planAssetId)}
+                  alt="Подложка плана"
+                  draggable={false}
+                  onLoad={(event) =>
+                    setNatural({ w: event.currentTarget.naturalWidth, h: event.currentTarget.naturalHeight })
+                  }
+                />
+                {natural && (
+                  <svg
+                    ref={svgRef}
+                    className="pl-overlay"
+                    viewBox={`0 0 ${natural.w} ${natural.h}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    onPointerDown={handleSvgPointerDown}
+                    onPointerMove={handleSvgPointerMove}
+                    onPointerUp={endDrag}
+                    onPointerCancel={endDrag}
+                  >
+                    {floor?.walls.map((wall) => {
+                      const ax = toImage(wall.x1);
+                      const ay = toImage(wall.y1);
+                      const bx = toImage(wall.x2);
+                      const by = toImage(wall.y2);
+                      const thickness = toImage(wall.thickness_mm);
+                      const isSelected = selection?.kind === "wall" && selection.wallId === wall.id;
+                      return (
+                        <g key={wall.id}>
+                          <line
+                            x1={ax}
+                            y1={ay}
+                            x2={bx}
+                            y2={by}
+                            stroke="transparent"
+                            strokeWidth={Math.max(thickness, 12)}
+                            onPointerDown={(event) => {
+                              if (mode !== "select") return;
+                              event.stopPropagation();
+                              setSelection({ kind: "wall", wallId: wall.id });
+                            }}
+                          />
+                          <line
+                            x1={ax}
+                            y1={ay}
+                            x2={bx}
+                            y2={by}
+                            stroke={isSelected ? "#1f6feb" : "#242424"}
+                            strokeWidth={Math.max(thickness, 2)}
+                            strokeLinecap="round"
+                            pointerEvents="none"
+                          />
+                          {wall.openings.map((opening) => {
+                            const cx = lerp(ax, bx, opening.t);
+                            const cy = lerp(ay, by, opening.t);
+                            const angle = (Math.atan2(by - ay, bx - ax) * 180) / Math.PI;
+                            const width = toImage(opening.width_mm);
+                            const isOpeningSelected =
+                              selection?.kind === "opening" && selection.openingId === opening.id;
+                            return (
+                              <rect
+                                key={opening.id}
+                                x={cx - width / 2}
+                                y={cy - Math.max(thickness, 4) / 2}
+                                width={width}
+                                height={Math.max(thickness, 4)}
+                                transform={`rotate(${angle} ${cx} ${cy})`}
+                                fill={isOpeningSelected ? "#1f6feb" : "#e8a33d"}
+                                opacity={0.85}
+                                onPointerDown={(event) => startOpeningDrag(event, wall.id, opening.id)}
+                              />
+                            );
+                          })}
+                          <circle
+                            cx={ax}
+                            cy={ay}
+                            r={isSelected ? 7 : 5}
+                            fill="white"
+                            stroke="#1f6feb"
+                            strokeWidth={2}
+                            onPointerDown={(event) => startEndpointDrag(event, wall.id, 1)}
+                          />
+                          <circle
+                            cx={bx}
+                            cy={by}
+                            r={isSelected ? 7 : 5}
+                            fill="white"
+                            stroke="#1f6feb"
+                            strokeWidth={2}
+                            onPointerDown={(event) => startEndpointDrag(event, wall.id, 2)}
+                          />
+                        </g>
+                      );
+                    })}
+
+                    {floor?.rooms.map((room) => {
+                      const centroid = roomCentroid(room, wallsById);
+                      return (
+                        <text
+                          key={room.id}
+                          x={toImage(centroid.x)}
+                          y={toImage(centroid.y)}
+                          textAnchor="middle"
+                          className="pl-room-label"
+                          onPointerDown={(event) => {
+                            if (mode !== "select") return;
+                            event.stopPropagation();
+                            setSelection({ kind: "room", roomId: room.id });
+                          }}
+                        >
+                          {room.name}
+                        </text>
+                      );
+                    })}
+
+                    {pendingWallStart && (
+                      <circle cx={pendingWallStart.x} cy={pendingWallStart.y} r={6} fill="#1f6feb" />
+                    )}
+                    {scalePoints.map((point, index) => (
+                      <circle key={index} cx={point.x} cy={point.y} r={6} fill="#d64545" />
+                    ))}
+                    {scalePoints.length === 2 && (
+                      <line
+                        x1={scalePoints[0].x}
+                        y1={scalePoints[0].y}
+                        x2={scalePoints[1].x}
+                        y2={scalePoints[1].y}
+                        stroke="#d64545"
+                        strokeWidth={2}
+                        strokeDasharray="6 4"
+                      />
+                    )}
+                  </svg>
+                )}
+              </div>
             </div>
           )}
         </div>
-      )}
 
-      {planAssetId && (
-        <div className="pl-stage">
-          <div className="pl-image-wrap">
-            <img
-              src={api.assetUrl(planAssetId)}
-              alt="Подложка плана"
-              draggable={false}
-              onLoad={(event) =>
-                setNatural({ w: event.currentTarget.naturalWidth, h: event.currentTarget.naturalHeight })
-              }
-            />
-            {natural && (
-              <svg
-                ref={svgRef}
-                className="pl-overlay"
-                viewBox={`0 0 ${natural.w} ${natural.h}`}
-                preserveAspectRatio="xMidYMid meet"
-                onPointerDown={handleSvgPointerDown}
-                onPointerMove={handleSvgPointerMove}
-                onPointerUp={endDrag}
-                onPointerCancel={endDrag}
-              >
-                {floor?.walls.map((wall) => {
-                  const ax = toImage(wall.x1);
-                  const ay = toImage(wall.y1);
-                  const bx = toImage(wall.x2);
-                  const by = toImage(wall.y2);
-                  const thickness = toImage(wall.thickness_mm);
-                  const isSelected = selection?.kind === "wall" && selection.wallId === wall.id;
-                  return (
-                    <g key={wall.id}>
-                      <line
-                        x1={ax}
-                        y1={ay}
-                        x2={bx}
-                        y2={by}
-                        stroke="transparent"
-                        strokeWidth={Math.max(thickness, 12)}
-                        onPointerDown={(event) => {
-                          if (mode !== "select") return;
-                          event.stopPropagation();
-                          setSelection({ kind: "wall", wallId: wall.id });
-                        }}
-                      />
-                      <line
-                        x1={ax}
-                        y1={ay}
-                        x2={bx}
-                        y2={by}
-                        stroke={isSelected ? "#1f6feb" : "#242424"}
-                        strokeWidth={Math.max(thickness, 2)}
-                        strokeLinecap="round"
-                        pointerEvents="none"
-                      />
-                      {wall.openings.map((opening) => {
-                        const cx = lerp(ax, bx, opening.t);
-                        const cy = lerp(ay, by, opening.t);
-                        const angle = (Math.atan2(by - ay, bx - ax) * 180) / Math.PI;
-                        const width = toImage(opening.width_mm);
-                        const isOpeningSelected =
-                          selection?.kind === "opening" && selection.openingId === opening.id;
-                        return (
-                          <rect
-                            key={opening.id}
-                            x={cx - width / 2}
-                            y={cy - Math.max(thickness, 4) / 2}
-                            width={width}
-                            height={Math.max(thickness, 4)}
-                            transform={`rotate(${angle} ${cx} ${cy})`}
-                            fill={isOpeningSelected ? "#1f6feb" : "#e8a33d"}
-                            opacity={0.85}
-                            onPointerDown={(event) => startOpeningDrag(event, wall.id, opening.id)}
-                          />
-                        );
-                      })}
-                      <circle
-                        cx={ax}
-                        cy={ay}
-                        r={isSelected ? 7 : 5}
-                        fill="white"
-                        stroke="#1f6feb"
-                        strokeWidth={2}
-                        onPointerDown={(event) => startEndpointDrag(event, wall.id, 1)}
-                      />
-                      <circle
-                        cx={bx}
-                        cy={by}
-                        r={isSelected ? 7 : 5}
-                        fill="white"
-                        stroke="#1f6feb"
-                        strokeWidth={2}
-                        onPointerDown={(event) => startEndpointDrag(event, wall.id, 2)}
-                      />
-                    </g>
-                  );
-                })}
-
-                {floor?.rooms.map((room) => {
-                  const centroid = roomCentroid(room, wallsById);
-                  return (
-                    <text
-                      key={room.id}
-                      x={toImage(centroid.x)}
-                      y={toImage(centroid.y)}
-                      textAnchor="middle"
-                      className="pl-room-label"
-                      onPointerDown={(event) => {
-                        if (mode !== "select") return;
-                        event.stopPropagation();
-                        setSelection({ kind: "room", roomId: room.id });
-                      }}
-                    >
-                      {room.name}
-                    </text>
-                  );
-                })}
-
-                {pendingWallStart && (
-                  <circle cx={pendingWallStart.x} cy={pendingWallStart.y} r={6} fill="#1f6feb" />
-                )}
-                {scalePoints.map((point, index) => (
-                  <circle key={index} cx={point.x} cy={point.y} r={6} fill="#d64545" />
-                ))}
-                {scalePoints.length === 2 && (
-                  <line
-                    x1={scalePoints[0].x}
-                    y1={scalePoints[0].y}
-                    x2={scalePoints[1].x}
-                    y2={scalePoints[1].y}
-                    stroke="#d64545"
-                    strokeWidth={2}
-                    strokeDasharray="6 4"
-                  />
-                )}
-              </svg>
-            )}
-          </div>
-        </div>
-      )}
-
-      <div className="pl-toolbar">
-        <button
-          type="button"
-          className={mode === "add-wall" ? "secondary active" : "secondary"}
-          onClick={() => { setMode(mode === "add-wall" ? "select" : "add-wall"); setPendingWallStart(null); }}
-        >
-          Добавить стену
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          onClick={addOpening}
-          disabled={selection?.kind !== "wall"}
-        >
-          Добавить проём
-        </button>
-        <button type="button" className="danger" onClick={removeSelected} disabled={!selection}>
-          Удалить выбранное
-        </button>
+        {inspector}
       </div>
 
-      {selection && (
-        <div className="pl-inspector">
-          {selectedWall && selection?.kind === "wall" && (
-            <>
-              <h3>Стена {selectedWall.id}</h3>
-              <label>
-                Толщина ({unitLabel})
-                <input
-                  type="number"
-                  min={1}
-                  disabled={!scaleKnown}
-                  value={selectedWall.thickness_mm}
-                  onChange={(event) => updateWall(selectedWall.id, { thickness_mm: numberInput(event.target.value, 1) })}
-                />
-              </label>
-              <div className="pl-grid-2">
-                {(["x1", "y1", "x2", "y2"] as const).map((key) => (
-                  <label key={key}>
-                    {key} ({unitLabel})
-                    <input
-                      type="number"
-                      disabled={!scaleKnown}
-                      value={selectedWall[key]}
-                      onChange={(event) => updateWall(selectedWall.id, { [key]: numberInput(event.target.value, Number.NEGATIVE_INFINITY) })}
-                    />
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-
-          {selectedOpening && selection?.kind === "opening" && (
-            <>
-              <h3>Проём {selectedOpening.id}</h3>
-              <label>
-                Тип
-                <select
-                  value={selectedOpening.kind}
-                  onChange={(event) =>
-                    updateOpening(selection.wallId, selectedOpening.id, {
-                      kind: event.target.value as PlanOpeningKind
-                    })
-                  }
-                >
-                  <option value="door">door</option>
-                  <option value="window">window</option>
-                  <option value="arch">arch</option>
-                </select>
-              </label>
-              <label>
-                Положение · {selectedOpening.t.toFixed(2)}
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={selectedOpening.t}
-                  onChange={(event) =>
-                    updateOpening(selection.wallId, selectedOpening.id, { t: Number(event.target.value) })
-                  }
-                />
-              </label>
-              <div className="pl-grid-2">
-                <label>
-                  Ширина ({unitLabel})
-                  <input
-                    type="number"
-                    min={1}
-                    disabled={!scaleKnown}
-                    value={selectedOpening.width_mm}
-                    onChange={(event) =>
-                      updateOpening(selection.wallId, selectedOpening.id, { width_mm: numberInput(event.target.value, 1) })
-                    }
-                  />
-                </label>
-                <label>
-                  Высота ({unitLabel})
-                  <input
-                    type="number"
-                    min={1}
-                    disabled={!scaleKnown}
-                    value={selectedOpening.height_mm}
-                    onChange={(event) =>
-                      updateOpening(selection.wallId, selectedOpening.id, { height_mm: numberInput(event.target.value, 1) })
-                    }
-                  />
-                </label>
-                <label>
-                  Подоконник ({unitLabel})
-                  <input
-                    type="number"
-                    min={0}
-                    disabled={!scaleKnown}
-                    value={selectedOpening.sill_mm ?? 0}
-                    onChange={(event) =>
-                      updateOpening(selection.wallId, selectedOpening.id, {
-                        sill_mm: numberInput(event.target.value, 0, Math.max(0, selectedOpening.height_mm - 1))
-                      })
-                    }
-                  />
-                </label>
-              </div>
-            </>
-          )}
-
-          {selectedRoom && selection?.kind === "room" && (
-            <>
-              <h3>Комната {selectedRoom.id}</h3>
-              <label>
-                Название
-                <input
-                  value={selectedRoom.name}
-                  onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })}
-                />
-              </label>
-            </>
-          )}
-        </div>
-      )}
-
-      <div className="pl-actions">
-        <button type="button" onClick={() => void saveDraft()} disabled={busy || !draft}>
-          Сохранить план
-        </button>
-        <button type="button" onClick={() => void build3d()} disabled={busy || !draft || !scaleKnown}>
-          Создать / обновить 3D
-        </button>
-        <button type="button" className="secondary" onClick={() => setPhase("entry")} disabled={busy}>
-          Назад
-        </button>
-      </div>
+      {assetStrip}
 
       {draft && !scaleKnown && (
         <p className="hint">
