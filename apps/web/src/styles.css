@@ -4658,3 +4658,121 @@ textarea.invalid {
 .td-item-summary {
   overflow-wrap: anywhere;
 }
+
+
+/* ---------------------------------------------------------------------------
+   R6 guided setup (#183): the overview checklist panel. Same visual language
+   as the plan stage strip (#104) — pill steps with done/current/locked
+   states, inside a standard .panel.
+--------------------------------------------------------------------------- */
+
+.setup-panel .setup-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.setup-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: 999px;
+  background: var(--st-color-surface);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--st-color-muted-text);
+}
+
+.setup-steps li.current {
+  border-color: var(--st-color-accent);
+  background: var(--st-color-processing-bg);
+  color: var(--st-color-accent);
+  font-weight: 600;
+}
+
+.setup-steps li.locked {
+  color: var(--st-color-muted-text);
+  opacity: 0.75;
+}
+
+.setup-step-label {
+  min-width: 0;
+}
+
+.setup-step-mark {
+  color: var(--st-color-ok);
+  font-weight: 700;
+}
+
+.setup-step-link {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--st-color-accent);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.setup-step-link:focus-visible {
+  outline: 2px solid var(--st-color-processing);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.setup-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 0 12px;
+}
+
+.setup-columns > div {
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.setup-columns h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--st-color-text-secondary);
+}
+
+.setup-columns ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--st-color-text-secondary);
+}
+
+.setup-columns .setup-confirm ul {
+  color: var(--st-color-warn, #8a6116);
+}
+
+.setup-cta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.setup-cta .muted {
+  margin: 0;
+}
+
+/* R6 (#183): approximate photo→room mapping mark in attachment lists. */
+.attachment-mapping-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--st-text-xs);
+  color: var(--st-color-text-secondary);
+  overflow-wrap: anywhere;
+}

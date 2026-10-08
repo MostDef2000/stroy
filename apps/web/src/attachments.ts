@@ -172,6 +172,8 @@ export type AttachmentPayloadInput = {
   body?: string | null;
   assetId?: string | null;
   dueDate?: string | null;
+  /** R6 (#183): room-mapping attachments carry {mapping, confidence}; absent → {}. */
+  metadata?: object;
 };
 
 export type AttachmentPostBody = {
@@ -240,9 +242,20 @@ export function buildAttachmentPayload(
       body,
       asset_id: assetId,
       due_date: dueDate,
-      metadata: {}
+      metadata: input.metadata ?? {}
     }
   };
+}
+
+/**
+ * R6 (#183): true when a photo attachment's metadata marks an approximate
+ * photo→room mapping set by the room-targeted attach flow
+ * ({mapping: "owner_room", confidence: "approx"}). Total: any non-record or
+ * foreign metadata is simply not an approx mapping.
+ */
+export function isApproxRoomMapping(metadata: unknown): boolean {
+  if (!isRecord(metadata)) return false;
+  return metadata["mapping"] === "owner_room" && metadata["confidence"] === "approx";
 }
 
 /**

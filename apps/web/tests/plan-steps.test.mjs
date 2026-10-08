@@ -8,7 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { computePlanStages } from "../build/plan-steps.js";
+import { computePlanStages, planAutosaveDecision } from "../build/plan-steps.js";
 
 const input = (overrides = {}) => ({
   apartmentImageCount: 0,
@@ -140,4 +140,57 @@ test("invariant holds across every combination of inputs", () => {
       }
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// R6 plan autosave decision (#183): pure debounce policy —
+//   !dirty → wait; inflight → queue; idle ≥ debounce OR dirty ≥ maxDelay →
+//   save; otherwise wait. Boundaries are inclusive.
+// ---------------------------------------------------------------------------
+
+const decision = (overrides = {}) =>
+  planAutosaveDecision({
+    dirty: true,
+    inflight: false,
+    msSinceLastEdit: 0,
+    msSinceDirtyStart: 0,
+    debounceMs: 1500,
+    maxDelayMs: 10000,
+    ...overrides
+  });
+
+test("autosave: clean draft waits, never saves", () => {
+  assert.equal(decision({ dirty: false, msSinceLastEdit: 999999 }), "wait");
+  assert.equal(decision({ dirty: false, msSinceDirtyStart: 999999 }), "wait");
+});
+
+test("autosave: quiet period past the debounce saves", () => {
+  assert.equal(decision({ msSinceLastEdit: 1500, msSinceDirtyStart: 1500 }), "save");
+  assert.equal(decision({ msSinceLastEdit: 5000, msSinceDirtyStart: 5000 }), "save");
+});
+
+test("autosave: inside the debounce window waits", () => {
+  assert.equal(decision({ msSinceLastEdit: 1499, msSinceDirtyStart: 1499 }), "wait");
+  assert.equal(decision({ msSinceLastEdit: 200, msSinceDirtyStart: 3000 }), "wait");
+});
+
+test("autosave: in-flight save queues a follow-up even past the debounce", () => {
+  assert.equal(decision({ inflight: true, msSinceLastEdit: 20000 }), "queue");
+  assert.equal(decision({ inflight: true, msSinceDirtyStart: 20000 }), "queue");
+});
+
+test("autosave: continuous editing is capped by the max flush delay", () => {
+  // User keeps editing (last edit 200ms ago) but the draft has been dirty
+  // for 10s+ — the hard cap forces a save.
+  assert.equal(decision({ msSinceLastEdit: 200, msSinceDirtyStart: 10000 }), "save");
+  assert.equal(decision({ msSinceLastEdit: 0, msSinceDirtyStart: 45000 }), "save");
+});
+
+test("autosave: max-delay cap not reached and debounce not reached → wait", () => {
+  assert.equal(decision({ msSinceLastEdit: 100, msSinceDirtyStart: 9000 }), "wait");
+});
+
+test("autosave: boundaries are inclusive (== debounce, == maxDelay both save)", () => {
+  assert.equal(decision({ msSinceLastEdit: 1500, msSinceDirtyStart: 0 }), "save");
+  assert.equal(decision({ msSinceLastEdit: 0, msSinceDirtyStart: 10000 }), "save");
 });

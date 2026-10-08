@@ -13,6 +13,7 @@ import {
   attachmentLabel,
   buildAttachmentPayload,
   groupAttachmentsByTarget,
+  isApproxRoomMapping,
   isDanglingTarget,
   isTaskOverdue
 } from "../build/attachments.js";
@@ -235,6 +236,48 @@ test("buildAttachmentPayload: total shape, trims body, nulls empty optionals", (
 test("buildAttachmentPayload: non-project target without targetId is an error", () => {
   const missing = buildAttachmentPayload({ targetType: "room", targetId: null, kind: "note", body: "x" });
   assert.equal(missing.ok, false);
+});
+
+// R6 (#183): room-mapping attachments carry {mapping, confidence} metadata.
+test("buildAttachmentPayload: metadata passes through, default stays {}", () => {
+  const mapped = buildAttachmentPayload({
+    targetType: "room",
+    targetId: "room.1",
+    kind: "photo",
+    assetId: "asset-1",
+    metadata: { mapping: "owner_room", confidence: "approx" }
+  });
+  assert.equal(mapped.ok, true);
+  assert.deepEqual(mapped.payload.metadata, { mapping: "owner_room", confidence: "approx" });
+  // Other fields stay intact.
+  assert.equal(mapped.payload.kind, "photo");
+  assert.equal(mapped.payload.asset_id, "asset-1");
+
+  const plain = buildAttachmentPayload({
+    targetType: "room",
+    targetId: "room.1",
+    kind: "photo",
+    assetId: "asset-1"
+  });
+  assert.equal(plain.ok, true);
+  assert.deepEqual(plain.payload.metadata, {});
+});
+
+test("isApproxRoomMapping: true only for {mapping:'owner_room', confidence:'approx'}", () => {
+  assert.equal(isApproxRoomMapping({ mapping: "owner_room", confidence: "approx" }), true);
+  // foreign / near-miss shapes are not approx mappings
+  assert.equal(isApproxRoomMapping({ mapping: "owner_room", confidence: "exact" }), false);
+  assert.equal(isApproxRoomMapping({ mapping: "other", confidence: "approx" }), false);
+  assert.equal(isApproxRoomMapping({ mapping: "owner_room" }), false);
+  assert.equal(isApproxRoomMapping({}), false);
+  assert.equal(isApproxRoomMapping(null), false);
+  assert.equal(isApproxRoomMapping(undefined), false);
+  assert.equal(isApproxRoomMapping("owner_room"), false);
+  // extra keys do not break the match (forward-compatible metadata)
+  assert.equal(
+    isApproxRoomMapping({ mapping: "owner_room", confidence: "approx", note: "x" }),
+    true
+  );
 });
 
 test("isDanglingTarget flags room/entity targets missing from the scene", () => {

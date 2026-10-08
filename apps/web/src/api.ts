@@ -12,11 +12,16 @@ import {
   unwrapValidationReport,
   type ValidationReportEnvelope
 } from "./sceneValidation";
+import type { SetupStatus } from "./setup";
 
 // Re-exported so UI code can unwrap validation envelopes without importing
 // the pure module directly (api.ts stays the single browser-side surface).
 export { unwrapValidationReport } from "./sceneValidation";
 export type { ValidationReportEnvelope } from "./sceneValidation";
+
+// R6 setup: the wire type lives in the pure setup module (unit-tested without
+// a browser); api.ts re-exports it so UI code keeps a single import surface.
+export type { SetupStatus } from "./setup";
 
 // Re-exported so UI code can keep importing attachment types from api.ts.
 export type {
@@ -55,8 +60,10 @@ export type Worker = {
   current_job: WorkerCurrentJob | null;
 };
 
-/** R1: attachment uploads carry the files referenced by photo/file attachments. */
-export type AssetRole = "apartment" | "reference" | "derived" | "attachment";
+/** R1: attachment uploads carry the files referenced by photo/file attachments.
+ * R6 (#183): asset roles now include "plan" (plan images) and "photo" (real
+ * room photos); role "apartment" stays legacy-accepted for old uploads. */
+export type AssetRole = "apartment" | "plan" | "photo" | "reference" | "derived" | "attachment";
 
 export type Asset = {
   id: string;
@@ -724,6 +731,23 @@ export const api = {
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(await response.text());
     return response.json();
+  },
+
+  // R6 guided setup (#183): the owner-facing setup status for the overview
+  // checklist. Poll-safe by contract: 404 (route not deployed yet, or project
+  // gone) AND any other failure (network hiccup, 500, …) resolve to null so
+  // the 5s poll and the refreshProject Promise.all never stall; the Overview
+  // page skips its setup section then.
+  async getSetup(projectId: string): Promise<SetupStatus | null> {
+    try {
+      const response = await fetch(apiPath(`/api/v1/projects/${projectId}/setup`), {
+        credentials: "include"
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as SetupStatus;
+    } catch {
+      return null;
+    }
   },
 
   createScene(projectId: string, scene: SceneDocument) {

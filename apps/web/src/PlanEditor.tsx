@@ -17,7 +17,8 @@ import {
   PlanWall
 } from "./api";
 import { AttachmentSection } from "./AttachmentSection";
-import { computePlanStages } from "./plan-steps";
+import { computePlanStages, planAutosaveDecision } from "./plan-steps";
+import { classifyAssetRole } from "./setup";
 import {
   fileLabel,
   openingKindLabel,
@@ -42,6 +43,14 @@ const DEFAULT_WALL_THICKNESS_MM = 150;
 const DEFAULT_WALL_THICKNESS_PX = 20;
 const DEFAULT_OPENING_WIDTH_MM = 900;
 const DEFAULT_OPENING_HEIGHT_MM = 2100;
+
+// R6 plan autosave (#183): quiet-period debounce after the last edit, with a
+// hard cap so continuous editing still flushes to the server regularly, and a
+// retry backoff after a failed autosave (manual saves stay always available).
+// All three feed the pure planAutosaveDecision() policy.
+const AUTOSAVE_DEBOUNCE_MS = 1500;
+const AUTOSAVE_MAX_DELAY_MS = 10000;
+const AUTOSAVE_RETRY_MS = 10000;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -138,8 +147,16 @@ export function PlanEditor({
   onUpload?: (file: File | null, role: AssetRole) => void;
   uploadProgress?: number | null;
 }) {
+  // R6 (#183): plan uploads carry role "plan"; legacy "apartment" assets keep
+  // working as plan sources, so both roles feed the editor.
   const apartmentImages = useMemo(
-    () => assets.filter((asset) => asset.role === "apartment" && asset.media_type.startsWith("image/")),
+    () =>
+      assets.filter(
+        (asset) =>
+          asset.media_type.startsWith("image/") &&
+          (classifyAssetRole(asset.role) === "plan" ||
+            classifyAssetRole(asset.role) === "legacy_apartment")
+      ),
     [assets]
   );
 
@@ -165,9 +182,36 @@ export function PlanEditor({
   const [info, setInfo] = useState("");
   const [scaleBannerFocus, setScaleBannerFocus] = useState(false);
 
+  // R6 autosave (#183): dirty/saving/lastSaved tracking. dirty is derived by
+  // comparing the current draft against the last payload the server accepted;
+  // the refs carry the wall-clock edit timestamps for the debounce decision.
+  const [saving, setSaving] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [autosaveError, setAutosaveError] = useState("");
+  const [autosaveTick, setAutosaveTick] = useState(0);
+  const [savedJson, setSavedJson] = useState<string | null>(null);
+  const savingRef = useRef(false);
+  const savingPromiseRef = useRef<Promise<{ ok: boolean; version: number | null; error: string; skipped: boolean }> | null>(null);
+  const lastEditAtRef = useRef<number>(Date.now());
+  const firstDirtyAtRef = useRef<number | null>(null);
+  const draftRef = useRef<PlanDraft | null>(null);
+  const autosaveFailedAtRef = useRef<number | null>(null);
+  const savedJsonRef = useRef<string | null>(null);
+
+  // Keep the accepted-payload baseline in a ref (imperative dirty checks in
+  // persistDraft/flush) and in state (derived dirty flag for the UI).
+  function markSavedJson(json: string | null) {
+    savedJsonRef.current = json;
+    setSavedJson(json);
+  }
+
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<Drag>(null);
   const scaleBannerRef = useRef<HTMLDivElement | null>(null);
+
+  const draftJson = useMemo(() => (draft ? JSON.stringify(draft) : null), [draft]);
+  // dirty = the draft differs from the last payload the server accepted.
+  const dirty = draftJson !== null && draftJson !== savedJson;
 
   const planAssetId = selectedIds[0] ?? apartmentImages[0]?.id ?? "";
   const mmPerPx = draft?.scale.mm_per_px ?? null;
@@ -194,7 +238,29 @@ export function PlanEditor({
     setScaleInput("");
     setError("");
     setInfo("");
+    setSaving(false);
+    setLastSavedAt(null);
+    setAutosaveError("");
+    markSavedJson(null);
+    savingRef.current = false;
+    savingPromiseRef.current = null;
+    autosaveFailedAtRef.current = null;
+    firstDirtyAtRef.current = null;
+    draftRef.current = null;
   }, [projectId]);
+
+  // Adopt a server-persisted draft (initial resume or fresh analysis result):
+  // both the draft and the accepted-payload baseline move together so the
+  // autosave starts out clean.
+  function adoptDraft(next: PlanDraft, version: number, status: string | null) {
+    draftRef.current = next;
+    setDraft(next);
+    markSavedJson(JSON.stringify(next));
+    setDraftVersion(version);
+    setDraftStatus(status);
+    firstDirtyAtRef.current = null;
+    lastEditAtRef.current = Date.now();
+  }
 
   // Resume an existing draft (e.g. after a reload).
   useEffect(() => {
@@ -203,9 +269,7 @@ export function PlanEditor({
       .getPlanDraft(projectId)
       .then((response) => {
         if (cancelled || !response) return;
-        setDraft(response.draft);
-        setDraftVersion(response.version);
-        setDraftStatus(response.status);
+        adoptDraft(response.draft, response.version, response.status);
         setPhase("editor");
       })
       .catch(() => undefined);
@@ -213,6 +277,41 @@ export function PlanEditor({
       cancelled = true;
     };
   }, [projectId]);
+
+  // R6 autosave effect (#183): re-evaluated on every draft/save-state change.
+  // The pure planAutosaveDecision() decides between saving now (silently —
+  // no busy state, editing never blocked) and re-checking on a timer; the
+  // timer bumps autosaveTick to re-run this effect. A failed autosave backs
+  // off to AUTOSAVE_RETRY_MS (the inline warning stays visible meanwhile).
+  useEffect(() => {
+    if (!draft) return;
+    if (!dirty) return;
+    if (busy) return;
+    const now = Date.now();
+    let decision = planAutosaveDecision({
+      dirty,
+      inflight: savingRef.current,
+      msSinceLastEdit: now - lastEditAtRef.current,
+      msSinceDirtyStart: now - (firstDirtyAtRef.current ?? now),
+      debounceMs: AUTOSAVE_DEBOUNCE_MS,
+      maxDelayMs: AUTOSAVE_MAX_DELAY_MS
+    });
+    const failedAt = autosaveFailedAtRef.current;
+    if (decision === "save" && failedAt !== null && now - failedAt < AUTOSAVE_RETRY_MS) {
+      // Recent failure: back off instead of hammering a failing endpoint.
+      decision = "wait";
+    }
+    const schedule = (dueAt: number) => {
+      const timer = window.setTimeout(() => setAutosaveTick((t) => t + 1), Math.max(250, dueAt - now));
+      return () => window.clearTimeout(timer);
+    };
+    if (decision === "save") {
+      void persistDraft();
+      return;
+    }
+    const firstDirty = firstDirtyAtRef.current ?? now;
+    return schedule(Math.min(lastEditAtRef.current + AUTOSAVE_DEBOUNCE_MS, firstDirty + AUTOSAVE_MAX_DELAY_MS));
+  }, [draft, dirty, busy, saving, lastSavedAt, autosaveTick]);
 
   const activeJob = useMemo(
     () => (analyzeJobId ? jobs.find((job) => job.id === analyzeJobId) ?? null : null),
@@ -249,9 +348,7 @@ export function PlanEditor({
           setError("Анализ завершён, но черновик не найден.");
           return;
         }
-        setDraft(response.draft);
-        setDraftVersion(response.version);
-        setDraftStatus(response.status);
+        adoptDraft(response.draft, response.version, response.status);
         setDraftFromAnalysis(true);
         setPhase("editor");
         setInfo(`Черновик v${response.version} готов.`);
@@ -313,8 +410,14 @@ export function PlanEditor({
       if (!current) return current;
       const next = cloneDraft(current);
       mutator(next);
+      draftRef.current = next;
       return next;
     });
+    // R6 autosave: every edit path funnels through here, so this is the
+    // single chokepoint for the debounce timestamps.
+    const now = Date.now();
+    lastEditAtRef.current = now;
+    if (firstDirtyAtRef.current === null) firstDirtyAtRef.current = now;
   }
 
   function updateWall(wallId: string, patch: Partial<PlanWall>) {
@@ -550,21 +653,86 @@ export function PlanEditor({
     setSelection({ kind: "opening", wallId, openingId });
   }
 
+  // R6 autosave (#183): the single save path shared by the manual button and
+  // the silent autosave. Always targets the LATEST local draft (draftRef), is
+  // guarded by savingRef (an overlapping call waits for the in-flight save
+  // and then re-evaluates), and treats "server copy already equals the local
+  // draft" as a no-op. On success the accepted payload becomes the dirty
+  // baseline — edits made DURING the in-flight request keep the draft dirty;
+  // on failure the draft stays dirty and the outcome carries the message.
+  async function persistDraft(): Promise<{ ok: boolean; version: number | null; error: string; skipped: boolean }> {
+    while (savingRef.current && savingPromiseRef.current) {
+      await savingPromiseRef.current.catch(() => undefined);
+    }
+    const payload = draftRef.current;
+    if (!payload) return { ok: false, version: null, error: "Черновик не загружен.", skipped: true };
+    if (savedJsonRef.current === JSON.stringify(payload)) {
+      return { ok: true, version: null, error: "", skipped: true };
+    }
+    savingRef.current = true;
+    setSaving(true);
+    savingPromiseRef.current = (async () => {
+      try {
+        const response = await api.savePlanDraft(projectId, payload);
+        setDraftVersion(response.version);
+        setDraftStatus(response.status);
+        markSavedJson(JSON.stringify(payload));
+        // Per-dirty-cycle semantics: the 10s max-flush cap measures from the
+        // FIRST edit of the current unsaved batch. Without this reset the cap
+        // would stay satisfied forever after the first 10s and every later
+        // edit would fire an immediate PUT.
+        firstDirtyAtRef.current = null;
+        setLastSavedAt(Date.now());
+        setAutosaveError("");
+        autosaveFailedAtRef.current = null;
+        return { ok: true, version: response.version, error: "", skipped: false };
+      } catch (reason) {
+        // Keep the draft dirty (savedJson untouched): nothing is lost, the
+        // next edit or manual save retries. Never blocks editing.
+        const message = parseApiError(reason).message;
+        setAutosaveError(message);
+        autosaveFailedAtRef.current = Date.now();
+        return { ok: false, version: null, error: message, skipped: false };
+      } finally {
+        savingRef.current = false;
+        savingPromiseRef.current = null;
+        setSaving(false);
+      }
+    })();
+    return savingPromiseRef.current;
+  }
+
+  // Ensure the server copy matches the local draft before an irreversible
+  // step (commit). Bounded passes: each pass saves the newest state, so
+  // edits landing during a save are covered by the next one.
+  async function flushPendingSave(): Promise<boolean> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const outcome = await persistDraft();
+      if (!outcome.ok) return false;
+      const payload = draftRef.current;
+      if (!payload) return false;
+      if (savedJsonRef.current === JSON.stringify(payload)) return true;
+    }
+    const payload = draftRef.current;
+    return Boolean(payload) && savedJsonRef.current === JSON.stringify(payload);
+  }
+
   async function saveDraft() {
     if (!draft || busy) return;
     setBusy(true);
     setError("");
     setInfo("");
-    try {
-      const response = await api.savePlanDraft(projectId, draft);
-      setDraftVersion(response.version);
-      setDraftStatus(response.status);
-      setInfo(`Черновик v${response.version} сохранён.`);
-    } catch (reason) {
-      setError(parseApiError(reason).message);
-    } finally {
-      setBusy(false);
+    const outcome = await persistDraft();
+    if (outcome.ok) {
+      setInfo(
+        outcome.version !== null
+          ? `Черновик v${outcome.version} сохранён.`
+          : `Черновик v${draftVersion ?? 0} уже сохранён.`
+      );
+    } else if (!outcome.skipped) {
+      setError(outcome.error);
     }
+    setBusy(false);
   }
 
   async function build3d() {
@@ -573,6 +741,17 @@ export function PlanEditor({
     setError("");
     setInfo("");
     try {
+      // R6 autosave: flush unsaved edits first — commit would otherwise apply
+      // the server's stale copy. On flush failure abort with an inline
+      // warning; the draft stays dirty and editing is never blocked.
+      const flushed = await flushPendingSave();
+      if (!flushed) {
+        setError(
+          "Не удалось сохранить последние правки плана — создание 3D отменено. " +
+            "Проверьте соединение и попробуйте ещё раз или нажмите «Сохранить план»."
+        );
+        return;
+      }
       await api.commitPlanDraft(projectId);
       setDraftStatus("committed");
       await onChanged();
@@ -700,7 +879,8 @@ export function PlanEditor({
             type="file"
             accept="image/*"
             onChange={(event) => {
-              onUpload(event.target.files?.[0] ?? null, "apartment");
+              // R6 (#183): plan images upload with role "plan".
+              onUpload(event.target.files?.[0] ?? null, "plan");
               event.target.value = "";
             }}
           />
@@ -906,10 +1086,14 @@ export function PlanEditor({
               no scene document — rooms here are plan-draft ids — so the
               dangling-target mark is intentionally disabled in this context
               (scene omitted → isDanglingTarget cannot verify → never shown). */}
+          {/* R6 (#183): photo→room mapping unlocks once the plan draft is
+              committed — that is when canonical rooms exist (geometry
+              confirmed). Before that the control explains itself. */}
           <AttachmentSection
             projectId={projectId}
             targetType="room"
             targetId={selectedRoom.id}
+            roomMappingEnabled={draftStatus === "committed"}
           />
         </>
       )}
@@ -964,6 +1148,12 @@ export function PlanEditor({
         )}
         {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
         {error && <div className="error">{error}</div>}
+        {autosaveError && (
+          <div className="error" role="alert">
+            Автосохранение не удалось: {autosaveError}. Правки не потеряны — нажмите «Сохранить
+            план» или продолжайте редактирование.
+          </div>
+        )}
         {info && <p className="muted">{info}</p>}
         {draft && !analyzeJobId && draftFromAnalysis && draftStatus !== "committed" && (
           <p className="muted pl-analyze-result">
@@ -988,11 +1178,16 @@ export function PlanEditor({
               : undefined
           }
         >
+          {/* R6 autosave (#183): the save state leads the heading line. */}
           {draftStatus === "committed"
             ? "3D-сцена создана"
-            : draftStatus
-              ? "План сохранён"
-              : "Есть несохранённые правки"}
+            : saving
+              ? "Сохранение…"
+              : dirty
+                ? "Есть несохранённые правки"
+                : draftStatus
+                  ? "План сохранён"
+                  : "Есть несохранённые правки"}
         </span>
       </div>
       {stageStrip}
@@ -1207,6 +1402,12 @@ export function PlanEditor({
       )}
 
       {error && <div className="error">{error}</div>}
+      {autosaveError && (
+        <div className="error" role="alert">
+          Автосохранение не удалось: {autosaveError}. Правки не потеряны — нажмите «Сохранить
+          план» или продолжайте редактирование.
+        </div>
+      )}
       {info && <p className="muted">{info}</p>}
     </article>
   );

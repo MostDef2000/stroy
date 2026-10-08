@@ -63,7 +63,9 @@ export function computeProjectReadiness(input: ReadinessInput): ReadinessItem[] 
         id: "scene",
         label: "3D сцена",
         state: "attention",
-        detail: "Сцена ещё не создана — она инициализируется автоматически.",
+        // R6 (#183): nothing initializes automatically anymore — the 3D is
+        // created from the checked plan on the plan page.
+        detail: "Сцена ещё не создана — создайте 3D из плана на странице «План».",
         actionPage: "overview"
       };
 

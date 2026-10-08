@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   api,
   Asset,
@@ -17,6 +17,7 @@ import { styleAnalysisMaxMessage, styleAnalysisMinMessage } from "./copy";
 import { deleteConfirmText, nextStateAfterDelete } from "./projectDelete";
 import { type PageId } from "./nav";
 import { type ReadinessInput } from "./overview";
+import { classifyAssetRole, type SetupStatus } from "./setup";
 import { DesignPage } from "./pages/DesignPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -165,7 +166,10 @@ export default function App() {
   const [preparingScene, setPreparingScene] = useState(false);
   const [page, setPage] = useState<PageId>("overview");
   const [username, setUsername] = useState("Владелец");
-  const sceneInitAttempted = useRef<Set<string>>(new Set());
+  // R6 guided setup (#183): fetched in the refreshProject cycle, rendered by
+  // the Overview page. Null while no project is selected or the setup route
+  // has not answered yet.
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
 
   const refreshProjectsAndWorkers = useCallback(async () => {
     const [projectList, workerList] = await Promise.all([api.projects(), api.workers()]);
@@ -175,20 +179,23 @@ export default function App() {
   }, []);
 
   const refreshProject = useCallback(async (projectId: string) => {
-    const [scene, history, projectAssets, projectJobs, projectGenerations, projectStyles] = await Promise.all([
-      api.scene(projectId),
-      api.revisions(projectId),
-      api.assets(projectId),
-      api.jobs(projectId),
-      api.generations(projectId),
-      api.styleProfiles(projectId)
-    ]);
+    const [scene, history, projectAssets, projectJobs, projectGenerations, projectStyles, setupStatus] =
+      await Promise.all([
+        api.scene(projectId),
+        api.revisions(projectId),
+        api.assets(projectId),
+        api.jobs(projectId),
+        api.generations(projectId),
+        api.styleProfiles(projectId),
+        api.getSetup(projectId)
+      ]);
     setRevision(scene);
     setRevisions(history);
     setAssets(projectAssets);
     setJobs(projectJobs);
     setGenerations(projectGenerations);
     setStyleProfiles(projectStyles);
+    setSetup(setupStatus);
     setSceneReadyFor(projectId);
   }, []);
 
@@ -212,6 +219,7 @@ export default function App() {
       setJobs([]);
       setGenerations([]);
       setStyleProfiles([]);
+      setSetup(null);
       setSceneReadyFor(null);
       setPreparingScene(false);
       return;
@@ -219,21 +227,10 @@ export default function App() {
     refreshProject(selected).catch((error) => setMessage(String(error)));
   }, [selected, refreshProject]);
 
-  // Photo-first flow needs a scene revision as its lineage anchor. When a
-  // project genuinely has no scene (only known after the first scene fetch),
-  // initialize the same golden-room scene the manual button creates. Once per
-  // project; idempotent, and a no-op when a scene already exists.
-  useEffect(() => {
-    if (!authenticated || !selected || sceneReadyFor !== selected) return;
-    if (revision || sceneInitAttempted.current.has(selected)) return;
-    sceneInitAttempted.current.add(selected);
-    setPreparingScene(true);
-    api
-      .createScene(selected, goldenRoom(selected))
-      .then(() => refreshProject(selected))
-      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
-      .finally(() => setPreparingScene(false));
-  }, [authenticated, selected, sceneReadyFor, revision, refreshProject]);
+  // R6 (#183): no scene is ever created automatically. A fresh project starts
+  // empty; the plan-first guidance on the Overview page leads the owner
+  // through the setup steps, and the golden-room scene remains available as
+  // the explicit demo action (createDemoScene below).
 
   useEffect(() => {
     if (!authenticated) return;
@@ -265,7 +262,11 @@ export default function App() {
     sceneCameraCount: revision?.scene.cameras.length ?? 0,
     calibratedCameraCount:
       revision?.scene.cameras.filter((camera) => camera.calibration != null).length ?? 0,
-    apartmentAssetCount: assets.filter((asset) => asset.role === "apartment").length,
+    // R6: plan uploads now carry role "plan"; role "apartment" stays
+    // legacy-accepted, so both roles count toward the plan readiness card.
+    apartmentAssetCount: assets.filter(
+      (asset) => classifyAssetRole(asset.role) === "plan" || classifyAssetRole(asset.role) === "legacy_apartment"
+    ).length,
     referenceAssetCount: assets.filter((asset) => asset.role === "reference").length,
     revisionCount: revisions.length,
     activeJobCount: jobs.filter(
@@ -309,8 +310,15 @@ export default function App() {
 
   async function createDemoScene() {
     if (!selected) return;
-    await api.createScene(selected, goldenRoom(selected));
-    await refreshProject(selected);
+    setPreparingScene(true);
+    try {
+      await api.createScene(selected, goldenRoom(selected));
+      await refreshProject(selected);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreparingScene(false);
+    }
   }
 
   async function upload(file: File | null, role: AssetRole) {
@@ -443,6 +451,7 @@ export default function App() {
           scene={revision?.scene ?? null}
           hasProject={Boolean(currentProject)}
           hasScene={revision !== null}
+          setup={setup}
           preparingScene={preparingScene}
           onCreateDemoScene={() => void createDemoScene()}
           onNavigate={setPage}

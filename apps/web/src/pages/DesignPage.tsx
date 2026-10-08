@@ -218,9 +218,9 @@ export function DesignPage({
     return (
       <section className="empty-state">
         <h2>Сцена ещё не создана</h2>
-        <p>Сцена инициализируется автоматически. Создайте комнату на странице «Обзор».</p>
-        <button className="secondary" onClick={() => onNavigate("overview")}>
-          Вернуться к обзору
+        <p>Сцена появится после того, как вы создадите 3D из плана. Начните на странице «План».</p>
+        <button className="secondary" onClick={() => onNavigate("plan")}>
+          Перейти к плану
         </button>
       </section>
     );
