@@ -112,6 +112,7 @@ from stroy.services.plans import (
     save_draft,
 )
 from stroy.services.projects import ProjectHasActiveJobsError, delete_project
+from stroy.services.setup import build_setup
 from stroy.services.scenes import (
     apply_scene_command,
     create_noop_revision,
@@ -859,6 +860,8 @@ async def asset_upload(
         raise HTTPException(status_code=404, detail="project not found")
     if role not in {
         "apartment",
+        "plan",
+        "photo",
         "reference",
         "derived",
         "attachment",
@@ -2682,6 +2685,22 @@ async def plan_draft_commit(
     except (ValueError, CommandRejected) as exc:
         raise _domain_conflict(exc) from exc
     return {"revision_id": revision.id, "content_hash": revision.content_hash}
+
+
+# ---------------------------------------------------------------------------
+# Guided setup (R6, #183)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/setup",
+    dependencies=[Depends(require_owner)],
+)
+async def project_setup(project_id: str, session: DbSession):
+    """Read-only guided-setup snapshot composed from existing project data."""
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return await build_setup(session, project_id)
 
 
 @router.post(
