@@ -95,8 +95,15 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const nextRowKey = useRef(1);
 
+  // R6 (#183): calibration source photos carry role "photo"; legacy
+  // "apartment" uploads stay usable as calibration sources.
   const sourcePhotos = useMemo(
-    () => assets.filter((asset) => asset.media_type.startsWith("image/") && asset.role === "apartment"),
+    () =>
+      assets.filter(
+        (asset) =>
+          asset.media_type.startsWith("image/") &&
+          (asset.role === "photo" || asset.role === "apartment")
+      ),
     [assets]
   );
 

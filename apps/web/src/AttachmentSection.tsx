@@ -3,6 +3,7 @@ import { api, type Attachment, type AttachmentKind } from "./api";
 import { apiErrorText } from "./twinDesign";
 import {
   buildAttachmentPayload,
+  isApproxRoomMapping,
   isDanglingTarget,
   isTaskOverdue
 } from "./attachments";
@@ -11,9 +12,16 @@ import type { AttachmentSceneLike } from "./attachments";
 // R1 attachments section: the shared list + add-controls block used by the
 // Plan room inspector (target_type=room) and the Design selected-entity rail
 // (target_type=entity). Photos/files upload through the project asset
-// endpoint with role "attachment", then reference the created asset. Errors
+// endpoint — R6 (#183): image uploads carry role "photo", non-image files
+// keep role "attachment" — then reference the created asset. Errors
 // render inline; every mutation refetches the list so a concurrent edit in
 // another panel cannot make us stale.
+//
+// R6 photo→room mapping (#183, minimal): in the room-targeted section, once
+// canonical rooms exist (PlanEditor passes draftStatus === "committed"), the
+// photo control becomes «Привязать к комнате» and stamps the attachment with
+// {mapping: "owner_room", confidence: "approx"} — shown back with the
+// approximate badge. Precise mapping is out of scope for R6 (disclosure).
 
 function isImageFile(file: File): boolean {
   return file.type.startsWith("image/");
@@ -24,7 +32,8 @@ export function AttachmentSection({
   targetType,
   targetId,
   scene = null,
-  heading = "Вложения"
+  heading = "Вложения",
+  roomMappingEnabled = false
 }: {
   projectId: string;
   targetType: "room" | "entity";
@@ -32,6 +41,8 @@ export function AttachmentSection({
   /** Current scene — enables the muted «цель удалена» dangling mark. */
   scene?: AttachmentSceneLike;
   heading?: string;
+  /** R6 (#183): canonical rooms exist → room photos can be mapped (approx). */
+  roomMappingEnabled?: boolean;
 }) {
   const [items, setItems] = useState<Attachment[]>([]);
   const [loadError, setLoadError] = useState("");
@@ -92,13 +103,27 @@ export function AttachmentSection({
     setActionError("");
     setBusy(true);
     try {
-      // Upload first (role "attachment"), then attach the created asset.
-      const asset = await api.upload(projectId, file, "attachment", () => undefined);
+      // R6 (#183): image uploads carry role "photo" (real room photos);
+      // non-image files keep the generic role "attachment". The created
+      // asset is then referenced by the photo/file attachment row.
+      const asset = await api.upload(
+        projectId,
+        file,
+        isImageFile(file) ? "photo" : "attachment",
+        () => undefined
+      );
       const result = buildAttachmentPayload({
         targetType,
         targetId,
         kind: isImageFile(file) ? "photo" : "file",
-        assetId: asset.id
+        assetId: asset.id,
+        // R6 (#183): a photo attached in the ROOM context while canonical
+        // rooms exist is an approximate owner-room mapping. The room guard
+        // matches the label/hint gating (entity rail never stamps mapping).
+        metadata:
+          targetType === "room" && roomMappingEnabled && isImageFile(file)
+            ? { mapping: "owner_room", confidence: "approx" }
+            : undefined
       });
       if (!result.ok) {
         setActionError(result.error);
@@ -182,6 +207,14 @@ export function AttachmentSection({
                   )}
                   {overdue && <small className="attachment-overdue-mark"> · просрочено</small>}
                   {dangling && <small className="muted"> · цель удалена</small>}
+                  {/* R6 (#183): approximate photo→room mapping mark — the
+                      badge carries the qualifier, the note stays plain. */}
+                  {item.kind === "photo" && isApproxRoomMapping(item.metadata) && (
+                    <span className="attachment-mapping-note">
+                      {" "}· Фото привязано к комнате{" "}
+                      <span className="approx-badge">приблизительно</span>
+                    </span>
+                  )}
                   {(item.kind === "photo" || item.kind === "file") && item.asset_id && (
                     <a href={api.assetUrl(item.asset_id)} target="_blank" rel="noreferrer">
                       {item.kind === "photo" ? "открыть фото" : "открыть файл"}
@@ -239,17 +272,34 @@ export function AttachmentSection({
           + Задача
         </button>
         <label className="upload attachment-upload">
-          Фото/файл
+          {/* R6 (#183): in the room context with canonical rooms the photo
+              control IS the mapping control; its availability is the mapping
+              gate (tooltip carries the reason). */}
+          {targetType === "room" && roomMappingEnabled ? "Привязать к комнате" : "Фото/файл"}
           <input
             ref={uploadInputRef}
             type="file"
             disabled={busy}
+            title={
+              targetType === "room" && !roomMappingEnabled
+                ? "Привязка фото к комнатам откроется после создания 3D из плана."
+                : undefined
+            }
             onChange={(event) => {
               void attachFile(event.target.files?.[0] ?? null);
             }}
           />
         </label>
       </div>
+
+      {targetType === "room" && !roomMappingEnabled && (
+        <p className="hint">
+          Привязка фото к комнатам откроется после создания 3D из плана.
+        </p>
+      )}
+      {targetType === "room" && roomMappingEnabled && (
+        <p className="hint">Точная привязка фото появится позже.</p>
+      )}
 
       {actionError && <div className="error">{actionError}</div>}
     </section>

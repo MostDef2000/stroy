@@ -75,3 +75,42 @@ export function computePlanStages(input: PlanStageInput): PlanStage[] {
     return { id, label: STAGE_LABELS[id], state, hint: STAGE_HINTS[id] };
   });
 }
+
+// ---------------------------------------------------------------------------
+// R6 plan autosave (#183): the pure debounce decision. The PlanEditor effect
+// runs this on a timer with wall-clock timestamps; being pure, the policy is
+// unit-testable without a DOM (tests/plan-steps.test.mjs).
+//
+// Policy:
+//   - not dirty                → wait   (nothing to save)
+//   - a save is in flight      → queue  (re-save after it lands if still dirty)
+//   - idle for >= debounceMs   → save   (quiet period after the last edit)
+//   - dirty for >= maxDelayMs  → save   (hard cap: continuous editing must not
+//                                        starve the server copy for long)
+//   - otherwise                → wait   (inside the debounce window)
+// ---------------------------------------------------------------------------
+
+export type AutosaveDecision = "save" | "queue" | "wait";
+
+export interface AutosaveDecisionInput {
+  dirty: boolean;
+  inflight: boolean;
+  msSinceLastEdit: number;
+  /**
+   * How long the draft has carried unsaved changes — measured from the FIRST
+   * edit of the CURRENT unsaved batch. The caller (PlanEditor) resets the
+   * batch start after every successful save, so the maxDelayMs cap bounds
+   * each dirty cycle, not the whole session.
+   */
+  msSinceDirtyStart: number;
+  debounceMs: number;
+  maxDelayMs: number;
+}
+
+export function planAutosaveDecision(input: AutosaveDecisionInput): AutosaveDecision {
+  const { dirty, inflight, msSinceLastEdit, msSinceDirtyStart, debounceMs, maxDelayMs } = input;
+  if (!dirty) return "wait";
+  if (inflight) return "queue";
+  if (msSinceLastEdit >= debounceMs || msSinceDirtyStart >= maxDelayMs) return "save";
+  return "wait";
+}

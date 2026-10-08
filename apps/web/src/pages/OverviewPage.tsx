@@ -5,6 +5,14 @@ import { isDanglingTarget, isTaskOverdue } from "../attachments";
 import { apiErrorText } from "../twinDesign";
 import type { PageId } from "../nav";
 import { computeProjectReadiness, type ReadinessInput, type ReadinessState } from "../overview";
+import {
+  buildSetupCopy,
+  ctaFromSetup,
+  resolveSetupSteps,
+  setupStepLinkLabel,
+  setupStepPage,
+  type SetupStatus
+} from "../setup";
 
 const STATE_LABEL: Record<ReadinessState, string> = {
   ok: "Готово",
@@ -19,8 +27,10 @@ const ATTACHMENT_KIND_LABELS: Record<Attachment["kind"], string> = {
   task: "Задача"
 };
 
-// Overview: what is ready, what is missing, where to go next. Also hosts the
-// golden-room demo-scene action while the project has no scene (#101).
+// Overview: what is ready, what is missing, where to go next. The golden-room
+// demo-scene action stays here as an EXPLICIT secondary action with the
+// approximation badge — R6 (#183) removed the automatic scene initialization,
+// so fresh projects get plan-first guidance instead.
 // Everything renders inside .overview-page: an explicit page wrapper (#151)
 // that keeps the workspace's top-aligned row model scoped to this page —
 // without it, the stretched .workspace grid distributes the free viewport
@@ -30,12 +40,18 @@ const ATTACHMENT_KIND_LABELS: Record<Attachment["kind"], string> = {
 // card (Как есть N · Конструктив N · Дизайн N — RU labels per #188) and the
 // project-level «Заметки и задачи» card with the done toggle and the
 // overdue/dangling marks.
+//
+// R6 (#183): the «Настройка проекта» section is the guided six-step checklist
+// driven by GET /projects/{id}/setup. It owns the SINGLE primary CTA
+// (setup.next_action until ready_for_design, then the design hand-off); the
+// readiness cards below stay secondary/quiet while the setup CTA exists.
 export function OverviewPage({
   readiness,
   projectId,
   scene,
   hasProject,
   hasScene,
+  setup,
   preparingScene,
   onCreateDemoScene,
   onNavigate
@@ -45,6 +61,7 @@ export function OverviewPage({
   scene: SceneDocument | null;
   hasProject: boolean;
   hasScene: boolean;
+  setup: SetupStatus | null;
   preparingScene: boolean;
   onCreateDemoScene: () => void;
   onNavigate: (page: PageId) => void;
@@ -100,12 +117,17 @@ export function OverviewPage({
 
   const items = computeProjectReadiness(readiness);
 
-  // ONE primary next action (#188 §2): the first non-ok item in the readiness
-  // priority (план → сцена/демо → камера → дизайн → задачи) gets the primary
-  // button; every other card keeps its quiet secondary «Перейти». The start-
-  // panel demo button above is the primary action when the scene is the
-  // first blocker (its readiness item targets «overview»).
+  // ONE primary next action (#188 §2): while the setup status is known, the
+  // setup CTA is THE primary action and every readiness card keeps a quiet
+  // secondary «Перейти». Without a setup status (route not answering yet) the
+  // pre-R6 fallback applies: the first non-ok readiness item gets the primary.
+  const setupOwnsCta = setup !== null;
   const primaryId = items.find((item) => item.state !== "ok")?.id ?? null;
+
+  // R6 setup section inputs (null while the setup route has not answered).
+  const steps = setup ? resolveSetupSteps(setup) : [];
+  const copy = setup ? buildSetupCopy(setup) : { known: [], confirm: [] };
+  const cta = setup ? ctaFromSetup(setup) : null;
 
   return (
     <div className="overview-page">
@@ -113,13 +135,80 @@ export function OverviewPage({
         <section className="panel start-scene-panel">
           <h2>Начало работы</h2>
           <p className="muted">
-            Сцена инициализируется автоматически. Если этого не произошло, создайте демонстрационную сцену.
+            Начните с загрузки плана квартиры на странице «План» — 3D-сцена появится из
+            проверенного плана. Демо-сцену можно создать и без плана.
           </p>
           <div className="pl-actions">
-            <button onClick={onCreateDemoScene}>Создать демо-сцену</button>
+            <button type="button" className="secondary" onClick={onCreateDemoScene}>
+              Создать демо-сцену
+            </button>
             <span className="approx-badge">Демо-сцена, приблизительно</span>
           </div>
           {preparingScene && <p className="muted">Готовим рабочее место…</p>}
+        </section>
+      )}
+
+      {setup && (
+        <section className="panel setup-panel" aria-label="Настройка проекта">
+          <div className="panel-heading">
+            <h2>Настройка проекта</h2>
+          </div>
+
+          <ol className="setup-steps">
+            {steps.map((step) => (
+              <li key={step.id} className={step.state} aria-current={step.state === "current" ? "step" : undefined}>
+                <span className="setup-step-label">{step.label}</span>
+                {step.state === "done" && (
+                  <>
+                    <span className="setup-step-mark" aria-label="Готово">
+                      ✓
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary setup-step-link"
+                      onClick={() => onNavigate(setupStepPage(step.id))}
+                    >
+                      {setupStepLinkLabel(step.id)}
+                    </button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ol>
+
+          <div className="setup-columns">
+            <div className="setup-known">
+              <h3>Что STROY знает</h3>
+              <ul>
+                {copy.known.map((line, index) => (
+                  <li key={index}>{line}</li>
+                ))}
+              </ul>
+            </div>
+            {copy.confirm.length > 0 && (
+              <div className="setup-confirm">
+                <h3>Что нужно подтвердить</h3>
+                <ul>
+                  {copy.confirm.map((line, index) => (
+                    <li key={index}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          {cta && (
+            <div className="setup-cta">
+              <button
+                type="button"
+                disabled={cta.disabled}
+                onClick={() => onNavigate(cta.page)}
+              >
+                {cta.label}
+              </button>
+              {cta.disabled && cta.reason && <p className="muted">{cta.reason}</p>}
+            </div>
+          )}
         </section>
       )}
 
@@ -135,7 +224,7 @@ export function OverviewPage({
               <p>{item.detail}</p>
               {target && target !== "overview" && (
                 <button
-                  className={item.id === primaryId ? undefined : "secondary"}
+                  className={setupOwnsCta || item.id !== primaryId ? "secondary" : undefined}
                   onClick={() => onNavigate(target)}
                 >
                   Перейти

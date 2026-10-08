@@ -50,8 +50,12 @@ export function PhotoEditPanel({
   generations: Generation[];
   onChanged: () => Promise<void>;
 }) {
+  // R6 (#183): real room photos carry role "photo"; legacy "apartment" uploads
+  // and derived edit results keep appearing as editable photos.
   const imageAssets = useMemo(() => ({
-    photos: assets.filter((asset) => asset.media_type.startsWith("image/") && (asset.role === "apartment" || asset.role === "derived")),
+    photos: assets.filter((asset) =>
+      asset.media_type.startsWith("image/") &&
+      (asset.role === "photo" || asset.role === "apartment" || asset.role === "derived")),
     references: assets.filter((asset) => asset.role === "reference" && asset.media_type.startsWith("image/"))
   }), [assets]);
 
@@ -159,7 +163,8 @@ export function PhotoEditPanel({
   }
 
   function handlePhoto(file: File | null) {
-    return uploadFile(file, "apartment", setPhotoProgress, (assetId) => {
+    // R6 (#183): photo-mode uploads carry role "photo" (was "apartment").
+    return uploadFile(file, "photo", setPhotoProgress, (assetId) => {
       setPhotoId(assetId); setRect(null); setIteration(null);
     });
   }

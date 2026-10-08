@@ -36,7 +36,9 @@ const ACTIVITY_TABS: Array<{ id: ActivityTab; label: string }> = [
 // no permanent truncation, no unbounded page height).
 const ACTIVITY_PAGE = 20;
 
-const ASSET_ROLES: AssetRole[] = ["apartment", "reference", "derived"];
+// R6 (#183): "plan" and "photo" join the filterable asset roles; "apartment"
+// stays listed for legacy uploads.
+const ASSET_ROLES: AssetRole[] = ["apartment", "plan", "photo", "reference", "derived"];
 
 // Diagnostics dashboard (#143): bounded operator surface. Compute at top,
 // one tabbed activity pane (jobs / revisions / generations), files and style
