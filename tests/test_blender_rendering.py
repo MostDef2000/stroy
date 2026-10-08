@@ -429,6 +429,42 @@ def test_render_manifest_matches_versioned_schema() -> None:
     )
 
 
+def test_render_manifest_with_r7_lineage_fields_matches_versioned_schema() -> None:
+    """R7 additive manifest fields (stage/variant_id/source_asset_ids and the
+    provenance passthrough dicts) stay inside the versioned contract."""
+    manifest = finalize_render_manifest(
+        context=RenderContext(
+            render_id="render-1",
+            scene_revision_id="revision.golden-room",
+            camera_id="camera.living.entry",
+            stage="draft",
+            variant_id="variant.1",
+            source_asset_ids=["asset-photo"],
+            workflow_provenance={"renderer_plan": "v1"},
+            model_provenance={"adapter": "blender"},
+        ),
+        pass_asset_ids={
+            "rgb": "asset-rgb",
+            "depth": "asset-depth",
+            "normals": "asset-normals",
+            "object_ids": "asset-object",
+            "material_ids": "asset-material",
+        },
+    )
+    schema = json.loads(
+        (ROOT / "schemas" / "render-manifest.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    dumped = manifest.model_dump(mode="json", exclude_none=True)
+    assert dumped["stage"] == "draft"
+    assert dumped["variant_id"] == "variant.1"
+    assert dumped["source_asset_ids"] == ["asset-photo"]
+    assert dumped["workflow_provenance"] == {"renderer_plan": "v1"}
+    assert dumped["model_provenance"] == {"adapter": "blender"}
+    jsonschema.validate(dumped, schema)
+
+
 def test_render_manifest_rejects_missing_aligned_pass() -> None:
     with pytest.raises(ValueError, match="missing passes"):
         finalize_render_manifest(

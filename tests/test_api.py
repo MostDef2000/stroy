@@ -18,6 +18,7 @@ from stroy.db.models import (
     JobRow,
     ProjectRow,
     RenderManifestRow,
+    SceneRevisionRow,
 )
 from stroy.editing.mask import render_replacement_mask
 from stroy.editing.replacement import ReplacementRegion
@@ -922,6 +923,585 @@ async def test_render_job_persists_aligned_pass_manifest(settings):
             assert all(tagged[name]["role"] == "derived" for name in pass_assets)
 
 
+async def _register_blender_worker(client: AsyncClient) -> None:
+    register = await client.post(
+        "/api/v1/workers/register",
+        headers={"Authorization": "Bearer worker-secret"},
+        json={
+            "worker_id": "blender-worker",
+            "capabilities": ["blender_render"],
+            "models": [],
+            "runtimes": {"blender": {"status": "ready"}},
+        },
+    )
+    assert register.status_code == 200
+
+
+async def _upload_render_passes(
+    client: AsyncClient, job_id: str, lease: dict
+) -> dict[str, str]:
+    """Upload the five aligned passes; returns the semantic→asset map."""
+    pass_assets = {}
+    for pass_name in ("rgb", "depth", "normals", "object_ids", "material_ids"):
+        media_type = "image/png" if pass_name == "rgb" else "image/x-exr"
+        suffix = "png" if pass_name == "rgb" else "exr"
+        upload = await client.post(
+            f"/api/v1/workers/jobs/{job_id}/outputs",
+            headers={"Authorization": "Bearer worker-secret"},
+            data={
+                "worker_id": "blender-worker",
+                "lease_id": lease["lease_id"],
+                "semantic_name": pass_name,
+            },
+            files={
+                "file": (
+                    f"{pass_name}.{suffix}",
+                    f"{pass_name}-bytes".encode(),
+                    media_type,
+                )
+            },
+        )
+        assert upload.status_code == 201
+        pass_assets[pass_name] = upload.json()["id"]
+    return pass_assets
+
+
+@pytest.mark.asyncio
+async def test_render_request_stage_defaults_final(settings):
+    """R7: an omitted stage defaults to "final" (cycles profile), rides the
+    job payload, and lands in the persisted manifest."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Stage project"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.stage",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.floor.main",
+                            "kind": "floor",
+                            "geometry": {"dimensions_mm": [4000, 3000, 100]},
+                            "locks": {"geometry": True, "transform": True},
+                        }
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {"fx": 620, "fy": 625, "cx": 400, "cy": 250},
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            render = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={"scene_revision_id": revision_id, "camera_id": "camera.main"},
+            )
+            assert render.status_code == 201
+            render_job = render.json()
+
+            await _register_blender_worker(client)
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={"worker_id": "blender-worker"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+            assert lease["job_id"] == render_job["id"]
+            # No stage given → default "final" with the production profile.
+            assert lease["payload"]["stage"] == "final"
+            assert lease["payload"]["renderer_profile"] == "blender-cycles-v0"
+
+            pass_assets = await _upload_render_passes(client, render_job["id"], lease)
+            complete = await client.post(
+                f"/api/v1/workers/jobs/{render_job['id']}/complete",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={
+                    "worker_id": "blender-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        # Mirrors the real runtime: the worker echoes the job
+                        # payload's stage into the finalized manifest.
+                        "render_manifest": {
+                            "schema_version": "0.1.0",
+                            "render_id": lease["payload"]["render_id"],
+                            "scene_revision_id": revision_id,
+                            "camera_id": "camera.main",
+                            "renderer_profile": "blender-cycles-v0",
+                            "stage": "final",
+                            "passes": pass_assets,
+                        },
+                        "scene_metadata": {"schema_version": "0.1.0"},
+                        "output_asset_ids": list(pass_assets.values()),
+                    },
+                },
+            )
+            assert complete.status_code == 200
+            assert complete.json()["status"] == "succeeded"
+
+            renders = (
+                await client.get(f"/api/v1/projects/{project_id}/renders")
+            ).json()
+            assert len(renders) == 1
+            assert renders[0]["manifest"]["stage"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_render_request_draft_maps_to_eevee(settings):
+    """R7: stage "draft" maps to the preview profile unless the client pins
+    one explicitly; an explicit profile always overrides the stage mapping."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Draft project"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.draft",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {"fx": 620, "fy": 625, "cx": 400, "cy": 250},
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            await _register_blender_worker(client)
+
+            async def claim_payload() -> dict:
+                claim = await client.post(
+                    "/api/v1/workers/jobs/claim",
+                    headers={"Authorization": "Bearer worker-secret"},
+                    json={"worker_id": "blender-worker"},
+                )
+                assert claim.status_code == 200
+                return claim.json()["payload"]
+
+            # Draft + no explicit profile → EEVEE preview profile.
+            draft = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={"scene_revision_id": revision_id, "camera_id": "camera.main", "stage": "draft"},
+            )
+            assert draft.status_code == 201
+            payload = await claim_payload()
+            assert payload["stage"] == "draft"
+            assert payload["renderer_profile"] == "blender-eevee-v0"
+
+            # Draft + explicit profile → the explicit profile wins.
+            explicit = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={
+                    "scene_revision_id": revision_id,
+                    "camera_id": "camera.main",
+                    "stage": "draft",
+                    "renderer_profile": "blender-cycles-v0",
+                },
+            )
+            assert explicit.status_code == 201
+            payload = await claim_payload()
+            assert payload["stage"] == "draft"
+            assert payload["renderer_profile"] == "blender-cycles-v0"
+
+            # Final + explicit profile → unchanged default behavior.
+            final = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={
+                    "scene_revision_id": revision_id,
+                    "camera_id": "camera.main",
+                    "renderer_profile": "blender-cycles-v0",
+                },
+            )
+            assert final.status_code == 201
+            payload = await claim_payload()
+            assert payload["stage"] == "final"
+            assert payload["renderer_profile"] == "blender-cycles-v0"
+
+
+@pytest.mark.asyncio
+async def test_render_manifest_persists_stage_and_variant(settings):
+    """R7: stage/variant_id/source_asset_ids survive the job execution path
+    into the persisted RenderManifestRow.manifest_json."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Manifest project"}
+            )
+            project_id = project.json()["id"]
+
+            photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "photo"},
+                files={"file": ("room.png", png_bytes(), "image/png")},
+            )
+            assert photo.status_code == 201
+            photo_id = photo.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.manifest",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "surface.floor.main",
+                            "kind": "floor",
+                            "geometry": {"dimensions_mm": [4000, 3000, 100]},
+                            "locks": {"geometry": True, "transform": True},
+                        }
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {"fx": 620, "fy": 625, "cx": 400, "cy": 250},
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                            "source_asset_id": photo_id,
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            variant = await client.post(
+                f"/api/v1/projects/{project_id}/variants:create-from-current",
+                headers=headers,
+                json={"title": "Render me"},
+            )
+            assert variant.status_code == 201, variant.text
+            variant_id = variant.json()["id"]
+
+            render = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={
+                    "scene_revision_id": revision_id,
+                    "camera_id": "camera.main",
+                    "variant_id": variant_id,
+                },
+            )
+            assert render.status_code == 201
+            render_job = render.json()
+
+            await _register_blender_worker(client)
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={"worker_id": "blender-worker"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+            assert lease["payload"]["variant_id"] == variant_id
+            assert lease["payload"]["stage"] == "final"
+
+            pass_assets = await _upload_render_passes(client, render_job["id"], lease)
+            complete = await client.post(
+                f"/api/v1/workers/jobs/{render_job['id']}/complete",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={
+                    "worker_id": "blender-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        "render_manifest": {
+                            "schema_version": "0.1.0",
+                            "render_id": lease["payload"]["render_id"],
+                            "scene_revision_id": revision_id,
+                            "camera_id": "camera.main",
+                            "renderer_profile": "blender-cycles-v0",
+                            "stage": lease["payload"]["stage"],
+                            "variant_id": lease["payload"]["variant_id"],
+                            "source_asset_ids": [photo_id],
+                            "passes": pass_assets,
+                        },
+                        "scene_metadata": {"schema_version": "0.1.0"},
+                        "output_asset_ids": list(pass_assets.values()),
+                    },
+                },
+            )
+            assert complete.status_code == 200
+            assert complete.json()["status"] == "succeeded"
+
+            renders = (
+                await client.get(f"/api/v1/projects/{project_id}/renders")
+            ).json()
+            assert len(renders) == 1
+            row = renders[0]
+            assert row["variant_id"] == variant_id
+            assert row["manifest"]["stage"] == "final"
+            assert row["manifest"]["variant_id"] == variant_id
+            assert row["manifest"]["source_asset_ids"] == [photo_id]
+
+            detail = await client.get(f"/api/v1/renders/{row['id']}")
+            assert detail.status_code == 200
+            assert detail.json()["manifest"]["stage"] == "final"
+            assert detail.json()["manifest"]["variant_id"] == variant_id
+
+
+@pytest.mark.asyncio
+async def test_render_manifest_omits_source_asset_ids_without_camera_source(settings):
+    """R7 semantics: a camera without source_asset_id yields NO
+    source_asset_ids on the manifest — the key is absent in the persisted
+    manifest_json (None is dropped by exclude_none), never []. None means
+    "no camera source photo is known", while [] would falsely claim "the
+    camera explicitly has an empty set of source photos"."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "No source project"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.no-source",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {"fx": 620, "fy": 625, "cx": 400, "cy": 250},
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            render = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={"scene_revision_id": revision_id, "camera_id": "camera.main"},
+            )
+            assert render.status_code == 201
+            render_job = render.json()
+
+            await _register_blender_worker(client)
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={"worker_id": "blender-worker"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+
+            pass_assets = await _upload_render_passes(client, render_job["id"], lease)
+            complete = await client.post(
+                f"/api/v1/workers/jobs/{render_job['id']}/complete",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={
+                    "worker_id": "blender-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {
+                        # Mirrors the real runtime for a camera without
+                        # source_asset_id: the executor derives
+                        # source_asset_ids=None, which never reaches the
+                        # persisted manifest.
+                        "render_manifest": {
+                            "schema_version": "0.1.0",
+                            "render_id": lease["payload"]["render_id"],
+                            "scene_revision_id": revision_id,
+                            "camera_id": "camera.main",
+                            "renderer_profile": "blender-cycles-v0",
+                            "stage": "final",
+                            "passes": pass_assets,
+                        },
+                        "scene_metadata": {"schema_version": "0.1.0"},
+                        "output_asset_ids": list(pass_assets.values()),
+                    },
+                },
+            )
+            assert complete.status_code == 200
+            assert complete.json()["status"] == "succeeded"
+
+            renders = (
+                await client.get(f"/api/v1/projects/{project_id}/renders")
+            ).json()
+            assert len(renders) == 1
+            manifest = renders[0]["manifest"]
+            assert manifest["stage"] == "final"
+            assert "source_asset_ids" not in manifest
+
+
+@pytest.mark.asyncio
+async def test_failed_render_does_not_create_design_revision(settings):
+    """R7 guard: a failed render job persists no manifest row and never
+    touches the scene revision chain."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Fail project"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.fail",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {"fx": 620, "fy": 625, "cx": 400, "cy": 250},
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            render = await client.post(
+                f"/api/v1/projects/{project_id}/renders",
+                headers=headers,
+                json={"scene_revision_id": revision_id, "camera_id": "camera.main"},
+            )
+            assert render.status_code == 201
+            render_job = render.json()
+
+            await _register_blender_worker(client)
+            claim = await client.post(
+                "/api/v1/workers/jobs/claim",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={"worker_id": "blender-worker"},
+            )
+            assert claim.status_code == 200
+            lease = claim.json()
+            assert lease["job_id"] == render_job["id"]
+
+            async with app.state.session_factory() as db:
+                revisions_before = len(
+                    list(
+                        (
+                            await db.execute(
+                                select(SceneRevisionRow).where(
+                                    SceneRevisionRow.project_id == project_id
+                                )
+                            )
+                        ).scalars()
+                    )
+                )
+
+            # A worker completing without a render manifest is a failed job.
+            failed = await client.post(
+                f"/api/v1/workers/jobs/{render_job['id']}/complete",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={
+                    "worker_id": "blender-worker",
+                    "lease_id": lease["lease_id"],
+                    "result": {"output_asset_ids": []},
+                },
+            )
+            assert failed.status_code == 200
+            assert failed.json()["status"] == "failed"
+
+            async with app.state.session_factory() as db:
+                revisions_after = len(
+                    list(
+                        (
+                            await db.execute(
+                                select(SceneRevisionRow).where(
+                                    SceneRevisionRow.project_id == project_id
+                                )
+                            )
+                        ).scalars()
+                    )
+                )
+                assert revisions_after == revisions_before
+                manifest_rows = (
+                    await db.execute(
+                        select(RenderManifestRow).where(
+                            RenderManifestRow.job_id == render_job["id"]
+                        )
+                    )
+                ).scalars()
+                assert list(manifest_rows) == []
+
+            scene_after = await client.get(f"/api/v1/projects/{project_id}/scene")
+            assert scene_after.json()["revision_id"] == revision_id
+
+
 @pytest.mark.asyncio
 async def test_render_api_tolerates_manifest_without_render_seconds(settings):
     """Old manifests (no scene_metadata) must still serve with render_seconds=None."""
@@ -1080,6 +1660,125 @@ async def test_camera_crud_creates_immutable_scene_revisions(settings):
             )
             assert removed.status_code == 200
             assert removed.json()["scene"]["cameras"] == []
+
+
+
+@pytest.mark.asyncio
+async def test_camera_estimated_upsert_preserves_revision_cas(settings):
+    """R7: an estimated camera with label/viewpoint_kind/ui_metadata upserts
+    through CAS; a stale base revision keeps conflicting (revision_conflict)."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Camera estimated project"},
+            )
+            project_id = project.json()["id"]
+
+            initial = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.camera",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            assert initial.status_code == 201
+            base_revision_id = initial.json()["revision_id"]
+
+            photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "photo"},
+                files={"file": ("room.png", png_bytes(), "image/png")},
+            )
+            assert photo.status_code == 201
+            photo_id = photo.json()["id"]
+
+            update = await client.put(
+                f"/api/v1/projects/{project_id}/cameras/camera.main",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "camera": {
+                        "id": "camera.main",
+                        "width_px": 1000,
+                        "height_px": 800,
+                        "intrinsics": {
+                            "fx": 800,
+                            "fy": 800,
+                            "cx": 500,
+                            "cy": 400,
+                        },
+                        "transform": {
+                            "translation_mm": [0, -5000, 1500],
+                            "rotation_deg": [90, 0, 0],
+                        },
+                        "source_asset_id": photo_id,
+                        "provenance": {"source": "estimated"},
+                        "label": "Living room from doorway",
+                        "viewpoint_kind": "photo",
+                        "ui_metadata": {"capture_order": 1},
+                    },
+                },
+            )
+            assert update.status_code == 200, update.text
+            camera = update.json()["camera"]
+            assert camera["provenance"]["source"] == "estimated"
+            assert camera["label"] == "Living room from doorway"
+            assert camera["viewpoint_kind"] == "photo"
+            assert camera["ui_metadata"] == {"capture_order": 1}
+            first_revision_id = update.json()["revision_id"]
+            assert first_revision_id != base_revision_id
+            # The additive fields persist into the immutable scene revision.
+            stored = update.json()["scene"]["cameras"][0]
+            assert stored["label"] == "Living room from doorway"
+            assert stored["viewpoint_kind"] == "photo"
+            assert stored["ui_metadata"] == {"capture_order": 1}
+
+            fetched = await client.get(
+                f"/api/v1/projects/{project_id}/cameras/camera.main"
+            )
+            assert fetched.status_code == 200
+            assert fetched.json()["camera"]["viewpoint_kind"] == "photo"
+            assert fetched.json()["revision_id"] == update.json()["revision_id"]
+
+            # CAS still guards the camera: replaying the superseded base
+            # revision must conflict instead of silently overwriting.
+            stale = await client.put(
+                f"/api/v1/projects/{project_id}/cameras/camera.main",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "camera": {
+                        "id": "camera.main",
+                        "width_px": 1000,
+                        "height_px": 800,
+                        "intrinsics": {
+                            "fx": 800,
+                            "fy": 800,
+                            "cx": 500,
+                            "cy": 400,
+                        },
+                        "transform": {
+                            "translation_mm": [0, -5000, 1500],
+                            "rotation_deg": [90, 0, 0],
+                        },
+                        "provenance": {"source": "estimated"},
+                    },
+                },
+            )
+            assert stale.status_code == 409
+            assert stale.json()["detail"]["code"] == "revision_conflict"
 
 
 

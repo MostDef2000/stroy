@@ -715,3 +715,330 @@ async def test_attachment_auth_owner_and_csrf(settings):
                 json={"target_type": "project", "kind": "note"},
             )
             assert ok.status_code == 201
+
+
+WALL_SCENE_ENTITIES = [
+    {"id": "room.living", "kind": "room", "locks": {}},
+    {
+        "id": "wall.north",
+        "kind": "wall",
+        "room_id": "room.living",
+        "locks": {},
+    },
+]
+
+
+async def _upload_photo_asset(
+    client: AsyncClient, headers: dict, project_id: str
+) -> str:
+    uploaded = await client.post(
+        f"/api/v1/projects/{project_id}/assets",
+        headers=headers,
+        data={"role": "photo"},
+        files={"file": ("room.png", png_bytes(), "image/png")},
+    )
+    assert uploaded.status_code == 201
+    return uploaded.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_photo_mapping_metadata_accepts_owner_room_visible_targets(settings):
+    """R7 #173: full structured photo→room mapping metadata validates against
+    the current scene and is echoed back verbatim."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project_id = await _create_project(client, headers)
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.main",
+                    "project_id": project_id,
+                    "entities": WALL_SCENE_ENTITIES,
+                    "cameras": [],
+                },
+            )
+            assert scene.status_code == 201
+
+            asset_id = await _upload_photo_asset(client, headers, project_id)
+
+            metadata = {
+                "mapping": "owner_room",
+                "confidence": "confirmed",
+                "visible_targets": [
+                    {"target_type": "entity", "target_id": "wall.north", "kind": "wall"}
+                ],
+                "orientation_hint": {
+                    "looks_at": "wall",
+                    "from": "corner",
+                    "owner_label": "North wall from doorway",
+                },
+                "provenance": {"source": "user", "note": "matched on the floor plan"},
+            }
+            created = await client.post(
+                f"/api/v1/projects/{project_id}/attachments",
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": asset_id,
+                    "metadata": metadata,
+                },
+            )
+            assert created.status_code == 201, created.text
+            body = created.json()
+            assert body["kind"] == "photo"
+            assert body["asset_id"] == asset_id
+            assert body["metadata"] == metadata
+
+            listed = (
+                await client.get(f"/api/v1/projects/{project_id}/attachments")
+            ).json()
+            assert listed[0]["metadata"] == metadata
+
+
+@pytest.mark.asyncio
+async def test_photo_mapping_metadata_rejects_unknown_entity_kind(settings):
+    """R7 #173: a visible target with a foreign kind is an unknown target;
+    structurally broken mapping fields are invalid metadata (create + patch)."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project_id = await _create_project(client, headers)
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.main",
+                    "project_id": project_id,
+                    "entities": WALL_SCENE_ENTITIES,
+                    "cameras": [],
+                },
+            )
+            assert scene.status_code == 201
+            asset_id = await _upload_photo_asset(client, headers, project_id)
+
+            base = f"/api/v1/projects/{project_id}/attachments"
+
+            # visible_targets entry claims kind "sofa": even though the id
+            # resolves, the declared kind has no such entity → unknown target.
+            sofa = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": asset_id,
+                    "metadata": {
+                        "mapping": "owner_room",
+                        "confidence": "approx",
+                        "visible_targets": [
+                            {
+                                "target_type": "entity",
+                                "target_id": "wall.north",
+                                "kind": "sofa",
+                            }
+                        ],
+                    },
+                },
+            )
+            assert sofa.status_code == 422
+            assert sofa.json()["detail"]["code"] == "unknown_visible_target"
+
+            # A confidence outside the R7 enum is a plain metadata violation.
+            bad_confidence = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": asset_id,
+                    "metadata": {"mapping": "owner_room", "confidence": "guessed"},
+                },
+            )
+            assert bad_confidence.status_code == 422
+            assert (
+                bad_confidence.json()["detail"]["code"]
+                == "invalid_photo_mapping_metadata"
+            )
+
+            # Unknown mapping discriminator likewise.
+            bad_mapping = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": asset_id,
+                    "metadata": {"mapping": "neighbour_room"},
+                },
+            )
+            assert bad_mapping.status_code == 422
+            assert (
+                bad_mapping.json()["detail"]["code"] == "invalid_photo_mapping_metadata"
+            )
+
+            # The R6 minimal stamp stays valid as-is on create…
+            stamp = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": asset_id,
+                    "metadata": {"mapping": "owner_room", "confidence": "approx"},
+                },
+            )
+            assert stamp.status_code == 201, stamp.text
+            attachment_id = stamp.json()["id"]
+
+            # …and the patch path enforces the same rules before mutating.
+            patch_bad = await client.patch(
+                f"{base}/{attachment_id}",
+                headers=headers,
+                json={"metadata": {"mapping": "owner_room", "confidence": "vibes"}},
+            )
+            assert patch_bad.status_code == 422
+            assert (
+                patch_bad.json()["detail"]["code"] == "invalid_photo_mapping_metadata"
+            )
+
+            # Validation happens BEFORE mutation: the stored metadata is
+            # exactly the R6 stamp the attachment was created with. (The
+            # attachments API has no single-item GET; the list is the
+            # observable surface.)
+            after_list = (await client.get(base)).json()
+            after_reject = next(row for row in after_list if row["id"] == attachment_id)
+            assert after_reject["metadata"] == {
+                "mapping": "owner_room",
+                "confidence": "approx",
+            }
+
+            patch_ok = await client.patch(
+                f"{base}/{attachment_id}",
+                headers=headers,
+                json={"metadata": {"mapping": "owner_room", "confidence": "confirmed"}},
+            )
+            assert patch_ok.status_code == 200
+            assert patch_ok.json()["metadata"]["confidence"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_attachment_camera_id_must_match_source_asset(settings):
+    """R7 #173: metadata.camera_id must exist in the latest revision AND be
+    calibrated from this very photo asset."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project_id = await _create_project(client, headers)
+
+            camera_photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "photo"},
+                files={"file": ("camera-photo.png", png_bytes(), "image/png")},
+            )
+            assert camera_photo.status_code == 201
+            camera_asset_id = camera_photo.json()["id"]
+
+            other_photo = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "photo"},
+                files={"file": ("other.png", png_bytes(), "image/png")},
+            )
+            assert other_photo.status_code == 201
+            other_asset_id = other_photo.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.main",
+                    "project_id": project_id,
+                    "entities": WALL_SCENE_ENTITIES,
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 800,
+                            "height_px": 500,
+                            "intrinsics": {"fx": 620, "fy": 625, "cx": 400, "cy": 250},
+                            "transform": {
+                                "translation_mm": [0, -4500, 1700],
+                                "rotation_deg": [78, 0, 0],
+                            },
+                            "source_asset_id": camera_asset_id,
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+
+            base = f"/api/v1/projects/{project_id}/attachments"
+
+            # The attachment references a DIFFERENT asset than the camera's
+            # source photo → mismatch.
+            mismatch = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": other_asset_id,
+                    "metadata": {"camera_id": "camera.main"},
+                },
+            )
+            assert mismatch.status_code == 422
+            assert mismatch.json()["detail"]["code"] == "camera_asset_mismatch"
+
+            # A camera that does not exist in the latest revision is the same
+            # contract violation.
+            unknown_camera = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": other_asset_id,
+                    "metadata": {"camera_id": "camera.missing"},
+                },
+            )
+            assert unknown_camera.status_code == 422
+            assert unknown_camera.json()["detail"]["code"] == "camera_asset_mismatch"
+
+            # The matching pair passes.
+            ok = await client.post(
+                base,
+                headers=headers,
+                json={
+                    "target_type": "room",
+                    "target_id": "room.living",
+                    "kind": "photo",
+                    "asset_id": camera_asset_id,
+                    "metadata": {"camera_id": "camera.main"},
+                },
+            )
+            assert ok.status_code == 201, ok.text
+            assert ok.json()["metadata"] == {"camera_id": "camera.main"}
