@@ -578,6 +578,22 @@ class BlenderExecutor:
                 "render job requires render_id, scene_revision_id and camera_id"
             )
 
+        # R7: echo the quality stage and lineage/provenance passthrough from
+        # the job payload into the render context, so the persisted manifest
+        # records them. Jobs queued before the stage field existed were all
+        # final-quality renders, hence the "final" fallback.
+        stage = payload.get("stage")
+        if stage not in ("draft", "final"):
+            stage = "final"
+        camera = next(
+            (item for item in scene.cameras if item.id == camera_id), None
+        )
+        source_asset_ids = (
+            [camera.source_asset_id]
+            if camera is not None and camera.source_asset_id
+            else None
+        )
+
         plan = build_blender_plan(
             scene,
             scene_revision_id=scene_revision_id,
@@ -629,6 +645,11 @@ class BlenderExecutor:
                 design_revision_id=payload.get("design_revision_id"),
                 camera_id=camera_id,
                 renderer_profile=plan.renderer_profile,
+                stage=stage,
+                variant_id=payload.get("variant_id"),
+                source_asset_ids=source_asset_ids,
+                workflow_provenance=payload.get("workflow_provenance") or {},
+                model_provenance=payload.get("model_provenance") or {},
             ).model_dump(mode="json", exclude_none=True),
         }
 

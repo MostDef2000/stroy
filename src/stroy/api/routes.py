@@ -358,6 +358,10 @@ class RenderRequest(BaseModel):
     design_revision_id: str | None = None
     camera_id: str = Field(min_length=1)
     renderer_profile: str = "blender-cycles-v0"
+    # R7: quality stage. "draft" maps to the fast preview profile only when
+    # the client does not pin renderer_profile explicitly; "final" keeps the
+    # production default.
+    stage: Literal["draft", "final"] = "final"
     # R4: link the render to a scene variant (revision must lie in the
     # variant's lineage when supplied; defaults to the variant head).
     variant_id: str | None = Field(default=None, min_length=1)
@@ -977,6 +981,153 @@ async def _load_scene_entities(
     return scene.entities
 
 
+async def _load_current_scene(
+    session: AsyncSession, project_id: str
+) -> Scene | None:
+    """Return the project's current scene (None when never initialized)."""
+    current = await latest_revision(session, project_id)
+    if current is None:
+        return None
+    return Scene.model_validate(current.scene_json)
+
+
+# R7 photo→room mapping metadata (#173). Validated only for photo attachments
+# carrying a non-empty metadata object; the R6 minimal stamp
+# {mapping: "owner_room", confidence: "approx"} stays valid as-is.
+_PHOTO_MAPPING_VALUES = frozenset({"owner_room"})
+_PHOTO_MAPPING_CONFIDENCES = frozenset({"approx", "confirmed", "calibrated"})
+_PHOTO_MAPPING_SOURCES = frozenset({"user", "estimated", "model_inferred"})
+_VISIBLE_TARGET_KINDS = frozenset({"wall", "door", "window", "floor", "ceiling"})
+_ORIENTATION_LOOKS_AT = frozenset({"wall", "window", "door", "corner"})
+_ORIENTATION_FROM = frozenset({"corner", "center"})
+
+
+def _invalid_photo_mapping(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": "invalid_photo_mapping_metadata", "detail": detail},
+    )
+
+
+def _unknown_visible_target(target_id: object) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": "unknown_visible_target", "target_id": target_id},
+    )
+
+
+async def _validate_photo_mapping_metadata(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    kind: str,
+    asset_id: str | None,
+    metadata: object,
+) -> None:
+    """Structured validation of photo attachment mapping metadata (R7 #173).
+
+    Unknown top-level metadata keys are deliberately ignored: the R1
+    attachment metadata dict stays open for non-mapping uses (e.g. the R6
+    walkthrough stamp), and only the photo-mapping keys below carry
+    structural rules.
+    """
+    if kind != "photo" or not isinstance(metadata, dict) or not metadata:
+        return
+
+    mapping = metadata.get("mapping")
+    if "mapping" in metadata and mapping not in _PHOTO_MAPPING_VALUES:
+        raise _invalid_photo_mapping("mapping must be 'owner_room'")
+
+    confidence = metadata.get("confidence")
+    if "confidence" in metadata and confidence not in _PHOTO_MAPPING_CONFIDENCES:
+        raise _invalid_photo_mapping(
+            "confidence must be one of: approx, confirmed, calibrated"
+        )
+
+    scene: Scene | None = None
+
+    visible_targets = metadata.get("visible_targets")
+    if "visible_targets" in metadata:
+        if not isinstance(visible_targets, list):
+            raise _invalid_photo_mapping("visible_targets must be a list")
+        if visible_targets:
+            scene = await _load_current_scene(session, project_id)
+            entities = scene.entities if scene is not None else []
+            for entry in visible_targets:
+                if (
+                    not isinstance(entry, dict)
+                    or entry.get("target_type") != "entity"
+                    or not isinstance(entry.get("target_id"), str)
+                    or not entry["target_id"]
+                ):
+                    raise _invalid_photo_mapping(
+                        "visible_targets entries require target_type='entity' "
+                        "and a non-empty target_id"
+                    )
+                target_id = entry["target_id"]
+                entity = next(
+                    (item for item in entities if item.id == target_id), None
+                )
+                entry_kind = entry.get("kind")
+                if entity is None or entry_kind not in _VISIBLE_TARGET_KINDS:
+                    raise _unknown_visible_target(target_id)
+                if entity.kind.value != entry_kind:
+                    raise _unknown_visible_target(target_id)
+
+    orientation_hint = metadata.get("orientation_hint")
+    if "orientation_hint" in metadata:
+        if not isinstance(orientation_hint, dict):
+            raise _invalid_photo_mapping("orientation_hint must be an object")
+        looks_at = orientation_hint.get("looks_at")
+        if looks_at is not None and looks_at not in _ORIENTATION_LOOKS_AT:
+            raise _invalid_photo_mapping(
+                "orientation_hint.looks_at must be one of: wall, window, door, corner"
+            )
+        origin = orientation_hint.get("from")
+        if origin is not None and origin not in _ORIENTATION_FROM:
+            raise _invalid_photo_mapping(
+                "orientation_hint.from must be one of: corner, center"
+            )
+        owner_label = orientation_hint.get("owner_label")
+        if owner_label is not None and not isinstance(owner_label, str):
+            raise _invalid_photo_mapping(
+                "orientation_hint.owner_label must be a string"
+            )
+
+    camera_id = metadata.get("camera_id")
+    if "camera_id" in metadata:
+        if not isinstance(camera_id, str) or not camera_id:
+            raise _invalid_photo_mapping("camera_id must be a non-empty string")
+        if scene is None:
+            scene = await _load_current_scene(session, project_id)
+        camera = next(
+            (item for item in (scene.cameras if scene else []) if item.id == camera_id),
+            None,
+        )
+        # The camera must exist in the latest revision and be calibrated from
+        # this very photo asset; anything else is a camera/asset mismatch.
+        if camera is None or camera.source_asset_id != asset_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "camera_asset_mismatch",
+                    "camera_id": camera_id,
+                },
+            )
+
+    provenance = metadata.get("provenance")
+    if "provenance" in metadata:
+        if not isinstance(provenance, dict):
+            raise _invalid_photo_mapping("provenance must be an object")
+        if provenance.get("source") not in _PHOTO_MAPPING_SOURCES:
+            raise _invalid_photo_mapping(
+                "provenance.source must be one of: user, estimated, model_inferred"
+            )
+        note = provenance.get("note")
+        if note is not None and not isinstance(note, str):
+            raise _invalid_photo_mapping("provenance.note must be a string")
+
+
 @router.get(
     "/api/v1/projects/{project_id}/attachments",
     dependencies=[Depends(require_owner)],
@@ -1051,6 +1202,16 @@ async def attachment_create(
                 },
             )
 
+    # R7 #173: photo attachments may carry structured photo→room mapping
+    # metadata; validate it against the current scene before persisting.
+    await _validate_photo_mapping_metadata(
+        session,
+        project_id,
+        kind=payload.kind,
+        asset_id=payload.asset_id,
+        metadata=payload.metadata,
+    )
+
     row = AttachmentRow(
         project_id=project_id,
         target_type=payload.target_type,
@@ -1082,6 +1243,16 @@ async def attachment_update(
     if row is None or row.project_id != project_id:
         raise HTTPException(status_code=404, detail="attachment not found")
     changes = payload.model_dump(exclude_unset=True)
+    if "metadata" in changes:
+        # R7 #173: the kind/asset are immutable, so photo-mapping metadata is
+        # validated against the attachment's own kind/asset before mutating.
+        await _validate_photo_mapping_metadata(
+            session,
+            project_id,
+            kind=row.kind,
+            asset_id=row.asset_id,
+            metadata=changes["metadata"],
+        )
     if "body" in changes:
         row.body = changes["body"]
     if "done" in changes:
@@ -1769,6 +1940,13 @@ async def render_create(
             detail={"code": "unknown_camera", "camera_id": payload.camera_id},
         )
 
+    # R7: draft renders map to the fast preview profile, but only when the
+    # client did not pin renderer_profile explicitly (model_fields_set tells
+    # "explicitly given" apart from the field default).
+    renderer_profile = payload.renderer_profile
+    if "renderer_profile" not in payload.model_fields_set and payload.stage == "draft":
+        renderer_profile = "blender-eevee-v0"
+
     render_id = str(uuid4())
     row = await create_job(
         session,
@@ -1781,7 +1959,8 @@ async def render_create(
             "scene_revision_id": revision.id,
             "design_revision_id": payload.design_revision_id,
             "camera_id": payload.camera_id,
-            "renderer_profile": payload.renderer_profile,
+            "renderer_profile": renderer_profile,
+            "stage": payload.stage,
             "scene": revision.scene_json,
             "variant_id": payload.variant_id,
         },
