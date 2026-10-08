@@ -614,6 +614,12 @@ async def apply_variant_command(
     variant = await get_variant(session, project_id, variant_id)
     if variant is None:
         raise VariantError("variant not found", status_code=404, code="variant_not_found")
+    if variant.status == "archived":
+        raise VariantError(
+            "Вариант в архиве — команды сцены недоступны",
+            status_code=409,
+            code="variant_archived",
+        )
     head = await latest_revision_for_variant(session, variant)
     if head is None:
         raise CommandConflict("variant head revision is missing")

@@ -667,3 +667,81 @@ async def test_render_links_variant_and_legacy_rows_stay_null(settings) -> None:
             )
             assert detail.status_code == 200
             assert detail.json()["variant_id"] == renders[0]["variant_id"]
+
+
+# ---------------------------------------------------------------------------
+# archived variant guard (R5): scene commands blocked, lifecycle untouched
+
+
+async def test_archived_variant_blocks_scene_commands_keeps_lifecycle(settings) -> None:
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project_id, revision_id = await _setup(client, headers)
+            draft = await _create_variant(client, headers, project_id, "Черновик")
+            archived = await _create_variant(client, headers, project_id, "В архиве")
+
+            # Control: the same command works on a draft variant.
+            control = await client.post(
+                f"/api/v1/projects/{project_id}/variants/{draft['id']}/revisions",
+                json={
+                    "command": _set_color(revision_id, "red"),
+                    "expected_head_revision_id": revision_id,
+                },
+                headers=headers,
+            )
+            assert control.status_code == 200, control.text
+
+            assert (
+                await client.patch(
+                    f"/api/v1/projects/{project_id}/variants/{archived['id']}",
+                    json={"status": "archived"},
+                    headers=headers,
+                )
+            ).status_code == 200
+
+            # Same command on the archived variant → 409 variant_archived.
+            blocked = await client.post(
+                f"/api/v1/projects/{project_id}/variants/{archived['id']}/revisions",
+                json={
+                    "command": _set_color(revision_id, "red"),
+                    "expected_head_revision_id": revision_id,
+                },
+                headers=headers,
+            )
+            assert blocked.status_code == 409
+            assert blocked.json()["detail"]["code"] == "variant_archived"
+            assert (
+                blocked.json()["detail"]["detail"]
+                == "Вариант в архиве — команды сцены недоступны"
+            )
+
+            # Lifecycle, not a scene command: restore still works on the
+            # archived variant (current behavior, asserted unchanged).
+            restored = await client.post(
+                f"/api/v1/projects/{project_id}/variants/{archived['id']}"
+                "/revisions:restore",
+                json={
+                    "target_revision_id": archived["head_scene_revision_id"],
+                    "expected_head_revision_id": archived["head_scene_revision_id"],
+                },
+                headers=headers,
+            )
+            assert restored.status_code == 200, restored.text
+            assert (
+                restored.json()["parent_revision_id"]
+                == archived["head_scene_revision_id"]
+            )
+
+            # Budget item create has no archive guard today: 201 (current
+            # behavior, asserted unchanged — the contract adds no guard here).
+            item = await client.post(
+                f"/api/v1/projects/{project_id}/variants/{archived['id']}/budget/items",
+                json={"kind": "manual", "label": "Работы", "amount": 100},
+                headers=headers,
+            )
+            assert item.status_code == 201, item.text
