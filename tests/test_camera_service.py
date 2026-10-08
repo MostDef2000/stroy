@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
@@ -9,7 +10,9 @@ import pytest
 
 from stroy.api.app import create_app
 from stroy.config import Settings
+from stroy.db.models import AssetRow
 from stroy.domain.models import Camera, CameraCalibration, CameraTransform, Scene
+from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
 from stroy.services.cameras import upsert_camera
 from stroy.services.scenes import create_project, initialize_scene
@@ -222,3 +225,64 @@ async def test_camera_upsert_api_passes_solve_flag(settings):
                 list(GOLDEN_ROTATION), abs=1e-6
             )
             assert stored["calibration"]["residual"] == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_camera_source_asset_must_be_project_image(settings):
+    """Pinned pre-R7 behavior: a camera may only source an image asset that
+    belongs to the same project (unknown asset ids included)."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with app.state.session_factory() as session:
+            project_id, base_revision_id = await _seed_scene(session)
+            foreign_project = await create_project(session, "Other project")
+
+            async def _asset(project: str, media_type: str) -> str:
+                row = AssetRow(
+                    project_id=project,
+                    object_key=f"projects/{project}/{uuid4()}",
+                    media_type=media_type,
+                    size_bytes=8,
+                    sha256=sha256_text(f"{project}:{media_type}:{uuid4()}"),
+                )
+                session.add(row)
+                await session.commit()
+                await session.refresh(row)
+                return row.id
+
+            pdf_id = await _asset(project_id, "application/pdf")
+            foreign_image_id = await _asset(foreign_project.id, "image/png")
+            camera = _golden_camera()
+
+            # In-project asset that is not an image → rejected.
+            not_image = camera.model_copy(deep=True)
+            not_image.source_asset_id = pdf_id
+            with pytest.raises(ValueError, match="must be an image"):
+                await upsert_camera(
+                    session,
+                    project_id,
+                    expected_base_revision_id=base_revision_id,
+                    camera=not_image,
+                )
+
+            # Image asset from a different project → rejected.
+            foreign = camera.model_copy(deep=True)
+            foreign.source_asset_id = foreign_image_id
+            with pytest.raises(ValueError, match="not in project"):
+                await upsert_camera(
+                    session,
+                    project_id,
+                    expected_base_revision_id=base_revision_id,
+                    camera=foreign,
+                )
+
+            # Unknown asset id → rejected (same "not in project" branch).
+            unknown = camera.model_copy(deep=True)
+            unknown.source_asset_id = str(uuid4())
+            with pytest.raises(ValueError, match="not in project"):
+                await upsert_camera(
+                    session,
+                    project_id,
+                    expected_base_revision_id=base_revision_id,
+                    camera=unknown,
+                )

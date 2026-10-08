@@ -342,6 +342,32 @@
             "string",
             "null"
           ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "viewpoint_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "saved",
+            "photo",
+            "overview",
+            "auto",
+            null
+          ]
+        },
+        "ui_metadata": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
         }
       },
       "additionalProperties": false

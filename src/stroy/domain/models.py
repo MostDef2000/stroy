@@ -118,6 +118,14 @@ class Camera(BaseModel):
     source_asset_id: str | None = None
     provenance: Provenance | None = None
     calibration: CameraCalibration | None = None
+    # R7 photo-viewpoint metadata: all optional/defaulted so scene revisions
+    # written before these fields existed still validate. Wire keys are
+    # English. None (not {}) defaults keep unset fields out of the
+    # exclude_none dumps, so canonical hashes and the versioned scene JSON
+    # schema (additionalProperties: false) stay byte-compatible.
+    label: str | None = None
+    viewpoint_kind: Literal["saved", "photo", "overview", "auto"] | None = None
+    ui_metadata: dict[str, Any] | None = None
 
 
 class Scene(BaseModel):
