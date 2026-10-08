@@ -313,6 +313,10 @@ export default function App() {
     setPreparingScene(true);
     try {
       await api.createScene(selected, goldenRoom(selected));
+      // Q1 quick-win: the demo creation is the documented way out of a
+      // «сцена не создана» 404 — drop the cached null so the next read
+      // sees the fresh scene.
+      api.invalidateSceneCache(selected);
       await refreshProject(selected);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));

@@ -33,6 +33,16 @@ export type {
   AttachmentTargetType
 };
 
+// R7 (#184): photo mapping metadata v1 — wire types live in the pure
+// attachments module (unit-tested there); re-exported for the UI import
+// surface, same pattern as the other attachment types.
+export type {
+  PhotoMappingMetadata,
+  PhotoMappingOrientationHint,
+  PhotoMappingTargetKind,
+  PhotoMappingVisibleTarget
+} from "./attachments";
+
 export type Project = {
   id: string;
   name: string;
@@ -132,6 +142,12 @@ export type RenderManifest = {
    * Render duration in seconds as reported by the worker (#188/R5 field).
    */
   render_seconds?: number | null;
+  /**
+   * R7 (#187): render stage as persisted in manifest_json; absent = legacy
+   * render (final semantics). The wire RenderRecord carries no top-level
+   * stage — read it from here.
+   */
+  stage?: "draft" | "final" | null;
 };
 
 export type RenderRecord = {
@@ -156,6 +172,9 @@ export type CreateRenderInput = {
   design_revision_id?: string;
   renderer_profile?: string;
   idempotency_key?: string;
+  /** R7 (#187): "draft" maps to the eevee profile BE-side when no explicit
+   * renderer_profile is sent; "final" (default) keeps the photoreal profile. */
+  stage?: "draft" | "final";
 };
 
 export type SceneCommandResponse = {
@@ -243,6 +262,12 @@ export type SceneCamera = {
       label?: string | null;
     }>;
   } | null;
+  /** R7 (#187): owner-facing viewpoint name; null/absent → «Камера N». */
+  label?: string | null;
+  /** R7 (#187): where the viewpoint came from; absent = legacy saved view. */
+  viewpoint_kind?: "saved" | "photo" | "overview" | "auto" | null;
+  /** R7 (#187): opaque UI hints; the UI never relies on its contents. */
+  ui_metadata?: Record<string, unknown>;
 };
 
 export type SceneDocument = {
@@ -651,6 +676,14 @@ export type VariantCommandResponse = {
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
 
+// Q1 (#quick-win): projects whose scene is known to not exist yet (GET /scene
+// answered 404). The 5s poll refetches the scene every tick; caching the null
+// stops the repeated 404 wire calls per project. Only nulls are cached — a
+// successful fetch always clears the flag, and scene-creation success paths
+// call api.invalidateSceneCache() (App demo create, PlanEditor commit) so the
+// poll observes the scene immediately.
+const nullSceneCache = new Map<string, true>();
+
 function apiPath(path: string) {
   return `${API_BASE}${path}`;
 }
@@ -724,13 +757,26 @@ export const api = {
     return deleteOutcomeFromStatus(response.status);
   },
 
+  // Q1: null-cache — a cached "no scene" resolves without a fetch; any
+  // successful fetch (or invalidation) clears the cached null.
   async scene(projectId: string): Promise<SceneRevision | null> {
+    if (nullSceneCache.has(projectId)) return null;
     const response = await fetch(apiPath(`/api/v1/projects/${projectId}/scene`), {
       credentials: "include"
     });
-    if (response.status === 404) return null;
+    if (response.status === 404) {
+      nullSceneCache.set(projectId, true);
+      return null;
+    }
     if (!response.ok) throw new Error(await response.text());
+    nullSceneCache.delete(projectId);
     return response.json();
+  },
+
+  // Q1: scene creation success paths (App demo create, PlanEditor commit)
+  // call this so the next poll actually fetches the freshly created scene.
+  invalidateSceneCache(projectId: string) {
+    nullSceneCache.delete(projectId);
   },
 
   // R6 guided setup (#183): the owner-facing setup status for the overview

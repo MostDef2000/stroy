@@ -12,10 +12,14 @@ import assert from "node:assert/strict";
 import {
   attachmentLabel,
   buildAttachmentPayload,
+  buildPhotoMappingMetadata,
   groupAttachmentsByTarget,
   isApproxRoomMapping,
   isDanglingTarget,
-  isTaskOverdue
+  isTaskOverdue,
+  mappingNeedsOrientationStep,
+  mappingSuggestedRoomId,
+  photoMappingMetadataView
 } from "../build/attachments.js";
 
 // Local noon on 2026-10-07 — localDateKey() must resolve to "2026-10-07" in
@@ -298,4 +302,109 @@ test("isDanglingTarget flags room/entity targets missing from the scene", () => 
   );
   // Malformed room/entity row without an id is dangling.
   assert.equal(isDanglingTarget(attachment({ target_type: "room", target_id: null }), scene), true);
+});
+
+// ---------------------------------------------------------------------------
+// R7 additions (#184): photo mapping metadata v1 + wizard state helpers.
+// ---------------------------------------------------------------------------
+
+const answers = (overrides = {}) => ({
+  roomId: "room-1",
+  looksAtTargetId: null,
+  looksAtKind: null,
+  from: null,
+  ...overrides
+});
+
+test("buildPhotoMappingMetadata: ok path stamps owner_room/approx with target and hint", () => {
+  const result = buildPhotoMappingMetadata(
+    answers({
+      looksAtTargetId: "wall-9",
+      looksAtKind: "wall",
+      from: "corner"
+    }),
+    [{ target_type: "entity", target_id: "wall-9", kind: "wall" }]
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.metadata, {
+    mapping: "owner_room",
+    confidence: "approx",
+    visible_targets: [
+      { target_type: "entity", target_id: "wall-9", kind: "wall" }
+    ],
+    orientation_hint: { looks_at: "wall", from: "corner" },
+    provenance: { source: "user" }
+  });
+});
+
+test("buildPhotoMappingMetadata: missing room → invalid_photo_mapping_metadata", () => {
+  for (const roomId of [null, "", "   "]) {
+    const result = buildPhotoMappingMetadata(answers({ roomId }));
+    assert.equal(result.ok, false, String(roomId));
+    assert.equal(result.code, "invalid_photo_mapping_metadata", String(roomId));
+  }
+});
+
+test("buildPhotoMappingMetadata: unknown visible target → unknown_visible_target", () => {
+  const result = buildPhotoMappingMetadata(
+    answers({ looksAtTargetId: "wall-404", looksAtKind: "wall" }),
+    [{ target_type: "entity", target_id: "wall-9", kind: "wall" }]
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "unknown_visible_target");
+});
+
+test("buildPhotoMappingMetadata: floor/ceiling targets keep looks_at null", () => {
+  const result = buildPhotoMappingMetadata(
+    answers({ looksAtTargetId: "floor-1", looksAtKind: "floor", from: "center" }),
+    [{ target_type: "entity", target_id: "floor-1", kind: "floor" }]
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.metadata.visible_targets, [
+    { target_type: "entity", target_id: "floor-1", kind: "floor" }
+  ]);
+  assert.equal(result.metadata.orientation_hint.looks_at, null);
+  assert.equal(result.metadata.orientation_hint.from, "center");
+});
+
+test("mappingSuggestedRoomId: single room preselects; otherwise current/first", () => {
+  const rooms = [
+    { id: "room-1", name: "Гостиная" },
+    { id: "room-2", name: "Спальня" }
+  ];
+  assert.equal(mappingSuggestedRoomId([rooms[0]], null), "room-1");
+  assert.equal(mappingSuggestedRoomId(rooms, "room-2"), "room-2");
+  assert.equal(mappingSuggestedRoomId(rooms, "room-9"), "room-1");
+  assert.equal(mappingSuggestedRoomId([], null), null);
+});
+
+test("mappingNeedsOrientationStep: true only for non-empty target lists", () => {
+  assert.equal(mappingNeedsOrientationStep(undefined), false);
+  assert.equal(mappingNeedsOrientationStep([]), false);
+  assert.equal(
+    mappingNeedsOrientationStep([{ targetId: "w1", kind: "wall", label: "Стена 1" }]),
+    true
+  );
+});
+
+test("photoMappingMetadataView: reads v1 metadata, rejects everything else", () => {
+  const metadata = {
+    mapping: "owner_room",
+    confidence: "approx",
+    visible_targets: [
+      { target_type: "entity", target_id: "wall-9", kind: "wall" },
+      { target_type: "entity", target_id: "junk", kind: "not-a-kind" },
+      "garbage-entry"
+    ],
+    orientation_hint: { looks_at: "wall", from: "corner" },
+    provenance: { source: "user" }
+  };
+  const view = photoMappingMetadataView(metadata);
+  assert.equal(view.confidence, "approx");
+  assert.deepEqual(view.visibleTargets, [
+    { target_type: "entity", target_id: "wall-9", kind: "wall" }
+  ]);
+  assert.equal(photoMappingMetadataView(null), null);
+  assert.equal(photoMappingMetadataView("nope"), null);
+  assert.equal(photoMappingMetadataView({ mapping: "other" }), null);
 });

@@ -4776,3 +4776,161 @@ textarea.invalid {
   color: var(--st-color-text-secondary);
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------------------------------
+   R7 (#184/#187 + quick-wins): photo→room mapping wizard, grouped viewpoint
+   picker, saved-viewpoint action, two-stage render rail, viewer error
+   boundary. Reuses the existing st-* tokens only.
+   --------------------------------------------------------------------------- */
+
+/* #187: grouped viewpoint switcher in the viewer toolbar. */
+.viewer-viewpoint-select {
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-color-field);
+  color: var(--st-color-text);
+  font-size: var(--st-text-sm);
+}
+
+/* #184: mapping wizard in the attachment section. */
+.mapping-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+  font-size: var(--st-text-sm);
+}
+
+.mapping-wizard-room,
+.mapping-wizard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+
+.mapping-wizard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Visible-target chips (mapping step and photo rows) and the approximate
+   confidence mark shared with the render rail. */
+.mapping-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--st-color-border);
+  border-radius: 999px;
+  background: var(--st-color-surface-elevated);
+  font-size: var(--st-text-xs);
+  color: var(--st-color-text-secondary);
+  white-space: nowrap;
+}
+
+.mapping-chip.approx {
+  border-color: var(--st-color-warn-border);
+  background: var(--st-color-warn-bg);
+  color: var(--st-color-warn);
+}
+
+.mapping-target-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.mapping-refine-link {
+  font-size: var(--st-text-xs);
+  padding: 2px 8px;
+}
+
+/* #187: two-stage render section in the design rail. */
+.design-render {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface);
+}
+
+.design-render-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.design-render-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--st-text-xs);
+  color: var(--st-color-text-secondary);
+}
+
+.design-render-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.render-stage-chip {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--st-color-border);
+  font-size: var(--st-text-xs);
+  color: var(--st-color-text-secondary);
+}
+
+.render-stage-chip.draft {
+  border-color: var(--st-color-warn-border);
+  background: var(--st-color-warn-bg);
+  color: var(--st-color-warn);
+}
+
+.render-stage-chip.final {
+  border-color: var(--st-color-ok-border);
+  background: var(--st-color-ok-bg);
+  color: var(--st-color-ok);
+}
+
+/* Q2: WebGL crash fallback — keeps the page usable when 3D dies. */
+.viewer-error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px solid var(--st-color-danger-border);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface);
+}
+
+.viewer-error-boundary h3 {
+  margin: 0;
+  font-size: var(--st-text-lg);
+}
+
+.viewer-error-boundary .muted {
+  margin: 0;
+}

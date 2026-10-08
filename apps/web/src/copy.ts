@@ -35,7 +35,10 @@ const ENTITY_KIND_LABELS: Record<string, string> = {
   floor: "пол",
   room: "комната",
   furniture: "мебель",
-  opening: "проём"
+  opening: "проём",
+  door: "дверь",
+  window: "окно",
+  ceiling: "потолок"
 };
 
 export function entityKindLabel(kind: string): string {
@@ -105,4 +108,61 @@ export function styleAnalysisMinMessage(count: number): string {
 
 export function styleAnalysisMaxMessage(count: number): string {
   return `Для анализа стиля можно использовать максимум 5 изображений-референсов. Сейчас выбрано: ${count}.`;
+}
+
+// ---------------------------------------------------------------------------
+// R7 (#184/#187) copy helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Room inspector heading (Q3): the owner-entered name wins; blank/whitespace
+ * names fall back to the stable «Комната {id}» form (id is plan-derived and
+ * stable, unlike a silently empty heading).
+ */
+export function roomHeading(room: { id: string; name?: string | null }): string {
+  const name = typeof room.name === "string" ? room.name.trim() : "";
+  return name || `Комната ${room.id}`;
+}
+
+/** Input for saveIndicator: the plan editor's autosave state flags. */
+export type SaveIndicatorState = {
+  saving: boolean;
+  dirty: boolean;
+  /** Latest known server draft status ("committed" = 3D built), null if none. */
+  draftStatus: string | null;
+};
+
+/**
+ * Heading indicator next to «План квартиры» (Q4). Precedence — what the owner
+ * must act on now beats historical facts: saving in flight > unsaved edits >
+ * 3D created > draft saved > default (edits not yet saved anywhere).
+ */
+export function saveIndicator(state: SaveIndicatorState): string {
+  if (state.saving) return "Сохранение…";
+  if (state.dirty) return "Есть несохранённые правки";
+  if (state.draftStatus === "committed") return "3D-сцена создана";
+  if (state.draftStatus) return "План сохранён";
+  return "Есть несохранённые правки";
+}
+
+/** Render stage (R7 #187): wire value → owner-facing chip label. */
+export function renderStageLabel(
+  stage: "draft" | "final" | null | undefined
+): string {
+  return stage === "draft" ? "Черновик" : "Финальный";
+}
+
+/** Photo→room mapping confidence (R7 #184): wire value → badge label. */
+export function mappingConfidenceLabel(
+  confidence: string | null | undefined
+): string {
+  switch (confidence) {
+    case "confirmed":
+      return "подтверждено владельцем";
+    case "calibrated":
+      return "откалибровано";
+    case "approx":
+    default:
+      return "приблизительно";
+  }
 }
