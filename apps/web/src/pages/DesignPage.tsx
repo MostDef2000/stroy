@@ -1,15 +1,16 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { api, type Asset, type AssetRole, type Generation, type ImportUrlResponse, type Job, type ProductCandidate, type SceneDocument, type SceneRevision, type ValidationReport } from "../api";
+import { api, type Asset, type AssetRole, type Generation, type ImportUrlResponse, type Job, type ProductCandidate, type RenderRecord, type SceneDocument, type SceneRevision, type ValidationReport } from "../api";
 import { AttachmentSection } from "../AttachmentSection";
 import { ImagePreview } from "../ImagePreview";
 import { LayerBadge } from "../LayerBadge";
-import { DESIGN_CONFLICT_HINT, WORKER_OFFLINE_NOTICE } from "../copy";
-import { computeCameraReadiness } from "../cameraReadiness";
+import { DESIGN_CONFLICT_HINT, WORKER_OFFLINE_NOTICE, renderStageLabel, statusLabel } from "../copy";
+import { computeCameraReadiness, computeRenderReadiness } from "../cameraReadiness";
 import { CameraPanel } from "../CameraPanel";
 import { PhotoEditPanel } from "../PhotoEditPanel";
 import { ReplacementPanel } from "../ReplacementPanel";
 import { SceneViewer } from "../SceneViewer";
+import { SceneViewerErrorBoundary } from "../SceneViewerErrorBoundary";
 import { TwinDesignPanel } from "../TwinDesignPanel";
 import {
   buildPatchPayload,
@@ -213,6 +214,104 @@ export function DesignPage({
   const [variantError, setVariantError] = useState("");
   const advancedRef = useRef<HTMLDetailsElement | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
+  // R7 (#187): two-stage manual render flow in the contextual rail — a draft
+  // render (eevee BE-side) first, the final photoreal render unlocks after
+  // the draft job succeeded. The render list shows stage chips; jobs arrive
+  // via the shared App polling (jobs prop), renders are re-read on demand.
+  const [renderBusy, setRenderBusy] = useState(false);
+  const [pendingRenderJobId, setPendingRenderJobId] = useState<string | null>(null);
+  const [pendingRenderStage, setPendingRenderStage] = useState<"draft" | "final" | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const [renderInfo, setRenderInfo] = useState("");
+  const [renderError, setRenderError] = useState("");
+  const [renders, setRenders] = useState<RenderRecord[]>([]);
+  // R7: bumped by the viewer error boundary retry — remounts SceneViewer so a
+  // crashed WebGL subtree is recreated from scratch, not merely re-rendered.
+  const [viewEpoch, setViewEpoch] = useState(0);
+
+  // ---------------------------------------------------------------------------
+  // Rules of hooks: every hook below runs UNCONDITIONALLY, before the
+  // `!revision` early return. Revision flips to null when the owner switches
+  // to a project without a scene revision while this page is mounted; a hook
+  // count change between renders crashes React («Rendered fewer hooks than
+  // expected») and white-screens the app. The hooks therefore work with
+  // nullable values and only the JSX return is gated.
+  // ---------------------------------------------------------------------------
+
+  // R1 layer filter: hide the entities of the unchecked layers before the
+  // scene reaches SceneViewer. With every layer on, the original scene object
+  // passes through unchanged. Cameras are never filtered, so the camera
+  // toolbar and the calibrated-pose overlay are unaffected by the toggles.
+  // Null when no revision exists yet (the empty state never renders the
+  // viewer, so the null never reaches SceneViewer).
+  const sceneForViewer = useMemo(() => {
+    if (!revision) return null;
+    const scene = revision.scene;
+    if (visibleStates.length === ENTITY_STATES.length) return scene;
+    const shell = scene.entities.filter(isShellEntity);
+    const content = filterEntitiesByState(
+      { ...scene, entities: scene.entities.filter((entity) => !isShellEntity(entity)) },
+      visibleStates
+    );
+    return { ...scene, entities: [...shell, ...content.entities] };
+  }, [revision, visibleStates]);
+
+  const latestRenders = useMemo(
+    () => renders.slice(0, 5),
+    [renders]
+  );
+
+  // R7 (#187): render history for the rail list (latest five, stage chips).
+  useEffect(() => {
+    let cancelled = false;
+    api.listRenders(projectId)
+      .then((records) => {
+        if (!cancelled) setRenders(records);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // R7 (#187): the render job arrives via the shared App poll; when it leaves
+  // the queued/running set we resolve the draft→final gate and refresh the
+  // list. Mirrors the TwinDesignPanel completion pattern.
+  useEffect(() => {
+    if (!pendingRenderJobId) return;
+    const job = jobs.find((item) => item.id === pendingRenderJobId);
+    if (!job) return;
+    if (job.status === "queued" || job.status === "running") return;
+    if (job.status === "succeeded") {
+      if (pendingRenderStage === "final") {
+        setRenderInfo("Финальный рендер готов — смотрите страницу «Результаты».");
+      } else {
+        setDraftReady(true);
+        setRenderInfo("Черновик готов. Проверьте ракурс и сделайте финальный рендер.");
+      }
+    } else {
+      setRenderError(`Рендер не завершён: ${statusLabel(job.status)}.`);
+    }
+    setPendingRenderJobId(null);
+    setPendingRenderStage(null);
+    api.listRenders(projectId)
+      .then(setRenders)
+      .catch(() => undefined);
+  }, [jobs, pendingRenderJobId, pendingRenderStage, projectId]);
+
+  // R3: which review-form fields stay highlighted as missing —
+  // server-reported gaps until the user fills them in, plus the dimensions
+  // re-derived live from the form (they gate placement).
+  const missingHighlight = useMemo(() => {
+    const keys = new Set<string>();
+    for (const key of importMissing) {
+      const formKey = SERVER_FACT_TO_FORM_KEY[key] ?? key;
+      const value = importForm[formKey as keyof ImportForm];
+      if (value == null || value.trim() === "") keys.add(formKey);
+    }
+    for (const key of missingFields(importForm)) keys.add(key);
+    return keys;
+  }, [importMissing, importForm]);
 
   if (!revision) {
     return (
@@ -232,20 +331,58 @@ export function DesignPage({
 
   const readiness = computeCameraReadiness(revision.scene.cameras);
 
-  // R1 layer filter: hide the entities of the unchecked layers before the
-  // scene reaches SceneViewer. With every layer on, the original scene object
-  // passes through unchanged. Cameras are never filtered, so the camera
-  // toolbar and the calibrated-pose overlay are unaffected by the toggles.
-  const sceneForViewer = useMemo(() => {
-    const scene = revision.scene;
-    if (visibleStates.length === ENTITY_STATES.length) return scene;
-    const shell = scene.entities.filter(isShellEntity);
-    const content = filterEntitiesByState(
-      { ...scene, entities: scene.entities.filter((entity) => !isShellEntity(entity)) },
-      visibleStates
-    );
-    return { ...scene, entities: [...shell, ...content.entities] };
-  }, [revision.scene, visibleStates]);
+  // R7 (#187): render-readiness gate for the rail — calibrated camera → full
+  // draft→final flow; estimated camera → draft only with the «приблизительный
+  // ракурс» caveat; no camera → disabled with the warning copy.
+  const renderReadiness = computeRenderReadiness(revision.scene.cameras);
+  const renderPending = pendingRenderJobId !== null;
+  const renderButtonLabel = renderPending
+    ? pendingRenderStage === "final"
+      ? "Готовим финальный рендер…"
+      : "Готовим черновик…"
+    : draftReady
+      ? "Сделать финальный рендер"
+      : "Сделать рендер";
+  const renderButtonDisabled =
+    renderBusy ||
+    renderPending ||
+    !renderReadiness.cameraId ||
+    (draftReady ? !renderReadiness.allowFinal : false);
+
+  // Freshness rule shared with the command senders: the CAS-ish revision id
+  // and the readiness verdict come from a fresh scene read, never from the
+  // possibly-stale prop. The stage is sent explicitly and never overrides
+  // renderer_profile (BE maps draft→eevee itself); the idempotency key
+  // includes the stage so a retried draft never collides with a final.
+  const startRender = async (stage: "draft" | "final") => {
+    if (renderBusy || renderPending) return;
+    setRenderInfo("");
+    setRenderError("");
+    setRenderBusy(true);
+    try {
+      const fresh = await api.scene(projectId);
+      if (!fresh) throw new Error("Сцена ещё не инициализирована.");
+      const freshReadiness = computeRenderReadiness(fresh.scene.cameras);
+      if (!freshReadiness.cameraId) {
+        throw new Error("Недостаточно точности для рендера.");
+      }
+      if (stage === "final" && !freshReadiness.allowFinal) {
+        throw new Error("Недостаточно точности для финального рендера.");
+      }
+      const job = await api.createRender(projectId, {
+        camera_id: freshReadiness.cameraId,
+        scene_revision_id: fresh.revision_id,
+        stage,
+        idempotency_key: `manual:${fresh.revision_id}:${freshReadiness.cameraId}:${stage}`
+      });
+      setPendingRenderJobId(job.id);
+      setPendingRenderStage(stage);
+    } catch (reason) {
+      setRenderError(apiErrorText(reason));
+    } finally {
+      setRenderBusy(false);
+    }
+  };
 
   function toggleState(state: EntityState) {
     setVisibleStates((current) => {
@@ -544,22 +681,9 @@ export function DesignPage({
   // Compact rail card list: top-3 results in severity order (computed once).
   const checkTopResults = checkReport ? topResults(checkReport) : [];
 
-  // R3: which review-form fields stay highlighted as missing —
-  // server-reported gaps until the user fills them in, plus the dimensions
-  // re-derived live from the form (they gate placement).
-  const missingHighlight = useMemo(() => {
-    const keys = new Set<string>();
-    for (const key of importMissing) {
-      const formKey = SERVER_FACT_TO_FORM_KEY[key] ?? key;
-      const value = importForm[formKey as keyof ImportForm];
-      if (value == null || value.trim() === "") keys.add(formKey);
-    }
-    for (const key of missingFields(importForm)) keys.add(key);
-    return keys;
-  }, [importMissing, importForm]);
-
   // Review-form input class: fields the import reported as missing (and that
-  // are still empty) get the warning highlight.
+  // are still empty) get the warning highlight. (missingHighlight memo lives
+  // above the !revision early return — rules of hooks.)
   function fieldClass(key: string): string {
     return missingHighlight.has(key)
       ? "product-import-field product-import-field--missing"
@@ -913,17 +1037,24 @@ export function DesignPage({
               remount on mode switches — same semantics as the base layout. */}
           {mode === "3d" && (
             <section className="canvas-panel" ref={canvasRef}>
-              <SceneViewer
-                scene={sceneForViewer}
-                projectId={projectId}
-                onChanged={onChanged}
-                selectedId={selectedEntityId}
-                onSelectEntity={setSelectedEntityId}
-                onRequestReplace={(id) => {
-                  setReplaceTargetId(id);
-                  openAdvanced();
-                }}
-              />
+              {/* R7: a WebGL/context failure must not take the whole page
+                  down — the boundary keeps plan/photo tooling usable. */}
+              <SceneViewerErrorBoundary
+                onRetry={() => setViewEpoch((value) => value + 1)}
+              >
+                <SceneViewer
+                  key={viewEpoch}
+                  scene={sceneForViewer}
+                  projectId={projectId}
+                  onChanged={onChanged}
+                  selectedId={selectedEntityId}
+                  onSelectEntity={setSelectedEntityId}
+                  onRequestReplace={(id) => {
+                    setReplaceTargetId(id);
+                    openAdvanced();
+                  }}
+                />
+              </SceneViewerErrorBoundary>
             </section>
           )}
 
@@ -957,6 +1088,64 @@ export function DesignPage({
                   Настроить камеру
                 </button>
               </div>
+
+              {/* R7 (#187): two-stage render flow — a draft (eevee) render
+                  first; the final photoreal render unlocks once the draft
+                  succeeded. Estimated cameras render drafts only, with the
+                  «приблизительный ракурс» caveat. */}
+              <section className="design-render" aria-label="Рендер сцены">
+                <div className="design-render-actions">
+                  {renderReadiness.state === "estimated" && (
+                    <span
+                      className="mapping-chip approx"
+                      title={renderReadiness.warning ?? undefined}
+                    >
+                      приблизительный ракурс
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={renderButtonDisabled}
+                    onClick={() => void startRender(draftReady ? "final" : "draft")}
+                  >
+                    {renderButtonLabel}
+                  </button>
+                </div>
+                {!renderReadiness.cameraId && (
+                  <p className="hint">{renderReadiness.warning}</p>
+                )}
+                {renderReadiness.state === "estimated" && draftReady && (
+                  <p className="hint">{renderReadiness.warning}</p>
+                )}
+                {renderInfo && <p className="hint">{renderInfo}</p>}
+                 {renderError && <div className="error">{renderError}</div>}
+                 {latestRenders.length > 0 && (
+                   <ul className="design-render-list">
+                     {latestRenders.map((item) => {
+                       // Stage lives in the persisted manifest_json — the
+                       // RenderRecord wire shape has no top-level stage
+                       // (acceptance finding: every chip showed «Финальный»).
+                       const stage = item.manifest?.stage;
+                       return (
+                         <li key={item.id}>
+                           <span
+                             className={
+                               "render-stage-chip " +
+                               (stage === "draft" ? "draft" : "final")
+                             }
+                           >
+                             {renderStageLabel(stage)}
+                           </span>
+                           <span className="muted">
+                             {new Date(item.created_at).toLocaleString("ru-RU")}
+                           </span>
+                         </li>
+                       );
+                     })}
+                   </ul>
+                 )}
+              </section>
 
               {selectedEntity ? (
                 <section className="design-selected" aria-label="Выбранный объект">

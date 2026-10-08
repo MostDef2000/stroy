@@ -14,8 +14,12 @@ import {
   WORKER_OFFLINE_NOTICE,
   entityKindLabel,
   fileLabel,
+  mappingConfidenceLabel,
   openingKindLabel,
   planAnalyzeQueueText,
+  renderStageLabel,
+  roomHeading,
+  saveIndicator,
   renderImageTag,
   rendererProfileLabel,
   statusLabel,
@@ -122,4 +126,38 @@ test("#188: style-analysis limits reference the «референс» role", () =
     styleAnalysisMaxMessage(6),
     "Для анализа стиля можно использовать максимум 5 изображений-референсов. Сейчас выбрано: 6."
   );
+});
+
+// ---------------------------------------------------------------------------
+// R7 additions (#184/#187 + Q3/Q4 quick-wins).
+// ---------------------------------------------------------------------------
+
+test("roomHeading prefers the room name, falls back to the id", () => {
+  assert.equal(roomHeading({ id: "room-1", name: "Спальня" }), "Спальня");
+  assert.equal(roomHeading({ id: "room-1", name: null }), "Комната room-1");
+  assert.equal(roomHeading({ id: "room-1" }), "Комната room-1");
+  assert.equal(roomHeading({ id: "room-1", name: "   " }), "Комната room-1");
+});
+
+test("saveIndicator precedence: saving > dirty > committed > saved draft > default", () => {
+  assert.equal(saveIndicator({ saving: true, dirty: true, draftStatus: "committed" }), "Сохранение…");
+  assert.equal(saveIndicator({ saving: false, dirty: true, draftStatus: "committed" }), "Есть несохранённые правки");
+  assert.equal(saveIndicator({ saving: false, dirty: false, draftStatus: "committed" }), "3D-сцена создана");
+  assert.equal(saveIndicator({ saving: false, dirty: false, draftStatus: "edited" }), "План сохранён");
+  assert.equal(saveIndicator({ saving: false, dirty: false, draftStatus: null }), "Есть несохранённые правки");
+});
+
+test("renderStageLabel: draft → «Черновик», everything else → «Финальный»", () => {
+  assert.equal(renderStageLabel("draft"), "Черновик");
+  assert.equal(renderStageLabel("final"), "Финальный");
+  assert.equal(renderStageLabel(null), "Финальный");
+  assert.equal(renderStageLabel(undefined), "Финальный");
+});
+
+test("mappingConfidenceLabel: wire values → badge labels", () => {
+  assert.equal(mappingConfidenceLabel("approx"), "приблизительно");
+  assert.equal(mappingConfidenceLabel("confirmed"), "подтверждено владельцем");
+  assert.equal(mappingConfidenceLabel("calibrated"), "откалибровано");
+  assert.equal(mappingConfidenceLabel(null), "приблизительно");
+  assert.equal(mappingConfidenceLabel("garbage"), "приблизительно");
 });

@@ -258,6 +258,223 @@ export function isApproxRoomMapping(metadata: unknown): boolean {
   return metadata["mapping"] === "owner_room" && metadata["confidence"] === "approx";
 }
 
+// ---------------------------------------------------------------------------
+// R7 (#184): photo mapping metadata v1 — the wire contract for the mapping
+// wizard. Structural types + a typed builder/validator mirroring the backend
+// error codes (invalid_photo_mapping_metadata | unknown_visible_target). Pure:
+// no React, no network (attachments.ts module contract).
+// ---------------------------------------------------------------------------
+
+/** Kinds a visible target may reference on the wire. */
+export type PhotoMappingTargetKind =
+  | "wall"
+  | "door"
+  | "window"
+  | "floor"
+  | "ceiling";
+
+/** One scene entity visible in the photo (target_type is always "entity"). */
+export type PhotoMappingVisibleTarget = {
+  target_type: "entity";
+  target_id: string;
+  kind: PhotoMappingTargetKind;
+};
+
+/** Where the photo was aimed from, as answered by the owner. */
+export type PhotoMappingOrientationHint = {
+  looks_at: "wall" | "window" | "door" | "corner" | null;
+  from: "corner" | "center" | null;
+  owner_label?: string;
+};
+
+/** Photo mapping metadata v1 (wire contract, all keys validated). */
+export type PhotoMappingMetadata = {
+  mapping: "owner_room";
+  confidence: "approx" | "confirmed" | "calibrated";
+  visible_targets: PhotoMappingVisibleTarget[];
+  orientation_hint: PhotoMappingOrientationHint;
+  camera_id?: string;
+  provenance: {
+    source: "user" | "estimated" | "model_inferred";
+    note?: string;
+  };
+};
+
+const PHOTO_TARGET_KINDS: readonly PhotoMappingTargetKind[] = [
+  "wall",
+  "door",
+  "window",
+  "floor",
+  "ceiling"
+];
+
+/** Result of the typed metadata builder (no throwing — caller renders error). */
+export type PhotoMappingMetadataResult =
+  | { ok: true; metadata: PhotoMappingMetadata }
+  | { ok: false; code: "invalid_photo_mapping_metadata" | "unknown_visible_target"; error: string };
+
+/** Owner answers collected by the mapping wizard (ids may be ""). */
+export type PhotoMappingAnswers = {
+  roomId: string | null;
+  /** Entity id of the target the photo looks at (""/null = unanswered). */
+  looksAtTargetId: string | null;
+  /** Wire kind of the looks_at answer (""/null = unanswered). */
+  looksAtKind: PhotoMappingTargetKind | null;
+  /** "corner" | "center" | ""/null = unanswered. */
+  from: "corner" | "center" | null;
+};
+
+/**
+ * Build photo mapping metadata v1 from the wizard answers. Validated result:
+ * visible target kinds are checked against the wire enum and the looks_at
+ * answer must reference one of the given targets (unknown_visible_target
+ * mirrors the backend 422 code). Confidence is stamped "approx" — only the
+ * calibration flow may upgrade it later.
+ */
+export function buildPhotoMappingMetadata(
+  answers: PhotoMappingAnswers,
+  knownTargets: readonly PhotoMappingVisibleTarget[] = []
+): PhotoMappingMetadataResult {
+  if (!answers.roomId || answers.roomId.trim() === "") {
+    return {
+      ok: false,
+      code: "invalid_photo_mapping_metadata",
+      error: "Не указана комната для привязки фото."
+    };
+  }
+  const visibleTargets: PhotoMappingVisibleTarget[] = [];
+  if (answers.looksAtTargetId && answers.looksAtKind) {
+    if (!PHOTO_TARGET_KINDS.includes(answers.looksAtKind)) {
+      return {
+        ok: false,
+        code: "invalid_photo_mapping_metadata",
+        error: "Неизвестный тип цели привязки."
+      };
+    }
+    const known = knownTargets.some(
+      (target) =>
+        target.target_type === "entity" &&
+        target.target_id === answers.looksAtTargetId &&
+        target.kind === answers.looksAtKind
+    );
+    if (!known) {
+      return {
+        ok: false,
+        code: "unknown_visible_target",
+        error: "Выбранная цель не относится к выбранной комнате."
+      };
+    }
+    visibleTargets.push({
+      target_type: "entity",
+      target_id: answers.looksAtTargetId,
+      kind: answers.looksAtKind
+    });
+  }
+  const orientationHint: PhotoMappingOrientationHint = {
+    // looks_at carries the aimed-at surface kind; floor/ceiling targets stay
+    // valid visible targets but do not map onto the looks_at enum.
+    looks_at:
+      answers.looksAtTargetId &&
+      answers.looksAtKind &&
+      (answers.looksAtKind === "wall" ||
+        answers.looksAtKind === "door" ||
+        answers.looksAtKind === "window")
+        ? answers.looksAtKind
+        : null,
+    from: answers.from ?? null
+  };
+  return {
+    ok: true,
+    metadata: {
+      mapping: "owner_room",
+      confidence: "approx",
+      visible_targets: visibleTargets,
+      orientation_hint: orientationHint,
+      provenance: { source: "user" }
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// R7 (#184): mapping wizard state helpers (pure).
+// ---------------------------------------------------------------------------
+
+/** Candidate room for the wizard's confirm step. */
+export type MappingWizardRoom = {
+  id: string;
+  name: string | null;
+};
+
+/** One selectable visible target in the orientation step. */
+export type MappingWizardTarget = {
+  targetId: string;
+  kind: PhotoMappingTargetKind;
+  label: string;
+};
+
+/**
+ * The room preselected by the wizard's confirm step: the section's own room
+ * by default; when the plan has exactly one room it is also the suggestion
+ * (the UI shows «предлагаем»). Total: empty room lists resolve to null.
+ */
+export function mappingSuggestedRoomId(
+  rooms: readonly MappingWizardRoom[],
+  currentRoomId: string | null
+): string | null {
+  if (rooms.length === 1) return rooms[0].id;
+  if (currentRoomId && rooms.some((room) => room.id === currentRoomId)) {
+    return currentRoomId;
+  }
+  return rooms[0]?.id ?? null;
+}
+
+/**
+ * Orientation step is needed only when the chosen room offers at least one
+ * visible target to aim at; otherwise the question is skipped entirely.
+ */
+export function mappingNeedsOrientationStep(
+  targets: readonly MappingWizardTarget[] | undefined
+): boolean {
+  return Array.isArray(targets) && targets.length > 0;
+}
+
+/** Defensive read view of a mapped photo attachment's metadata. */
+export type PhotoMappingMetadataView = {
+  /** Wire confidence as-is (approx | confirmed | calibrated | unknown). */
+  confidence: string | null;
+  visibleTargets: PhotoMappingVisibleTarget[];
+};
+
+function isVisibleTargetRecord(value: unknown): value is PhotoMappingVisibleTarget {
+  if (!isRecord(value)) return false;
+  return (
+    value["target_type"] === "entity" &&
+    typeof value["target_id"] === "string" &&
+    typeof value["kind"] === "string" &&
+    PHOTO_TARGET_KINDS.includes(value["kind"] as PhotoMappingTargetKind)
+  );
+}
+
+/**
+ * Read the owner-room mapping stamped on a photo attachment (v1 shape).
+ * Total: non-mapping or malformed metadata → null; the list view renders
+ * plain rows for those. visible_targets entries failing the wire shape are
+ * dropped rather than breaking the row.
+ */
+export function photoMappingMetadataView(
+  metadata: unknown
+): PhotoMappingMetadataView | null {
+  if (!isRecord(metadata)) return null;
+  if (metadata["mapping"] !== "owner_room") return null;
+  const confidence =
+    typeof metadata["confidence"] === "string" ? metadata["confidence"] : null;
+  const rawTargets = metadata["visible_targets"];
+  const visibleTargets = Array.isArray(rawTargets)
+    ? rawTargets.filter(isVisibleTargetRecord)
+    : [];
+  return { confidence, visibleTargets };
+}
+
 /**
  * True when the attachment's target no longer exists in the given scene: the
  * room/entity id is not among the scene entities. Project-level attachments

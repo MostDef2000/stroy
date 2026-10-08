@@ -530,26 +530,35 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
                 />
               </label>
             ))}
-            {(["fx", "fy", "cx", "cy"] as const).map((key) => (
-              <label key={key}>
-                {key}
-                <input
-                  type="number"
-                  step="0.01"
-                  value={draft.intrinsics[key]}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      intrinsics: {
-                        ...draft.intrinsics,
-                        [key]: numeric(event.target.value)
-                      }
-                    })
-                  }
-                />
-              </label>
-            ))}
           </div>
+
+          {/* Q8 quick-win: raw intrinsics (fx/fy/cx/cy) stay editable for the
+              rare calibration workflow but no longer crowd the main grid —
+              they live under a collapsed «Дополнительно» disclosure. */}
+          <details className="camera-advanced">
+            <summary>Дополнительно</summary>
+            <div className="camera-grid">
+              {(["fx", "fy", "cx", "cy"] as const).map((key) => (
+                <label key={key}>
+                  {key}
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={draft.intrinsics[key]}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        intrinsics: {
+                          ...draft.intrinsics,
+                          [key]: numeric(event.target.value)
+                        }
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
 
           <div className="camera-grid">
             {["x", "y", "z"].map((axis, index) => (

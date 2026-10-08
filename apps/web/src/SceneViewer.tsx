@@ -26,8 +26,15 @@ import {
 import {
   canonicalDimensionsToThree,
   canonicalPositionToThree,
-  canonicalRotationToThreeQuaternion
+  canonicalRotationToThreeQuaternion,
+  roomViewSuggestionFromBounds,
+  threeToCanonicalPosition,
+  threeToCanonicalRotation,
+  viewpointIntrinsicsFromPerspectiveCamera,
+  type PlanBoundsMm,
+  type RoomViewSuggestion
 } from "./sceneMath";
+import { groupViewpointOptions } from "./cameraReadiness";
 import { apiErrorText, uniqueId } from "./twinDesign";
 
 type PlanWallFrame = {
@@ -180,6 +187,70 @@ function planOverview(
   };
 }
 
+/** One per-room auto viewpoint candidate (#187): label + plan bounds. */
+type RoomAutoView = {
+  roomId: string;
+  label: string;
+  bounds: PlanBoundsMm;
+};
+
+/**
+ * Rooms with their plan-space bounding boxes, derived the same way as
+ * planOverview: wall endpoints from geometry a/b. Rooms without resolvable
+ * wall geometry are skipped (no sane camera placement exists for them).
+ * Pure helper — mirrors planOverview's parsing rules exactly.
+ */
+function roomAutoViews(entities: SceneEntity[]): RoomAutoView[] {
+  const wallsById = new Map<string, { a: [number, number]; b: [number, number] }>();
+  for (const entity of entities) {
+    if (entity.kind !== "wall") continue;
+    const geometry = entity.geometry ?? {};
+    const a = geometry["a"];
+    const b = geometry["b"];
+    if (!Array.isArray(a) || a.length !== 2 || !Array.isArray(b) || b.length !== 2) {
+      continue;
+    }
+    const ax = Number(a[0]);
+    const ay = Number(a[1]);
+    const bx = Number(b[0]);
+    const by = Number(b[1]);
+    if (![ax, ay, bx, by].every(Number.isFinite)) continue;
+    wallsById.set(entity.id, { a: [ax, ay], b: [bx, by] });
+  }
+  const views: RoomAutoView[] = [];
+  for (const entity of entities) {
+    if (entity.kind !== "room") continue;
+    const wallIds = (entity.geometry ?? {})["wall_ids"];
+    if (!Array.isArray(wallIds)) continue;
+    const points: Array<[number, number]> = [];
+    for (const wallId of wallIds) {
+      const wall = wallsById.get(String(wallId));
+      if (!wall) continue;
+      points.push(wall.a, wall.b);
+    }
+    if (points.length === 0) continue;
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
+    // F4 (review): unnamed rooms must not leak the raw room id into the
+    // picker — auto-view labels fall back to the room's ordinal position
+    // («Комната N» by auto-view index). roomHeading itself keeps its
+    // id-fallback behavior (Q3, test-pinned) and is not used here.
+    const name =
+      typeof entity.display_name === "string" ? entity.display_name.trim() : "";
+    views.push({
+      roomId: entity.id,
+      label: name !== "" ? name : `Комната ${views.length + 1}`,
+      bounds: {
+        minX: Math.min(...xs),
+        maxX: Math.max(...xs),
+        minY: Math.min(...ys),
+        maxY: Math.max(...ys)
+      }
+    });
+  }
+  return views;
+}
+
 /** Publishes the three.js camera/renderer so the outer component can raycast. */
 function SceneBridge({
   onReady
@@ -267,11 +338,14 @@ function EntityMesh({
 function CameraController({
   calibrated,
   overview,
+  autoView,
   resetKey,
   sceneKey
 }: {
   calibrated: SceneCamera | null;
   overview: { x: number; z: number; span: number } | null;
+  /** R7 (#187): per-room auto viewpoint placement (not persisted). */
+  autoView: RoomViewSuggestion | null;
   resetKey: number;
   sceneKey: string;
 }) {
@@ -337,6 +411,17 @@ function CameraController({
     camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   }, [calibrated, camera, resetKey, sceneKey]);
 
+  // R7 (#187): auto room views fly the default camera to the suggested pose;
+  // a separate effect so an overview/calibrated change still wins via the
+  // effect above. The suggestion object identity changes with the selection.
+  useEffect(() => {
+    if (!autoView || !(camera instanceof PerspectiveCamera)) return;
+    camera.quaternion.identity();
+    camera.position.set(...canonicalPositionToThree(autoView.positionMm));
+    camera.lookAt(...canonicalPositionToThree(autoView.looksAtMm));
+    camera.updateProjectionMatrix();
+  }, [autoView, camera, resetKey, sceneKey]);
+
   return null;
 }
 
@@ -344,12 +429,15 @@ function OverviewOrbitControls({
   enabled,
   interactionLocked,
   overview,
+  orbitTarget,
   resetKey,
   sceneKey
 }: {
   enabled: boolean;
   interactionLocked: boolean;
   overview: { x: number; z: number; span: number } | null;
+  /** R7 (#187): orbit target for the current view (auto views aim at the room). */
+  orbitTarget: [number, number, number] | null;
   resetKey: number;
   sceneKey: string;
 }) {
@@ -366,7 +454,11 @@ function OverviewOrbitControls({
     controls.minDistance = Math.max(1.5, (overview?.span ?? 6) * 0.15);
     controls.maxDistance = Math.max(30, (overview?.span ?? 6) * 4);
     controls.maxPolarAngle = Math.PI / 2 - 0.03;
-    controls.target.set(overview?.x ?? 0, overview ? 1.1 : 0.8, overview?.z ?? 0);
+    if (orbitTarget) {
+      controls.target.set(...orbitTarget);
+    } else {
+      controls.target.set(overview?.x ?? 0, overview ? 1.1 : 0.8, overview?.z ?? 0);
+    }
     controls.update();
     controlsRef.current = controls;
 
@@ -374,7 +466,7 @@ function OverviewOrbitControls({
       controls.dispose();
       controlsRef.current = null;
     };
-  }, [camera, enabled, gl, resetKey, sceneKey]);
+  }, [camera, enabled, gl, orbitTarget, resetKey, sceneKey]);
 
   // Disable orbit/pan while a furniture drag is in flight or the pointer rests
   // on a draggable mesh, without recreating the controls (which would reset the
@@ -425,19 +517,50 @@ export function SceneViewer({
   const gridSize = Math.max(12, Math.ceil((overview?.span ?? 9) * 1.35));
   const gridDivisions = Math.max(12, Math.min(80, Math.round(gridSize * 2)));
   const selected = entities.find((entity) => entity.id === selectedId) ?? null;
+
+  // R7 (#187): grouped viewpoint picker state — persisted cameras split into
+  // saved/photo groups with #188-safe labels, per-room auto views derived
+  // from the plan geometry (never persisted until explicitly saved).
+  const autoViews = useMemo(() => roomAutoViews(entities), [entities]);
+  const viewpointGroups = useMemo(
+    () => groupViewpointOptions(scene?.cameras ?? []),
+    [scene]
+  );
+  const isAutoView = cameraId.startsWith("auto:");
+  const selectedAutoView = useMemo(() => {
+    if (!isAutoView) return null;
+    const roomId = cameraId.slice("auto:".length);
+    const view = autoViews.find((item) => item.roomId === roomId) ?? null;
+    return view ? roomViewSuggestionFromBounds(view.bounds) : null;
+  }, [autoViews, cameraId, isAutoView]);
+  const orbitEnabled = cameraId === "overview" || isAutoView;
+  // Auto views orbit around the room centre (the looks-at point); the
+  // overview keeps the plan-frame target the controls already knew.
+  const orbitTarget = useMemo<[number, number, number] | null>(
+    () =>
+      selectedAutoView
+        ? canonicalPositionToThree(selectedAutoView.looksAtMm)
+        : null,
+    [selectedAutoView]
+  );
+
   const calibrated =
-    cameraId === "overview"
+    cameraId === "overview" || isAutoView
       ? null
       : scene?.cameras.find((camera) => camera.id === cameraId) ?? null;
 
   useEffect(() => {
-    if (cameraId !== "overview" && !scene?.cameras.some((camera) => camera.id === cameraId)) {
+    if (
+      cameraId !== "overview" &&
+      !isAutoView &&
+      !scene?.cameras.some((camera) => camera.id === cameraId)
+    ) {
       setCameraId("overview");
     }
     if (selectedId && !entities.some((entity) => entity.id === selectedId)) {
       onSelectEntity(null);
     }
-  }, [cameraId, entities, onSelectEntity, scene, selectedId]);
+  }, [cameraId, entities, isAutoView, onSelectEntity, scene, selectedId]);
 
   useEffect(() => {
     if (!three) return;
@@ -665,6 +788,73 @@ export function SceneViewer({
     }
   }, [onChanged, onSelectEntity, pendingOperation, selected, sendSceneCommand]);
 
+  // R7 (#187): «Сохранить ракурс» — extract the current overview pose into a
+  // persisted saved-viewpoint camera. Available in overview mode only (the
+  // owner frames the flat with orbit/pan, then saves it). The extraction uses
+  // the inverse sceneMath transforms; the pose is stored as a brand-new
+  // camera (fresh uuid, viewpoint_kind "saved") with the optimistic-lock
+  // base_revision_id (CAS) and the shared single-409-retry pattern.
+  const handleSaveViewpoint = useCallback(async () => {
+    if (!three || !projectId || pendingOperation) return;
+    if (cameraId !== "overview") return;
+    const camera = three.camera;
+    if (!(camera instanceof PerspectiveCamera)) return;
+    const rect = three.gl.domElement.getBoundingClientRect();
+    const widthPx = Math.max(1, Math.round(rect.width));
+    const heightPx = Math.max(1, Math.round(rect.height));
+    const positionMm = threeToCanonicalPosition([
+      camera.position.x,
+      camera.position.y,
+      camera.position.z
+    ]);
+    const rotationDeg = threeToCanonicalRotation(camera.quaternion);
+    const intrinsics = viewpointIntrinsicsFromPerspectiveCamera({
+      fovDeg: camera.fov,
+      widthPx,
+      heightPx
+    });
+    setPendingOperation(true);
+    setDragError("");
+    try {
+      const savedCamera: SceneCamera = {
+        id: uniqueId(),
+        width_px: widthPx,
+        height_px: heightPx,
+        intrinsics,
+        transform: { translation_mm: positionMm, rotation_deg: rotationDeg },
+        provenance: { source: "user", note: "saved from 3D overview" },
+        label: null,
+        viewpoint_kind: "saved"
+      };
+      // The CAS base_revision_id must equal the current latest revision —
+      // never trust the prop's revision here (same freshness rule as the
+      // command senders above).
+      const fresh = await api.scene(projectId);
+      if (!fresh) throw new Error("Сцена ещё не инициализирована.");
+      const send = (baseRevisionId: string) =>
+        api.upsertCamera(projectId, savedCamera.id, baseRevisionId, savedCamera);
+      try {
+        await send(fresh.revision_id);
+      } catch (reason) {
+        if (!isConflictError(reason)) throw reason;
+        const retry = await api.scene(projectId);
+        if (!retry) throw reason;
+        await send(retry.revision_id);
+      }
+      // F2 (review): refresh FIRST, then switch. The refreshed scene now
+      // contains the saved camera, so the stale-scene fallback effect cannot
+      // reset the selection to «Текущий обзор» in the window before the
+      // refresh lands. If onChanged throws, the catch below still surfaces
+      // the error and the fallback leaves the view on the overview.
+      await onChanged();
+      setCameraId(savedCamera.id);
+    } catch (reason) {
+      setDragError(apiErrorText(reason));
+    } finally {
+      setPendingOperation(false);
+    }
+  }, [cameraId, onChanged, pendingOperation, projectId, three]);
+
   const handlePointerUp = useCallback(() => {
     const drag = dragRef.current;
     if (!drag) return;
@@ -714,22 +904,48 @@ export function SceneViewer({
   return (
     <div className="viewer-shell">
       <div className="viewer-toolbar">
-        <button
-          className={cameraId === "overview" ? "secondary active" : "secondary"}
-          onClick={() => setCameraId("overview")}
+        {/* R7 (#187): grouped viewpoint switcher — current overview, saved
+            viewpoints (incl. legacy cameras), photo viewpoints and per-room
+            auto views. Raw camera/room ids stay behind option titles (#188). */}
+        <select
+          className="viewer-viewpoint-select"
+          value={cameraId}
+          onChange={(event) => setCameraId(event.target.value)}
+          aria-label="Ракурс камеры"
         >
-          Общий вид
-        </button>
-        {(scene?.cameras ?? []).map((camera, index) => (
-          <button
-            key={camera.id}
-            className={cameraId === camera.id ? "secondary active" : "secondary"}
-            onClick={() => setCameraId(camera.id)}
-            title={camera.id}
-          >
-            {`Камера ${index + 1}`}
-          </button>
-        ))}
+          <option value="overview">Текущий обзор</option>
+          {viewpointGroups.saved.length > 0 && (
+            <optgroup label="Сохранённые ракурсы">
+              {viewpointGroups.saved.map((option) => (
+                <option key={option.id} value={option.id} title={option.title}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {viewpointGroups.photo.length > 0 && (
+            <optgroup label="Ракурсы по фото">
+              {viewpointGroups.photo.map((option) => (
+                <option key={option.id} value={option.id} title={option.title}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {autoViews.length > 0 && (
+            <optgroup label="Авто-ракурсы">
+              {autoViews.map((view) => (
+                <option
+                  key={view.roomId}
+                  value={`auto:${view.roomId}`}
+                  title={view.roomId}
+                >
+                  {`Авто · ${view.label}`}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
         <button
           type="button"
           className="secondary"
@@ -739,6 +955,18 @@ export function SceneViewer({
         >
           Сбросить вид
         </button>
+        {/* R7 (#187): save the framed overview as a persisted viewpoint. */}
+        {cameraId === "overview" && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void handleSaveViewpoint()}
+            disabled={pendingOperation}
+            title="Сохранить текущий обзор как ракурс"
+          >
+            {pendingOperation ? "Сохраняем…" : "Сохранить ракурс"}
+          </button>
+        )}
         <button
           className={debugLocks ? "secondary active" : "secondary"}
           onClick={() => setDebugLocks((value) => !value)}
@@ -760,13 +988,15 @@ export function SceneViewer({
           <CameraController
             calibrated={calibrated}
             overview={overview}
+            autoView={selectedAutoView}
             resetKey={viewResetKey}
             sceneKey={sceneKey}
           />
           <OverviewOrbitControls
-            enabled={cameraId === "overview"}
+            enabled={orbitEnabled}
             interactionLocked={dragActive || hoverDraggable}
             overview={overview}
+            orbitTarget={orbitTarget}
             resetKey={viewResetKey}
             sceneKey={sceneKey}
           />

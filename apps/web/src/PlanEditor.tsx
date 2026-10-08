@@ -22,8 +22,11 @@ import { classifyAssetRole } from "./setup";
 import {
   fileLabel,
   openingKindLabel,
-  planAnalyzeQueueText
+  planAnalyzeQueueText,
+  roomHeading,
+  saveIndicator
 } from "./copy";
+import type { MappingWizardRoom, MappingWizardTarget } from "./attachments";
 
 type Selection =
   | { kind: "wall"; wallId: string }
@@ -753,6 +756,10 @@ export function PlanEditor({
         return;
       }
       await api.commitPlanDraft(projectId);
+      // Q1 quick-win: after a commit the old "scene missing" 404 cache entry
+      // must not mask the freshly created scene — Design page reads it right
+      // after the refresh below.
+      api.invalidateSceneCache(projectId);
       setDraftStatus("committed");
       await onChanged();
       setPhase("entry");
@@ -955,6 +962,48 @@ export function PlanEditor({
     </div>
   );
 
+  // R7 (#184): mapping wizard inputs derived from the plan draft. Plan ids are
+  // copied verbatim into the scene at commit (services/plans.py), so draft
+  // room/wall/opening ids are valid scene target ids. Targets per room: its
+  // walls («Стена N» by wall index in room.wall_ids) and the door/window
+  // openings hosted by those walls (arch is not a wire target kind → skipped).
+  // Plan-sized collections, re-derived per render; the wizard itself is gated
+  // by roomMappingEnabled inside AttachmentSection.
+  const planFloor = draft?.floors[0] ?? null;
+  const mappingRooms: MappingWizardRoom[] | null = planFloor
+    ? planFloor.rooms.map((room) => ({ id: room.id, name: room.name || null }))
+    : null;
+  const mappingTargetsByRoom: Record<string, MappingWizardTarget[]> | null =
+    planFloor
+      ? Object.fromEntries(
+          planFloor.rooms.map((room) => {
+            const wallIndexById = new Map(
+              room.wall_ids.map((wallId, index) => [wallId, index])
+            );
+            const targets: MappingWizardTarget[] = [];
+            for (const wall of planFloor.walls) {
+              const index = wallIndexById.get(wall.id);
+              if (index === undefined) continue;
+              const wallNumber = index + 1;
+              targets.push({
+                targetId: wall.id,
+                kind: "wall",
+                label: `Стена ${wallNumber}`
+              });
+              for (const opening of wall.openings) {
+                if (opening.kind === "arch") continue;
+                targets.push({
+                  targetId: opening.id,
+                  kind: opening.kind,
+                  label: `${openingKindLabel(opening.kind)} · Стена ${wallNumber}`
+                });
+              }
+            }
+            return [room.id, targets];
+          })
+        )
+      : null;
+
   // Inspector side panel (#153): the selection-specific controls that used to
   // render below the stage. Same fields and the same disabled={!scaleKnown}
   // product rules; rare raw coordinates moved under «Дополнительно».
@@ -1074,7 +1123,7 @@ export function PlanEditor({
 
       {selectedRoom && selection?.kind === "room" && (
         <>
-          <h4>Комната {selectedRoom.id}</h4>
+          <h4>{roomHeading(selectedRoom)}</h4>
           <label>
             Название
             <input
@@ -1094,6 +1143,8 @@ export function PlanEditor({
             targetType="room"
             targetId={selectedRoom.id}
             roomMappingEnabled={draftStatus === "committed"}
+            mappingRooms={mappingRooms}
+            mappingTargetsByRoom={mappingTargetsByRoom}
           />
         </>
       )}
@@ -1178,16 +1229,9 @@ export function PlanEditor({
               : undefined
           }
         >
-          {/* R6 autosave (#183): the save state leads the heading line. */}
-          {draftStatus === "committed"
-            ? "3D-сцена создана"
-            : saving
-              ? "Сохранение…"
-              : dirty
-                ? "Есть несохранённые правки"
-                : draftStatus
-                  ? "План сохранён"
-                  : "Есть несохранённые правки"}
+          {/* R6 autosave (#183) + Q4 quick-win: the save state leads the
+              heading line; precedence lives in the unit-tested helper. */}
+          {saveIndicator({ saving, dirty, draftStatus })}
         </span>
       </div>
       {stageStrip}
