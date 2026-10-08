@@ -2,7 +2,10 @@
 // dropdown labels and the exact add_object scene-command payload. No React and
 // no network so the module can be unit-tested in isolation (see
 // tests/twinDesign.test.mjs). Structural input types keep this module free of
-// the browser-only api.ts so it compiles with a bare `tsc`.
+// the browser-only api.ts so it compiles with a bare `tsc`. The one allowed
+// import is the pure copy glossary (#188 display names).
+
+import { rendererProfileLabel } from "./copy.js";
 
 export type CameraLike = {
   id: string;
@@ -14,8 +17,8 @@ export type CameraLike = {
 
 export type ManifestLike = {
   renderer_profile?: string | null;
-  /** Not part of the v0 schema; tolerated if an experimental worker reports it. */
-  wall_seconds?: number | null;
+  /** Render duration in seconds as reported by the worker (#188/R5 field). */
+  render_seconds?: number | null;
   passes?: Record<string, string> | null;
 };
 
@@ -168,8 +171,8 @@ export function referenceImageAssets<T extends AssetLike>(
 }
 
 /**
- * One-line render summary: "<renderer_profile> · <wall_seconds> s". The wall
- * clock is only shown when the worker reported a finite `wall_seconds`.
+ * One-line render summary: "<profile label> · <render_seconds> s". The
+ * duration is only shown when the worker reported a finite `render_seconds`.
  */
 export function formatRenderSummary(
   manifest: ManifestLike | null | undefined
@@ -177,10 +180,10 @@ export function formatRenderSummary(
   if (!manifest) return "no manifest";
   const profile =
     typeof manifest.renderer_profile === "string" && manifest.renderer_profile
-      ? manifest.renderer_profile
-      : "unknown profile";
-  if (isFiniteNumber(manifest.wall_seconds)) {
-    return `${profile} · ${manifest.wall_seconds.toFixed(1)} s`;
+      ? rendererProfileLabel(manifest.renderer_profile)
+      : "профиль не указан";
+  if (isFiniteNumber(manifest.render_seconds)) {
+    return `${profile} · ${manifest.render_seconds.toFixed(1)} s`;
   }
   return profile;
 }

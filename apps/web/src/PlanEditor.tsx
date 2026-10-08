@@ -18,7 +18,11 @@ import {
 } from "./api";
 import { AttachmentSection } from "./AttachmentSection";
 import { computePlanStages } from "./plan-steps";
-import { statusLabel } from "./copy";
+import {
+  fileLabel,
+  openingKindLabel,
+  planAnalyzeQueueText
+} from "./copy";
 
 type Selection =
   | { kind: "wall"; wallId: string }
@@ -146,6 +150,10 @@ export function PlanEditor({
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  // #188: the «приблизительно, проверьте размеры» badge is only honest for a
+  // draft produced by the AI analysis in this session — never for a draft the
+  // user drew themselves (approximation is never shown on user-entered data).
+  const [draftFromAnalysis, setDraftFromAnalysis] = useState(false);
   const [selection, setSelection] = useState<Selection>(null);
   const [mode, setMode] = useState<Mode>("select");
   const [pendingWallStart, setPendingWallStart] = useState<{ x: number; y: number } | null>(null);
@@ -178,6 +186,7 @@ export function PlanEditor({
     setDraft(null);
     setDraftVersion(null);
     setDraftStatus(null);
+    setDraftFromAnalysis(false);
     setSelection(null);
     setMode("select");
     setPendingWallStart(null);
@@ -243,6 +252,7 @@ export function PlanEditor({
         setDraft(response.draft);
         setDraftVersion(response.version);
         setDraftStatus(response.status);
+        setDraftFromAnalysis(true);
         setPhase("editor");
         setInfo(`Черновик v${response.version} готов.`);
       })
@@ -666,7 +676,7 @@ export function PlanEditor({
               title="Подложка редактора плана"
               aria-current={isActive ? "true" : undefined}
             >
-              <span className="pl-asset-name">{asset.original_name ?? asset.id.slice(0, 8)}</span>
+              <span className="pl-asset-name">{fileLabel(asset.original_name)}</span>
             </span>
           );
         }
@@ -679,7 +689,7 @@ export function PlanEditor({
             onClick={() => toggleAsset(asset.id)}
           >
             <span className="pl-asset-order">{index >= 0 ? index + 1 : "·"}</span>
-            <span className="pl-asset-name">{asset.original_name ?? asset.id.slice(0, 8)}</span>
+            <span className="pl-asset-name">{fileLabel(asset.original_name)}</span>
           </button>
         );
       })}
@@ -821,9 +831,9 @@ export function PlanEditor({
                 })
               }
             >
-              <option value="door">door</option>
-              <option value="window">window</option>
-              <option value="arch">arch</option>
+              <option value="door">{openingKindLabel("door")}</option>
+              <option value="window">{openingKindLabel("window")}</option>
+              <option value="arch">{openingKindLabel("arch")}</option>
             </select>
           </label>
           <label>
@@ -949,13 +959,17 @@ export function PlanEditor({
 
         {analyzeJobId && (
           <p className={activeJob?.status === "failed" ? "error" : "muted"}>
-            Анализ: {statusLabel(activeJob?.status ?? "queued")} · план разбирается на GPU-воркере,
-            обычно 1–4 минуты (лимит 15)
+            Анализ: {planAnalyzeQueueText(activeJob?.status ?? "queued")}
           </p>
         )}
         {jobError(activeJob) && <div className="error">{jobError(activeJob)}</div>}
         {error && <div className="error">{error}</div>}
         {info && <p className="muted">{info}</p>}
+        {draft && !analyzeJobId && draftFromAnalysis && draftStatus !== "committed" && (
+          <p className="muted pl-analyze-result">
+            <span className="approx-badge">приблизительно, проверьте размеры</span>
+          </p>
+        )}
 
         {assetStrip}
       </article>

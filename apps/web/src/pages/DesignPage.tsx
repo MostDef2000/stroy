@@ -4,6 +4,7 @@ import { api, type Asset, type AssetRole, type Generation, type ImportUrlRespons
 import { AttachmentSection } from "../AttachmentSection";
 import { ImagePreview } from "../ImagePreview";
 import { LayerBadge } from "../LayerBadge";
+import { DESIGN_CONFLICT_HINT, WORKER_OFFLINE_NOTICE } from "../copy";
 import { computeCameraReadiness } from "../cameraReadiness";
 import { CameraPanel } from "../CameraPanel";
 import { PhotoEditPanel } from "../PhotoEditPanel";
@@ -569,8 +570,7 @@ export function DesignPage({
     <>
       {!workersOnline && (
         <p className="worker-notice muted">
-          Генерация временно недоступна: GPU-worker офлайн. Новые задачи будут ждать
-          восстановления воркера.
+          {WORKER_OFFLINE_NOTICE}
         </p>
       )}
 
@@ -650,7 +650,7 @@ export function DesignPage({
           <div className="style-analyze-group">
             <button onClick={onAnalyzeStyle}>Анализ стиля</button>
             <p className="hint" id="style-hint">
-              Анализ стиля требует 3–5 изображений с ролью «reference». Сейчас: {referenceImages}.
+              Анализ стиля требует 3–5 изображений с ролью «референс». Сейчас: {referenceImages}.
             </p>
           </div>
         </section>
@@ -1025,8 +1025,7 @@ export function DesignPage({
                   {intentError && <div className="error">{intentError}</div>}
                   {intentConflict && (
                     <p className="hint design-intent-conflict">
-                      Сервер отклонил изменение (409) — проверьте блокировки и
-                      запустите «Проверку дизайна».
+                      {DESIGN_CONFLICT_HINT}
                     </p>
                   )}
                   {/* R2: per-entity locks via set_locks; each checkbox sends
@@ -1158,13 +1157,16 @@ export function DesignPage({
                           </span>
                         )}
                         {result.entity_ids.length > 0 && (
-                          <span className="design-check-ids">
-                            {result.entity_ids.map((id) => (
-                              <code key={id} className="design-check-id">
-                                {id}
-                              </code>
-                            ))}
-                          </span>
+                          <details className="disclose-inline">
+                            <summary>Дополнительно</summary>
+                            <span className="design-check-ids">
+                              {result.entity_ids.map((id) => (
+                                <code key={id} className="design-check-id">
+                                  {id}
+                                </code>
+                              ))}
+                            </span>
+                          </details>
                         )}
                       </li>
                     ))}

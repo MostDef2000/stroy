@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, Asset, SceneRevision } from "./api";
+import { fileLabel } from "./copy";
 
 export function ReplacementPanel({
   projectId,
@@ -66,10 +67,7 @@ export function ReplacementPanel({
         resolvedCamera,
         prompt
       );
-      const [x0, y0, x1, y1] = response.affected_region.bbox_px;
-      setResult(
-        `Область заменена · bbox ${x0},${y0}–${x1},${y1}`
-      );
+      setResult("Область заменена");
       await onChanged();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -98,8 +96,8 @@ export function ReplacementPanel({
             onChange={(event) => setReferenceId(event.target.value)}
           >
             {references.map((asset) => (
-              <option key={asset.id} value={asset.id}>
-                {asset.original_name ?? asset.id.slice(0, 8)}
+              <option key={asset.id} value={asset.id} title={asset.id}>
+                {fileLabel(asset.original_name)}
               </option>
             ))}
           </select>
@@ -128,7 +126,7 @@ export function ReplacementPanel({
         </button>
 
         {references.length === 0 && (
-          <p className="muted">Сначала загрузите изображение с ролью reference в разделе Файлы.</p>
+          <p className="muted">Сначала загрузите изображение с ролью «референс» в разделе Файлы.</p>
         )}
         {furniture.length === 0 && <p className="muted">В сцене нет редактируемой мебели — добавьте объект на странице Дизайн.</p>}
         {result && <p className="replacement-result">{result}</p>}

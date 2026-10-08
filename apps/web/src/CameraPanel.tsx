@@ -7,6 +7,7 @@ import {
   useState
 } from "react";
 import { api, Asset, SceneCamera, SceneRevision } from "./api";
+import { fileLabel } from "./copy";
 import { deriveAnchors } from "./cameraAnchors";
 
 type Props = {
@@ -354,8 +355,8 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
           >
             <option value="">нет</option>
             {sourcePhotos.map((asset) => (
-              <option key={asset.id} value={asset.id}>
-                {asset.original_name ?? asset.id.slice(0, 8)}
+              <option key={asset.id} value={asset.id} title={asset.id}>
+                {fileLabel(asset.original_name)}
               </option>
             ))}
           </select>
@@ -419,7 +420,7 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
             <li key={row.key} className="cc-row">
               <span className="cc-index">{index + 1}</span>
               <span className="cc-px">
-                {row.imagePx[0]}, {row.imagePx[1]} px
+                Точка {index + 1} · {row.imagePx[0]}, {row.imagePx[1]} px
               </span>
               <select
                 aria-label={`Угол для точки ${index + 1}`}
@@ -483,11 +484,16 @@ export function CameraPanel({ projectId, revision, assets, onChanged }: Props) {
               {solveResult.quality != null
                 ? `${Math.round(solveResult.quality * 100)}%`
                 : "n/a"}
-              {" · "}residual{" "}
-              {solveResult.residual != null
-                ? `${solveResult.residual.toFixed(2)} px`
-                : "n/a"}
             </span>
+            <details className="disclose-inline">
+              <summary>Дополнительно</summary>
+              <span>
+                residual{" "}
+                {solveResult.residual != null
+                  ? `${solveResult.residual.toFixed(2)} px`
+                  : "n/a"}
+              </span>
+            </details>
           </div>
         )}
       </div>

@@ -38,12 +38,12 @@ test("entityState defaults missing/null/unknown state to asis", () => {
   assert.equal(entityState({ id: "a", kind: "furniture", state: "asis" }), "asis");
 });
 
-test("ENTITY_STATES and labels keep the display order", () => {
+test("ENTITY_STATES and labels keep the display order (#188: RU labels, EN wire values)", () => {
   assert.deepEqual(ENTITY_STATES, ["asis", "structure", "design"]);
   assert.deepEqual(ENTITY_STATE_LABELS, {
-    asis: "As-is",
-    structure: "Structure",
-    design: "Design"
+    asis: "Как есть",
+    structure: "Конструктив",
+    design: "Дизайн"
   });
 });
 

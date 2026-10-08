@@ -374,7 +374,10 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 1280-safe (#188 §7): auto-fit with a 320px floor so the Design-Advanced
+     strip collapses to one column instead of overflowing on narrow windows,
+     while wide windows still get the two-column dashboard. */
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 14px;
 }
 
@@ -1356,7 +1359,9 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
 .td-item-button {
   width: 100%;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  /* label · summary · time · tag — id/camera_id live in the per-row
+     <details> below the button (#188 peer-review fix). */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
   text-align: left;
@@ -1368,11 +1373,10 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
   font-size: 12px;
 }
 
-.td-item-id {
+.td-item-label {
   font-weight: 700;
 }
 
-.td-item-camera,
 .td-item-summary {
   opacity: 0.8;
 }
@@ -1389,6 +1393,14 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
 
 .td-item .tag {
   justify-self: end;
+}
+
+/* ≤1280-friendly (#188 §7): let the 4-column render row wrap/collapse to a
+   2-column grid (label/summary, time/tag) before it overflows. */
+@media (max-width: 1280px) {
+  .td-item-button {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
 }
 
 .td-preview {
@@ -4590,4 +4602,59 @@ textarea.invalid {
 .budget-add-actions {
   display: flex;
   gap: var(--st-space-2);
+}
+
+/* ---------------------------------------------------------------------------
+   R5 owner-copy guardrail (#188): approximation badge + inline disclosure.
+--------------------------------------------------------------------------- */
+
+/* «приблизительно» pill — once per block, never on user-entered/strict data. */
+.approx-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--st-color-warn-bg, rgba(232, 163, 61, 0.16));
+  color: var(--st-color-warn, #8a6116);
+  font-size: var(--st-text-xs);
+  white-space: nowrap;
+}
+
+/* Inline <details> disclosure («Дополнительно»): quiet, small, sits in the
+   flow near its context. Same focus-visible parity as the other summaries. */
+.disclose-inline {
+  min-width: 0;
+}
+.disclose-inline > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--st-color-muted-text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.disclose-inline > summary::-webkit-details-marker {
+  display: none;
+}
+.disclose-inline > summary::before {
+  content: "▸ ";
+}
+.disclose-inline[open] > summary::before {
+  content: "▾ ";
+}
+.disclose-inline > summary:focus-visible {
+  outline: 2px solid var(--st-color-processing);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.disclose-inline > *:not(summary) {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* Hash/id-bearing values never stretch their containers (#188 §7). */
+.rt-details > div,
+.design-check-ids,
+.design-check-id,
+.variant-compare-list code,
+.td-item-summary {
+  overflow-wrap: anywhere;
 }

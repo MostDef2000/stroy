@@ -1,4 +1,5 @@
 import type { Asset, AssetRole, Job } from "../api";
+import { WORKER_OFFLINE_NOTICE } from "../copy";
 import { PlanEditor } from "../PlanEditor";
 
 // Plan page: apartment-plan upload (fixed role) + the plan editor. Only the
@@ -26,8 +27,7 @@ export function PlanPage({
     <>
       {!workersOnline && (
         <p className="worker-notice muted">
-          Генерация временно недоступна: GPU-worker офлайн. Новые задачи будут ждать
-          восстановления воркера.
+          {WORKER_OFFLINE_NOTICE}
         </p>
       )}
 

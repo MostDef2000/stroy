@@ -120,3 +120,27 @@ const RULE_LABELS: Record<string, string> = {
 export function ruleLabel(ruleId: string): string {
   return RULE_LABELS[ruleId] ?? ruleId;
 }
+
+/**
+ * Wire envelope of the validation endpoints (routes.py `validation_view`):
+ * the stored-report row with the actual report under `report`. Kept here so
+ * the unwrap stays a pure, unit-testable helper (api.ts re-exports it; api.ts
+ * itself is browser-only and outside the bare-tsc test ritual).
+ */
+export type ValidationReportEnvelope = {
+  id: string;
+  project_id: string;
+  scene_revision_id: string;
+  scene_content_hash: string;
+  config_hash: string;
+  report_hash: string;
+  created_at: string;
+  report: ValidationReport | null;
+};
+
+/** Unwrap the envelope to the report body (null when absent — never throw). */
+export function unwrapValidationReport(
+  envelope: ValidationReportEnvelope | null | undefined
+): ValidationReport | null {
+  return envelope?.report ?? null;
+}

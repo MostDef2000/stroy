@@ -2,7 +2,7 @@ import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState
 import { api, Asset, AssetRole, Generation, Job, SceneRevision } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
-import { statusLabel } from "./copy";
+import { statusLabel, fileLabel } from "./copy";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type EditAction = "Replace" | "Remove" | "Restyle";
@@ -229,7 +229,7 @@ export function PhotoEditPanel({
         <select value={referenceId} onChange={(event) => setReferenceId(event.target.value)}>
           <option value="">Нет — только инструкция</option>
           {imageAssets.references.map((asset) => (
-            <option key={asset.id} value={asset.id}>{asset.original_name ?? asset.id.slice(0, 8)}</option>
+            <option key={asset.id} value={asset.id} title={asset.id}>{fileLabel(asset.original_name)}</option>
           ))}
         </select>
       </label>
@@ -275,7 +275,7 @@ export function PhotoEditPanel({
               <option value={resolvedPhotoId}>текущее фото</option>
             )}
             {imageAssets.photos.map((asset) => (
-              <option key={asset.id} value={asset.id}>{asset.original_name ?? asset.id.slice(0, 8)}</option>
+              <option key={asset.id} value={asset.id} title={asset.id}>{fileLabel(asset.original_name)}</option>
             ))}
           </select>
         </div>
@@ -326,7 +326,7 @@ export function PhotoEditPanel({
                   <summary>Параметры</summary>
                   {referenceId && (
                     <label>
-                      Вес IP-Adapter · {ipaWeight.toFixed(2)}
+                      Влияние референса · {ipaWeight.toFixed(2)}
                       <input type="range" min={0} max={1} step={0.05} value={ipaWeight} onChange={(event) => setIpaWeight(Number(event.target.value))} />
                     </label>
                   )}
@@ -360,9 +360,10 @@ export function PhotoEditPanel({
 
         {iteration && (
           <div className="pe-result">
+            <span className="approx-badge">Результат ИИ, приблизительно</span>
             <div className="compare-grid">
               {([["До", iteration.baseAssetId, "рабочее фото"],
-                ["После", iteration.resultAssetId, `ревизия ${iteration.resultRevisionId.slice(0, 8)}`]] as const).map(
+                ["После", iteration.resultAssetId, "результат правки"]] as const).map(
                 ([label, assetId, caption]) => (
                   <figure key={label}>
                     <figcaption><strong>{label}</strong><span>{caption}</span></figcaption>

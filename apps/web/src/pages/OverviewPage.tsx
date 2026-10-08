@@ -27,8 +27,9 @@ const ATTACHMENT_KIND_LABELS: Record<Attachment["kind"], string> = {
 // height across its implicit rows and the readiness cards grow tall.
 //
 // R1 additions (#169 card language, kept quiet): a compact scene-layer count
-// card (As-is N · Structure N · Design N) and the project-level «Заметки и
-// задачи» card with the done toggle and the overdue/dangling marks.
+// card (Как есть N · Конструктив N · Дизайн N — RU labels per #188) and the
+// project-level «Заметки и задачи» card with the done toggle and the
+// overdue/dangling marks.
 export function OverviewPage({
   readiness,
   projectId,
@@ -99,6 +100,13 @@ export function OverviewPage({
 
   const items = computeProjectReadiness(readiness);
 
+  // ONE primary next action (#188 §2): the first non-ok item in the readiness
+  // priority (план → сцена/демо → камера → дизайн → задачи) gets the primary
+  // button; every other card keeps its quiet secondary «Перейти». The start-
+  // panel demo button above is the primary action when the scene is the
+  // first blocker (its readiness item targets «overview»).
+  const primaryId = items.find((item) => item.state !== "ok")?.id ?? null;
+
   return (
     <div className="overview-page">
       {!hasScene && (
@@ -108,7 +116,8 @@ export function OverviewPage({
             Сцена инициализируется автоматически. Если этого не произошло, создайте демонстрационную сцену.
           </p>
           <div className="pl-actions">
-            <button onClick={onCreateDemoScene}>Golden room</button>
+            <button onClick={onCreateDemoScene}>Создать демо-сцену</button>
+            <span className="approx-badge">Демо-сцена, приблизительно</span>
           </div>
           {preparingScene && <p className="muted">Готовим рабочее место…</p>}
         </section>
@@ -125,7 +134,10 @@ export function OverviewPage({
               </div>
               <p>{item.detail}</p>
               {target && target !== "overview" && (
-                <button className="secondary" onClick={() => onNavigate(target)}>
+                <button
+                  className={item.id === primaryId ? undefined : "secondary"}
+                  onClick={() => onNavigate(target)}
+                >
                   Перейти
                 </button>
               )}

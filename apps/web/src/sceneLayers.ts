@@ -11,11 +11,12 @@ export type EntityState = "asis" | "structure" | "design";
 /** All layers, always in display order (asis → structure → design). */
 export const ENTITY_STATES: readonly EntityState[] = ["asis", "structure", "design"];
 
-/** Human-readable layer labels (Latin layer names, per the R1 contract). */
+/** Human-readable layer labels — RU labels are the #188 contract; the enum
+ * values (asis | structure | design) are wire values and stay unchanged. */
 export const ENTITY_STATE_LABELS: Record<EntityState, string> = {
-  asis: "As-is",
-  structure: "Structure",
-  design: "Design"
+  asis: "Как есть",
+  structure: "Конструктив",
+  design: "Дизайн"
 };
 
 /** Minimal structural view of a scene entity carrying an optional state. */
