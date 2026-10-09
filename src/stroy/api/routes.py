@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from stroy.db.models import (
     AssetRow,
     AttachmentRow,
     AuthSessionRow,
+    BudgetItemRow,
     GenerationManifestRow,
     GeometryDiagnosticRow,
     JobRow,
@@ -71,7 +72,7 @@ from stroy.services.variants import (
     variant_view,
 )
 from stroy.domain.commands import CommandConflict, CommandRejected
-from stroy.domain.models import Camera, DesignCommand, EntityIntent, Scene, SceneEntity
+from stroy.domain.models import Camera, DesignCommand, EntityIntent, EntityKind, Scene, SceneEntity
 from stroy.domain.plan import PlanDraft
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
@@ -198,6 +199,15 @@ class LoginRequest(BaseModel):
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class BriefNotesPatch(BaseModel):
+    """R8 designer-brief notes (#198). Both fields optional: a field absent
+    from the body leaves the stored value untouched (partial update), an
+    explicit null (or empty/whitespace string) clears it."""
+
+    needs_wishes: str | None = Field(default=None, max_length=8000)
+    questions_to_discuss: str | None = Field(default=None, max_length=8000)
 
 
 class DesignInstruction(BaseModel):
@@ -661,6 +671,413 @@ async def project_delete(
     except Exception:
         logger.exception("project file cleanup failed", extra={"project_id": project_id})
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# designer brief (R8, #198)
+# ---------------------------------------------------------------------------
+
+_BRIEF_SCHEMA_VERSION = "1.0"
+_BRIEF_WARNINGS = (
+    "Бриф не является строительной или рабочей документацией; "
+    "детали требуют проверки специалистом.",
+    "Сгенерированные изображения — концепты, а не фотографии.",
+)
+_BRIEF_BUDGET_DISCLAIMER = "Приблизительно; не является коммерческим предложением"
+_BRIEF_RENDER_LABEL = "Концепт, не фотография"
+_BRIEF_SKIPPED_RENDER_WARNING = (
+    "Некоторые сохранённые рендеры пропущены: нет изображения для предпросмотра."
+)
+# PlanEditor sources: role "plan" (R6 uploads) and legacy "apartment" images.
+_BRIEF_PLAN_ASSET_ROLES = ("plan", "apartment")
+_BRIEF_SCALE_LABELS = {
+    "confirmed": "Масштаб задан вручную",
+    "approximate": "Масштаб распознан с плана (приблизительный)",
+    "unknown": "Масштаб не задан",
+}
+
+
+def _brief_notes_view(row: ProjectRow) -> dict[str, Any]:
+    notes = row.brief_notes_json if isinstance(row.brief_notes_json, dict) else {}
+    return {
+        "needs_wishes": notes.get("needs_wishes"),
+        "questions_to_discuss": notes.get("questions_to_discuss"),
+    }
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/brief-notes",
+    dependencies=[Depends(require_owner)],
+)
+async def brief_notes_get(project_id: str, session: DbSession):
+    row = await session.get(ProjectRow, project_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return _brief_notes_view(row)
+
+
+@router.patch(
+    "/api/v1/projects/{project_id}/brief-notes",
+    dependencies=[Depends(require_csrf)],
+)
+async def brief_notes_patch(
+    project_id: str,
+    payload: BriefNotesPatch,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    def _normalize(value: str | None) -> str | None:
+        # Empty/whitespace strings normalize to null on write.
+        if value is None or not value.strip():
+            return None
+        return value
+
+    row = await session.get(ProjectRow, project_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    notes = dict(row.brief_notes_json) if isinstance(row.brief_notes_json, dict) else {}
+    updates = payload.model_dump(exclude_unset=True)
+    for field in ("needs_wishes", "questions_to_discuss"):
+        if field in updates:
+            notes[field] = _normalize(updates[field])
+    if not notes.get("needs_wishes") and not notes.get("questions_to_discuss"):
+        # Both fields null → store NULL; "no notes" has exactly one shape.
+        row.brief_notes_json = None
+    else:
+        row.brief_notes_json = {
+            "needs_wishes": notes.get("needs_wishes"),
+            "questions_to_discuss": notes.get("questions_to_discuss"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    await session.commit()
+    await session.refresh(row)
+    return _brief_notes_view(row)
+
+
+def _brief_scale_view(draft_json: Any) -> dict[str, Any]:
+    """Scale block from the latest plan draft's ``draft_json.scale``."""
+    scale = draft_json.get("scale") if isinstance(draft_json, dict) else None
+    source = scale.get("source") if isinstance(scale, dict) else None
+    if source == "manual":
+        status = "confirmed"
+    elif source == "plan_label":
+        status = "approximate"
+    else:
+        status, source = "unknown", "unknown"
+    view: dict[str, Any] = {
+        "status": status,
+        "source": source,
+        "label": _BRIEF_SCALE_LABELS[status],
+    }
+    if status != "unknown" and isinstance(scale, dict):
+        mm_per_px = scale.get("mm_per_px")
+        if (
+            isinstance(mm_per_px, (int, float))
+            and not isinstance(mm_per_px, bool)
+            and mm_per_px > 0
+        ):
+            view["mm_per_px"] = float(mm_per_px)
+    return view
+
+
+def _brief_scene_sections(
+    scene_json: Any,
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """(rooms, furniture_intents) from a head-revision scene.
+
+    Legacy revisions without a parseable scene degrade to empty sections.
+    Rooms are room-kind entities; furniture_intents group entities by their
+    keep|remove|replace intent plus a ``locked`` group (existence lock).
+    """
+    if not isinstance(scene_json, dict) or not scene_json:
+        return [], {}
+    try:
+        scene = Scene.model_validate(scene_json)
+    except ValidationError:
+        return [], {}
+
+    rooms = [
+        {"id": entity.id, "name": entity.display_name}
+        for entity in scene.entities
+        if entity.kind is EntityKind.ROOM
+    ]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for entity in scene.entities:
+        entry: dict[str, Any] = {"id": entity.id, "kind": entity.kind.value}
+        if entity.display_name:
+            entry["name"] = entity.display_name
+        if entity.room_id:
+            entry["room_id"] = entity.room_id
+        locks = entity.locks.model_dump(mode="json", exclude_none=True)
+        if any(locks.values()):
+            entry["locks"] = locks
+        if entity.provenance is not None:
+            entry["provenance"] = entity.provenance.model_dump(
+                mode="json", exclude_none=True
+            )
+        if entity.intent is not None:
+            groups.setdefault(entity.intent.value, []).append(entry)
+        if entity.locks.existence:
+            groups.setdefault("locked", []).append(entry)
+    return rooms, {key: group for key, group in groups.items() if group}
+
+
+def _append_unique(warnings: list[str], warning: str) -> None:
+    """Warnings append-only with dedupe."""
+    if warning not in warnings:
+        warnings.append(warning)
+
+
+def _brief_renders_view(
+    rows: list[RenderManifestRow],
+) -> tuple[list[dict[str, Any]], int]:
+    """Render views; returns (views, skipped_rgb_less_count).
+
+    The 12-render cap is applied AFTER the rgb filter (the caller fetches a
+    wider window), so a few rgb-less rows can never shrink the visible list
+    below 12 while older rgb-ful renders exist. ``skipped`` counts rgb-less
+    rows seen before the cap filled — they are saved renders the brief cannot
+    show, which the aggregate surfaces as a warning instead of dropping
+    silently. Rows beyond the cap are excluded by the cap, not counted.
+    """
+    views: list[dict[str, Any]] = []
+    skipped = 0
+    for row in rows:
+        if len(views) >= 12:
+            break  # cap reached; anything after is cap-excluded, not skipped
+        manifest = row.manifest_json if isinstance(row.manifest_json, dict) else {}
+        passes = manifest.get("passes")
+        rgb_asset_id = passes.get("rgb") if isinstance(passes, dict) else None
+        if not rgb_asset_id:
+            skipped += 1
+            continue  # without an RGB pass there is nothing to show a designer
+        view: dict[str, Any] = {
+            "id": row.id,
+            "asset_id": rgb_asset_id,
+            "camera_id": row.camera_id,
+            "stage": manifest.get("stage"),
+            "label": _BRIEF_RENDER_LABEL,
+            "renderer_profile": manifest.get("renderer_profile"),
+            "created_at": row.created_at,
+        }
+        provenance: dict[str, Any] = {}
+        for section, key in (("workflow", "workflow_provenance"), ("model", "model_provenance")):
+            value = manifest.get(key)
+            if isinstance(value, dict) and value:
+                provenance[section] = value
+        if provenance:
+            view["workflow_model_provenance"] = provenance
+        views.append(view)
+    return views, skipped
+
+
+def _brief_budget_view(items: list[BudgetItemRow]) -> dict[str, Any]:
+    views: list[dict[str, Any]] = []
+    for item in items:
+        view: dict[str, Any] = {"id": item.id, "kind": item.kind, "label": item.label}
+        if item.amount is not None:
+            view["amount"] = float(item.amount)
+        if item.currency:
+            view["currency"] = item.currency
+        if item.quantity is not None:
+            view["quantity"] = float(item.quantity)
+        views.append(view)
+    return {"disclaimer": _BRIEF_BUDGET_DISCLAIMER, "items": views}
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/design-brief",
+    dependencies=[Depends(require_owner)],
+)
+async def design_brief_get(
+    project_id: str,
+    session: DbSession,
+    variant_id: str | None = None,
+):
+    """Read-only designer-brief aggregate (R8, #198).
+
+    Composes a BriefDocument from the project, the target variant's head
+    scene revision, brief notes, the latest plan draft, renders, photo
+    attachments, the latest style profile and the variant's budget items.
+    Strictly read-only: no rows are created or committed anywhere here.
+    """
+    project = await session.get(ProjectRow, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    if variant_id is not None:
+        variant = await get_variant(session, project_id, variant_id)
+        if variant is None:
+            raise HTTPException(status_code=404, detail="variant not found")
+    else:
+        approved = await list_variants(session, project_id, status="approved")
+        if not approved:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "brief_variant_required",
+                    "detail": (
+                        "no approved variant: approve a variant or pass "
+                        "variant_id explicitly"
+                    ),
+                },
+            )
+        variant = approved[0]
+
+    # Warnings: always-present array; entries append-only with dedupe.
+    warnings: list[str] = []
+    for warning in _BRIEF_WARNINGS:
+        _append_unique(warnings, warning)
+
+    head_revision = await session.get(SceneRevisionRow, variant.head_scene_revision_id)
+    brief: dict[str, Any] = {"schema_version": _BRIEF_SCHEMA_VERSION}
+    brief["project"] = {
+        "id": project.id,
+        "name": project.name,
+        "created_at": project.created_at,
+    }
+    brief["variant"] = {
+        "id": variant.id,
+        "title": variant.title,
+        "status": variant.status,
+        "base_scene_revision_id": variant.base_scene_revision_id,
+        "head_scene_revision_id": variant.head_scene_revision_id,
+        "head_scene_revision_hash": (
+            head_revision.content_hash if head_revision is not None else None
+        ),
+        "head_scene_revision_created_at": (
+            head_revision.created_at if head_revision is not None else None
+        ),
+    }
+
+    # notes: omit the section when both fields are absent.
+    notes = (
+        project.brief_notes_json if isinstance(project.brief_notes_json, dict) else {}
+    )
+    notes_view = {
+        key: notes[key]
+        for key in ("needs_wishes", "questions_to_discuss")
+        if notes.get(key)
+    }
+    if notes_view:
+        brief["notes"] = notes_view
+
+    # plan: latest plan draft (scale) + the plan asset (PlanEditor sources).
+    draft_row = await get_latest_draft(session, project_id)
+    plan_asset = (
+        await session.execute(
+            select(AssetRow)
+            .where(
+                AssetRow.project_id == project_id,
+                AssetRow.role.in_(_BRIEF_PLAN_ASSET_ROLES),
+                AssetRow.media_type.like("image/%"),
+            )
+            .order_by(AssetRow.created_at.desc(), AssetRow.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if draft_row is not None or plan_asset is not None:
+        plan: dict[str, Any] = {}
+        if plan_asset is not None:
+            plan["asset_id"] = plan_asset.id
+        plan["scale"] = _brief_scale_view(draft_row.draft_json if draft_row else None)
+        brief["plan"] = plan
+
+    rooms, furniture_intents = _brief_scene_sections(
+        head_revision.scene_json if head_revision is not None else None
+    )
+    if rooms:
+        brief["rooms"] = rooms
+    if furniture_intents:
+        brief["furniture_intents"] = furniture_intents
+
+    # renders: strictly this variant (legacy NULL-variant rows excluded).
+    # Wide window: the rgb filter runs BEFORE the 12-render cap, so rgb-less
+    # rows cannot shrink the visible list while older rgb-ful renders exist.
+    render_rows = list(
+        (
+            await session.execute(
+                select(RenderManifestRow)
+                .where(
+                    RenderManifestRow.project_id == project_id,
+                    RenderManifestRow.variant_id == variant.id,
+                )
+                .order_by(
+                    RenderManifestRow.created_at.desc(), RenderManifestRow.id.desc()
+                )
+                .limit(50)
+            )
+        ).scalars()
+    )
+    renders, skipped_renders = _brief_renders_view(render_rows)
+    if renders:
+        brief["renders"] = renders
+    if skipped_renders:
+        _append_unique(warnings, _BRIEF_SKIPPED_RENDER_WARNING)
+
+    # photos: newest photo attachments, caption from the asset's original name.
+    photo_rows = list(
+        (
+            await session.execute(
+                select(AttachmentRow)
+                .where(
+                    AttachmentRow.project_id == project_id,
+                    AttachmentRow.kind == "photo",
+                )
+                .order_by(AttachmentRow.created_at.desc(), AttachmentRow.id.desc())
+                .limit(12)
+            )
+        ).scalars()
+    )
+    photo_asset_ids = [row.asset_id for row in photo_rows if row.asset_id]
+    photo_assets: dict[str, AssetRow] = {}
+    if photo_asset_ids:
+        found = await session.execute(
+            select(AssetRow).where(AssetRow.id.in_(photo_asset_ids))
+        )
+        photo_assets = {asset.id: asset for asset in found.scalars()}
+    photos: list[dict[str, Any]] = []
+    for row in photo_rows:
+        if row.asset_id is None:
+            continue  # validated non-null on write; defensive for legacy rows
+        view: dict[str, Any] = {"attachment_id": row.id, "asset_id": row.asset_id}
+        asset = photo_assets.get(row.asset_id)
+        if asset is not None and asset.original_name:
+            view["caption"] = asset.original_name
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        if metadata:
+            view["mapping"] = metadata
+        photos.append(view)
+    if photos:
+        brief["photos"] = photos
+
+    # style_direction: latest profile row read directly (source_text is not
+    # exposed by the list endpoint).
+    style_row = (
+        await session.execute(
+            select(StyleProfileRow)
+            .where(StyleProfileRow.project_id == project_id)
+            .order_by(StyleProfileRow.created_at.desc(), StyleProfileRow.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if style_row is not None:
+        style: dict[str, Any] = {}
+        if style_row.source_text:
+            style["source_text"] = style_row.source_text
+        if style_row.profile_json:
+            style["summary"] = style_row.profile_json
+        if style_row.source_asset_ids:
+            style["reference_asset_ids"] = style_row.source_asset_ids
+        if style:
+            brief["style_direction"] = style
+
+    budget_items = await list_budget_items(session, project_id, variant.id)
+    if budget_items:
+        brief["budget"] = _brief_budget_view(budget_items)
+
+    brief["warnings"] = warnings
+    return brief
 
 
 @router.post("/api/v1/projects/{project_id}/scene", status_code=201, dependencies=[Depends(require_csrf)])
