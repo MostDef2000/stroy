@@ -456,6 +456,11 @@ async def queue_reference_redesign(
     dispatcher: JobDispatcher | None,
     seed: int | None = None,
     has_reference: bool = True,
+    # R9: optional editorial mood provenance; recorded in
+    # structured_conditioning only when a mood preset was applied, so
+    # legacy callers keep byte-identical payloads.
+    mood_id: str | None = None,
+    mood_title: str | None = None,
     workflow_path: Path = REDESIGN_REFERENCE_WORKFLOW_PATH,
 ) -> JobRow:
     """Queue a reference-based whole-room redesign (img2img over the base photo).
@@ -481,6 +486,10 @@ async def queue_reference_redesign(
         "strength": strength,
         "request_text": request_text,
     }
+    if mood_id is not None:
+        structured_conditioning["mood_id"] = mood_id
+    if mood_title is not None:
+        structured_conditioning["mood_title"] = mood_title
     payload = {
         "purpose": "room_redesign",
         "workflow_manifest": workflow.model_dump(mode="json", exclude_none=True),
