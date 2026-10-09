@@ -36,6 +36,10 @@ class ProjectRow(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # R8 designer brief (#198): owner-curated free-text notes stored as
+    # {needs_wishes, questions_to_discuss, updated_at}. NULL until the first
+    # PATCH; back to NULL when both fields are cleared (never {}).
+    brief_notes_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class SceneRevisionRow(Base):
