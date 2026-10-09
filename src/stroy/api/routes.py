@@ -101,6 +101,7 @@ from stroy.services.jobs import (
     renew_lease,
     update_progress,
 )
+from stroy.services.moods import MoodPreset, compose_redesign_request_text, get_mood
 from stroy.services.quality import list_geometry_diagnostics, persist_geometry_diagnostic
 from stroy.services.renders import list_render_manifests, persist_render_manifest
 from stroy.services.styles import create_style_profile_from_job, list_style_profiles
@@ -350,6 +351,9 @@ class RedesignRequest(BaseModel):
     )
     strength: float = Field(default=0.6, ge=0.2, le=0.95)
     seed: int | None = None
+    # R9: optional editorial mood preset; prepended to the prompt as an
+    # editorial direction. Absent -> prompt passes through unchanged.
+    mood_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class GenerationRequest(BaseModel):
@@ -2855,6 +2859,22 @@ async def redesign_create(
             },
         )
 
+    # R9: optional editorial mood. Unknown ids are rejected before any side
+    # effect; a known preset prepends its direction text to the prompt.
+    mood: MoodPreset | None = None
+    if payload.mood_id is not None:
+        mood = get_mood(payload.mood_id)
+        if mood is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "unknown_mood", "mood_id": payload.mood_id},
+            )
+    request_text = (
+        compose_redesign_request_text(payload.prompt, mood)
+        if mood is not None
+        else payload.prompt
+    )
+
     # Resolve the base photo: an explicit base_asset_id pins the uploaded
     # photo; otherwise fall back to the lineage walk (no camera filter:
     # photo-first).
@@ -2946,7 +2966,7 @@ async def redesign_create(
         session,
         project_id=project_id,
         design_revision_id=revision.id,
-        request_text=payload.prompt,
+        request_text=request_text,
         base_asset_id=base_asset.id,
         reference_asset_id=reference_asset.id,
         strength=payload.strength,
@@ -2955,6 +2975,8 @@ async def redesign_create(
         dispatcher=request.app.state.job_dispatcher,
         seed=payload.seed,
         has_reference=payload.reference_asset_id is not None,
+        mood_id=mood.id if mood is not None else None,
+        mood_title=mood.title if mood is not None else None,
     )
     return {
         "revision_id": revision.id,
