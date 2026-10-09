@@ -1,16 +1,21 @@
-import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CanvasTexture,
+  Mesh,
+  MeshBasicMaterial,
   PerspectiveCamera,
   Plane,
+  PlaneGeometry,
   Raycaster,
+  SRGBColorSpace,
   Vector2,
   Vector3,
   type Camera,
   type WebGLRenderer
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { api, type SceneCamera, type SceneDocument, type SceneEntity } from "./api";
+import { api, type Attachment, type SceneCamera, type SceneDocument, type SceneEntity } from "./api";
 import { entityKindLabel } from "./copy";
 import {
   buildMoveObjectCommand,
@@ -35,6 +40,16 @@ import {
   type RoomViewSuggestion
 } from "./sceneMath";
 import { groupViewpointOptions } from "./cameraReadiness";
+import {
+  PHOTO_CONTEXT_DEPTH_M,
+  photoContextAvailability,
+  photoContextCaption,
+  photoContextCaptionShowsApprox,
+  photoContextFrameAtDepth,
+  resolvePhotoContextSource,
+  type PhotoContextFrame,
+  type PhotoContextSource
+} from "./photoContext";
 import { apiErrorText, uniqueId } from "./twinDesign";
 
 type PlanWallFrame = {
@@ -478,6 +493,78 @@ function OverviewOrbitControls({
   return null;
 }
 
+/**
+ * R11 (#185): the photo quad — the viewpoint's own photo stretched over the
+ * camera's frustum cross-section at PHOTO_CONTEXT_DEPTH_M, so through the
+ * photo viewpoint the scene is seen through its own photograph.
+ *
+ * r3f's default camera is not part of the scene graph, so a mesh literally
+ * parented to it would never render; instead the quad is a scene child whose
+ * pose is synced to the viewer camera every frame (useFrame runs before the
+ * renderer, so the quad never lags the CameraController pose). It draws over
+ * the scene (no depth test, high render order), never catches rays or pointer
+ * events, and disappears entirely when the texture is missing.
+ */
+function PhotoContextPlane({
+  frame,
+  texture
+}: {
+  frame: PhotoContextFrame | null;
+  texture: CanvasTexture | null;
+}) {
+  const { camera, scene } = useThree();
+  const mesh = useMemo(() => {
+    const quad = new Mesh(
+      new PlaneGeometry(1, 1),
+      new MeshBasicMaterial({
+        transparent: true,
+        opacity: 0.65,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false
+      })
+    );
+    // #185: pure overlay — must never catch rays or pointer events.
+    quad.raycast = () => {};
+    quad.renderOrder = 1000;
+    quad.frustumCulled = false;
+    quad.visible = false;
+    return quad;
+  }, []);
+
+  useEffect(() => {
+    scene.add(mesh);
+    return () => {
+      scene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    };
+  }, [mesh, scene]);
+
+  useEffect(() => {
+    mesh.material.map = texture;
+    mesh.material.needsUpdate = true;
+  }, [mesh, texture]);
+
+  useFrame(() => {
+    if (!frame || !texture) {
+      mesh.visible = false;
+      return;
+    }
+    // Camera-parented semantics: the quad follows the viewer camera exactly,
+    // offset in its local frame (principal point included, local z = centerZ).
+    mesh.visible = true;
+    mesh.position.copy(camera.position);
+    mesh.quaternion.copy(camera.quaternion);
+    mesh.translateX(frame.centerX);
+    mesh.translateY(frame.centerY);
+    mesh.translateZ(frame.centerZ);
+    mesh.scale.set(frame.widthM, frame.heightM, 1);
+  });
+
+  return null;
+}
+
 export function SceneViewer({
   scene,
   projectId,
@@ -506,6 +593,19 @@ export function SceneViewer({
   const [pendingOperation, setPendingOperation] = useState(false);
   const [three, setThree] = useState<ThreeContext | null>(null);
   const dragRef = useRef<DragSession | null>(null);
+
+  // R11 (#185): photo-backed context. The toggle is per-viewer-session state —
+  // never persisted, never auto-enabled by a viewpoint change. Room photo
+  // attachments resolve the photo behind the active photo viewpoint; any
+  // fetch or texture-load failure degrades silently (no quad, error caption)
+  // and the rest of the viewer keeps working.
+  const [photoContextOn, setPhotoContextOn] = useState(false);
+  const [roomPhotoAttachments, setRoomPhotoAttachments] = useState<Attachment[]>([]);
+  const [photoTexture, setPhotoTexture] = useState<CanvasTexture | null>(null);
+  const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
+  // Tracks the live texture so a superseded load attempt can dispose it
+  // (React state alone cannot be read synchronously during the swap).
+  const photoTextureRef = useRef<CanvasTexture | null>(null);
 
   const entities = useMemo(() => scene?.entities ?? [], [scene]);
   const renderableEntities = useMemo(
@@ -548,6 +648,129 @@ export function SceneViewer({
     cameraId === "overview" || isAutoView
       ? null
       : scene?.cameras.find((camera) => camera.id === cameraId) ?? null;
+
+  // R11 (#185): photo-context derivation — all pure helpers from
+  // photoContext.ts, so the wiring here only feeds inputs and reads results.
+  // Every failure mode degrades to "feature quietly off" (no quad, disabled
+  // toggle with a title reason, error caption), never to a broken viewer.
+  const hasPhotoCameras = useMemo(
+    () => (scene?.cameras ?? []).some((camera) => camera.viewpoint_kind === "photo"),
+    [scene]
+  );
+  const activePhotoSource = useMemo(
+    () => resolvePhotoContextSource(calibrated, roomPhotoAttachments),
+    [calibrated, roomPhotoAttachments]
+  );
+  const photoAvailability = useMemo(
+    () => photoContextAvailability(scene?.cameras, calibrated, activePhotoSource),
+    [scene, calibrated, activePhotoSource]
+  );
+  // Caption + the approx-suppression flag. showsApprox is true only when the
+  // caption actually being displayed contains «приблизительно» — a load-failure
+  // line replaces the success text, so the standalone approx badge must stay.
+  const photoContextInfo = useMemo(
+    () => ({
+      caption: photoContextCaption(
+        calibrated,
+        activePhotoSource,
+        photoLoadFailed
+          ? { error: "load-failed" }
+          : calibrated?.viewpoint_kind === "photo" && calibrated?.calibration == null
+            ? { error: "uncalibrated" }
+            : undefined
+      ),
+      showsApprox:
+        !photoLoadFailed && photoContextCaptionShowsApprox(activePhotoSource)
+    }),
+    [calibrated, activePhotoSource, photoLoadFailed]
+  );
+  // Frustum cross-section of the active calibrated camera at the quad depth
+  // (null for overview/auto — the quad is never rendered there).
+  const photoFrame = useMemo(
+    () =>
+      calibrated
+        ? photoContextFrameAtDepth(calibrated, PHOTO_CONTEXT_DEPTH_M)
+        : null,
+    [calibrated]
+  );
+
+  // R11 (#185): room photo attachments feed resolvePhotoContextSource.
+  // Refetched when the project or the camera list changes (a saved photo
+  // viewpoint may appear/disappear); a fetch failure degrades to an empty
+  // list — the toggle then shows its disabled reason instead of an error.
+  useEffect(() => {
+    if (!projectId || !hasPhotoCameras) {
+      setRoomPhotoAttachments([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listAttachments(projectId, { target_type: "room", kind: "photo" })
+      .then((attachments) => {
+        if (!cancelled) setRoomPhotoAttachments(attachments);
+      })
+      .catch(() => {
+        if (!cancelled) setRoomPhotoAttachments([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasPhotoCameras, projectId, scene?.cameras]);
+
+  // R11 (#185): the quad's texture — the viewpoint's own photo, decoded and
+  // downscaled to ≤2048px on the longest edge before it reaches the GPU.
+  // Gated on the toggle: nothing loads (and nothing can fail) while the
+  // feature is off. Each new attempt (source or toggle change) disposes the
+  // previous texture and resets the failure flag; an image error sets the
+  // load-failed state (error caption, no quad).
+  useEffect(() => {
+    const previous = photoTextureRef.current;
+    if (previous) {
+      previous.dispose();
+      photoTextureRef.current = null;
+    }
+    setPhotoTexture(null);
+    setPhotoLoadFailed(false);
+    const assetId = activePhotoSource?.assetId;
+    if (!photoContextOn || !assetId) return;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (cancelled) return;
+      try {
+        const longest = Math.max(image.naturalWidth, image.naturalHeight);
+        const scale = Math.min(1, 2048 / Math.max(1, longest));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("canvas 2d context unavailable");
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const texture = new CanvasTexture(canvas);
+        texture.colorSpace = SRGBColorSpace;
+        photoTextureRef.current = texture;
+        setPhotoTexture(texture);
+      } catch {
+        setPhotoLoadFailed(true);
+      }
+    };
+    image.onerror = () => {
+      if (!cancelled) setPhotoLoadFailed(true);
+    };
+    image.src = api.assetUrl(assetId);
+    return () => {
+      cancelled = true;
+    };
+  }, [activePhotoSource, photoContextOn]);
+
+  // Final teardown: the last texture outlives its load attempt.
+  useEffect(
+    () => () => {
+      photoTextureRef.current?.dispose();
+      photoTextureRef.current = null;
+    },
+    []
+  );
 
   useEffect(() => {
     if (
@@ -946,6 +1169,22 @@ export function SceneViewer({
             </optgroup>
           )}
         </select>
+        {/* R11 (#185): photo-backed context — per-session toggle, default OFF,
+            never persisted and never auto-enabled. Hidden entirely when the
+            scene has no photo viewpoints; disabled with a short reason (title)
+            when the active view cannot show one. */}
+        {photoAvailability.toggleVisible && (
+          <button
+            type="button"
+            className={photoContextOn ? "secondary active" : "secondary"}
+            onClick={() => setPhotoContextOn((value) => !value)}
+            aria-pressed={photoContextOn}
+            disabled={!photoAvailability.toggleEnabled}
+            title={photoAvailability.reason}
+          >
+            Фото-контекст
+          </button>
+        )}
         <button
           type="button"
           className="secondary"
@@ -973,6 +1212,22 @@ export function SceneViewer({
         >
           Блокировки геометрии
         </button>
+        {/* R11 (#185): the provenance badge is the LAST toolbar child so its
+            full-width row wraps after all controls (UI review round 3: an
+            earlier inline position split the row into three). It lives in
+            the toolbar because the bottom caption strip is occluded by the
+            sticky composer at 1280×800; the full string is also exposed via
+            title for hover recovery, and role="status" keeps it polite-live
+            for screen readers when the viewpoint changes. */}
+        {calibrated?.viewpoint_kind === "photo" && (
+          <span
+            className="viewer-photo-hint"
+            title={photoContextInfo.caption}
+            role="status"
+          >
+            {photoContextInfo.caption}
+          </span>
+        )}
       </div>
 
       <div
@@ -1018,6 +1273,18 @@ export function SceneViewer({
               onHoverChange={handleHoverChange}
             />
           ))}
+          {/* R11 (#185): the photo quad over the active photo viewpoint. Every
+              gate must hold — feature on, toggle actually available, a resolved
+              room photo, a loaded texture and no load failure — otherwise the
+              viewer stays a plain 3D scene. */}
+          {photoContextOn &&
+            photoAvailability.toggleEnabled &&
+            !!activePhotoSource &&
+            !!photoFrame &&
+            !!photoTexture &&
+            !photoLoadFailed && (
+              <PhotoContextPlane frame={photoFrame} texture={photoTexture} />
+            )}
         </Canvas>
         {dragError && <div className="viewer-error error">{dragError}</div>}
         <div className="viewer-caption">
@@ -1070,7 +1337,18 @@ export function SceneViewer({
               )}
             </>
           ) : calibrated ? (
-            <span className="approx-badge">Камера сопоставлена приблизительно</span>
+            <>
+              {/* R11 (#185): the provenance line lives in the toolbar (see the
+                  toggle comment). The standalone approx badge stays for
+                  non-photo viewpoints and whenever the toolbar line does not
+                  already say «приблизительно» (info shown once, never twice). */}
+              {calibrated.viewpoint_kind !== "photo" ||
+              !photoContextInfo.showsApprox ? (
+                <span className="approx-badge">
+                  Камера сопоставлена приблизительно
+                </span>
+              ) : null}
+            </>
           ) : (
             "вращение — левая кнопка · зум — колесо · панорама — правая кнопка · клик по объекту — карточка"
           )}
