@@ -211,9 +211,34 @@ class BriefNotesPatch(BaseModel):
     questions_to_discuss: str | None = Field(default=None, max_length=8000)
 
 
+class DesignSelectionContext(BaseModel):
+    """R10 (#186): optional "what is selected in the UI" hint attached to a
+    design instruction, so deictic wording ("этот/его/здесь") resolves to the
+    selected entity."""
+
+    entity_id: str = Field(min_length=1, max_length=300)
+    kind: str = Field(min_length=1, max_length=80)
+    title: str | None = Field(default=None, max_length=300)
+
+
 class DesignInstruction(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     idempotency_key: str | None = Field(default=None, max_length=160)
+    selection_context: DesignSelectionContext | None = None
+
+
+def selection_context_message(context: DesignSelectionContext) -> dict[str, str]:
+    """Short developer-style context prepended to the LLM messages when the
+    UI reports a selection. Absent context -> caller sends messages unchanged."""
+    title = context.title or context.kind
+    return {
+        "role": "system",
+        "content": (
+            f"Выбран объект: «{title}» ({context.kind}, id {context.entity_id}). "
+            "Если инструкция говорит «этот/его/здесь», относись к выбранному объекту. "
+            "Действия цвета/материала не меняют геометрию."
+        ),
+    }
 
 
 class StyleAnalyzeRequest(BaseModel):
@@ -3336,19 +3361,25 @@ async def design_instruction(
     current = await latest_revision(session, project_id)
     if current is None:
         raise HTTPException(status_code=409, detail="scene is not initialized")
+    messages: list[dict[str, Any]] = [{"role": "user", "content": payload.text}]
+    if payload.selection_context is not None:
+        messages = [selection_context_message(payload.selection_context), *messages]
+    job_payload: dict[str, Any] = {
+        "purpose": "design_instruction",
+        "base_revision_id": current.id,
+        "request_text": payload.text,
+        "model_profile": request.app.state.settings.llm_model_profile,
+        "messages": messages,
+        "tools": TOOL_DEFINITIONS,
+    }
+    if payload.selection_context is not None:
+        job_payload["selection_context"] = payload.selection_context.model_dump()
     row = await create_job(
         session,
         project_id=project_id,
         job_type="llm.complete",
         required_capabilities=["llm"],
-        payload={
-            "purpose": "design_instruction",
-            "base_revision_id": current.id,
-            "request_text": payload.text,
-            "model_profile": request.app.state.settings.llm_model_profile,
-            "messages": [{"role": "user", "content": payload.text}],
-            "tools": TOOL_DEFINITIONS,
-        },
+        payload=job_payload,
         idempotency_key=payload.idempotency_key,
         correlation_id=request.state.request_id,
         dispatcher=request.app.state.job_dispatcher,

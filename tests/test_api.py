@@ -4171,3 +4171,172 @@ async def test_workers_endpoint_serializes_timestamps_with_utc_offset(settings):
             last_heartbeat = entry["last_heartbeat"]
             assert last_heartbeat is not None
             assert last_heartbeat.endswith("+00:00")
+
+
+@pytest.mark.asyncio
+async def test_design_instruction_selection_context(settings):
+    """R10 (#186): an optional selection context rides into the queued llm job
+    and prepends a short system context before the user text; without it the
+    queued job payload stays byte-identical to the legacy shape."""
+    from stroy.agent import TOOL_DEFINITIONS
+
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project_response = await client.post(
+                "/api/v1/projects", json={"name": "Apartment"}, headers=headers
+            )
+            assert project_response.status_code == 201
+            project_id = project_response.json()["id"]
+
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.main",
+                    "project_id": project_id,
+                    "entities": [
+                        {
+                            "id": "object.sofa.main",
+                            "kind": "furniture",
+                            "locks": {},
+                        }
+                    ],
+                    "cameras": [
+                        {
+                            "id": "camera.main",
+                            "width_px": 640,
+                            "height_px": 400,
+                            "intrinsics": {
+                                "fx": 500,
+                                "fy": 500,
+                                "cx": 320,
+                                "cy": 200,
+                            },
+                            "transform": {
+                                "translation_mm": [0, -4000, 1600],
+                                "rotation_deg": [90, 0, 0],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert scene.status_code == 201
+            revision_id = scene.json()["revision_id"]
+
+            async def queued_payload(idempotency_key: str) -> dict:
+                async with app.state.session_factory() as db:
+                    row = (
+                        await db.execute(
+                            select(JobRow).where(
+                                JobRow.idempotency_key == idempotency_key
+                            )
+                        )
+                    ).scalar_one()
+                    return row.payload
+
+            # (a) Legacy {text} payload: the queued job is byte-identical to
+            # the pre-R10 shape — no selection keys anywhere.
+            legacy = await client.post(
+                f"/api/v1/projects/{project_id}/design/instructions",
+                headers=headers,
+                json={"text": "Сделай диван бежевым", "idempotency_key": "legacy-1"},
+            )
+            assert legacy.status_code == 201
+            assert legacy.json()["job_type"] == "llm.complete"
+            legacy_payload = await queued_payload("legacy-1")
+            assert legacy_payload == {
+                "purpose": "design_instruction",
+                "base_revision_id": revision_id,
+                "request_text": "Сделай диван бежевым",
+                "model_profile": settings.llm_model_profile,
+                "messages": [{"role": "user", "content": "Сделай диван бежевым"}],
+                "tools": TOOL_DEFINITIONS,
+            }
+            assert "selection_context" not in legacy_payload
+            for message in legacy_payload["messages"]:
+                assert "Выбран объект" not in message["content"]
+
+            # (b) With selection context: it lands in the job payload and the
+            # LLM messages carry the short system context before the user text.
+            selected = await client.post(
+                f"/api/v1/projects/{project_id}/design/instructions",
+                headers=headers,
+                json={
+                    "text": "сделай его бежевым",
+                    "idempotency_key": "selected-1",
+                    "selection_context": {
+                        "entity_id": "object.sofa.main",
+                        "kind": "furniture",
+                        "title": "Диван",
+                    },
+                },
+            )
+            assert selected.status_code == 201
+            selected_payload = await queued_payload("selected-1")
+            assert selected_payload["selection_context"] == {
+                "entity_id": "object.sofa.main",
+                "kind": "furniture",
+                "title": "Диван",
+            }
+            assert len(selected_payload["messages"]) == 2
+            context_message = selected_payload["messages"][0]
+            assert context_message["role"] == "system"
+            assert (
+                "Выбран объект: «Диван» (furniture, id object.sofa.main)."
+                in context_message["content"]
+            )
+            assert "«этот/его/здесь»" in context_message["content"]
+            assert "не меняют геометрию" in context_message["content"]
+            assert selected_payload["messages"][1] == {
+                "role": "user",
+                "content": "сделай его бежевым",
+            }
+
+            # (c) Invalid selection context is a validation error.
+            for bad_context in (
+                {"entity_id": "", "kind": "furniture"},
+                {"entity_id": "x" * 301, "kind": "furniture"},
+                {"entity_id": "object.sofa.main", "kind": "x" * 81},
+                {"entity_id": "object.sofa.main", "kind": "furniture", "title": "x" * 301},
+            ):
+                bad = await client.post(
+                    f"/api/v1/projects/{project_id}/design/instructions",
+                    headers=headers,
+                    json={
+                        "text": "сделай его бежевым",
+                        "selection_context": bad_context,
+                    },
+                )
+                assert bad.status_code == 422
+
+            # (d) Title omitted: the kind doubles as the title.
+            untitled = await client.post(
+                f"/api/v1/projects/{project_id}/design/instructions",
+                headers=headers,
+                json={
+                    "text": "сделай этот предмет светлее",
+                    "idempotency_key": "selected-2",
+                    "selection_context": {
+                        "entity_id": "surface.wall.living.north",
+                        "kind": "wall",
+                    },
+                },
+            )
+            assert untitled.status_code == 201
+            untitled_payload = await queued_payload("selected-2")
+            assert untitled_payload["selection_context"] == {
+                "entity_id": "surface.wall.living.north",
+                "kind": "wall",
+                "title": None,
+            }
+            context_message = untitled_payload["messages"][0]
+            assert (
+                "Выбран объект: «wall» (wall, id surface.wall.living.north)."
+                in context_message["content"]
+            )
