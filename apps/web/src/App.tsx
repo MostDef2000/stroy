@@ -23,6 +23,7 @@ import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlanPage } from "./pages/PlanPage";
 import { ResultsPage } from "./pages/ResultsPage";
+import { BriefPage } from "./pages/BriefPage";
 import "./styles.css";
 
 function goldenRoom(projectId: string): SceneDocument {
@@ -170,6 +171,11 @@ export default function App() {
   // the Overview page. Null while no project is selected or the setup route
   // has not answered yet.
   const [setup, setSetup] = useState<SetupStatus | null>(null);
+  // R8 designer brief (#198): variant id the brief page is open for (null =
+  // closed). A destination state rather than a nav-rail page — opened from
+  // the Results «Поделиться с дизайнером» button, closed by the page's own
+  // back button.
+  const [briefVariantId, setBriefVariantId] = useState<string | null>(null);
 
   const refreshProjectsAndWorkers = useCallback(async () => {
     const [projectList, workerList] = await Promise.all([api.projects(), api.workers()]);
@@ -211,6 +217,12 @@ export default function App() {
       .catch(() => setAuthenticated(false));
   }, [refreshProjectsAndWorkers]);
 
+  // R8 (#198): switching projects (or deselecting) closes the brief — it is
+  // bound to the project it was opened from.
+  useEffect(() => {
+    setBriefVariantId(null);
+  }, [selected]);
+
   useEffect(() => {
     if (!selected) {
       setRevision(null);
@@ -240,6 +252,16 @@ export default function App() {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [authenticated, refreshProject, refreshProjectsAndWorkers, selected]);
+
+  // R8 (#198): the Results share button opens the brief. The page state is
+  // pinned to "results" so the brief's back button always lands there.
+  // Rules of hooks: this must stay ABOVE the early returns below — the hook
+  // count has to be identical across the loading → logged-in transition
+  // (same defect class as the R7 DesignPage fix).
+  const openBriefFromResults = useCallback((variantId: string) => {
+    setPage("results");
+    setBriefVariantId(variantId);
+  }, []);
 
   if (authenticated === null) return <main className="loading">STROY</main>;
   if (!authenticated) {
@@ -420,6 +442,9 @@ export default function App() {
     }
   }
 
+  // R8 (#198): the Results share button opens the brief — openBriefFromResults
+  // lives above the early returns (see the comment there).
+
   return (
     <AppShell
       projects={projects}
@@ -448,7 +473,17 @@ export default function App() {
       onDelete={() => void removeProject()}
       message={message}
     >
-      {selected && page === "overview" && (
+      {/* R8 (#198): the designer brief replaces the page slot while open
+          (destination page with its own back button, no nav-rail entry). */}
+      {selected && briefVariantId && (
+        <BriefPage
+          projectId={selected}
+          variantId={briefVariantId}
+          onBack={() => setBriefVariantId(null)}
+        />
+      )}
+
+      {selected && !briefVariantId && page === "overview" && (
         <OverviewPage
           readiness={readiness}
           projectId={selected}
@@ -462,7 +497,7 @@ export default function App() {
         />
       )}
 
-      {selected && page === "plan" && (
+      {selected && !briefVariantId && page === "plan" && (
         <PlanPage
           projectId={selected}
           assets={assets}
@@ -474,7 +509,7 @@ export default function App() {
         />
       )}
 
-      {selected && page === "design" && (
+      {selected && !briefVariantId && page === "design" && (
         <DesignPage
           projectId={selected}
           revision={revision}
@@ -493,7 +528,7 @@ export default function App() {
         />
       )}
 
-      {selected && page === "results" && (
+      {selected && !briefVariantId && page === "results" && (
         <ResultsPage
           projectId={selected}
           revisions={revisions}
@@ -503,10 +538,11 @@ export default function App() {
           cameraId={revision?.scene.cameras[0]?.id ?? null}
           onRestore={restore}
           onRerender={rerenderRevision}
+          onShareWithDesigner={openBriefFromResults}
         />
       )}
 
-      {selected && page === "diagnostics" && (
+      {selected && !briefVariantId && page === "diagnostics" && (
         <DiagnosticsPage
           workers={workers}
           jobs={jobs}

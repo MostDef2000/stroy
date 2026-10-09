@@ -15,7 +15,7 @@ import {
 } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
-import { statusLabel } from "./copy";
+import { BRIEF_SHARE_HINT, statusLabel } from "./copy";
 import {
   CHECK_SEVERITIES,
   groupResults,
@@ -1120,7 +1120,8 @@ export function DesignPanel({
   currentRevisionId,
   cameraId,
   onRestore,
-  onRerender
+  onRerender,
+  onShareWithDesigner
 }: {
   projectId: string;
   revisions: RevisionSummary[];
@@ -1130,6 +1131,8 @@ export function DesignPanel({
   cameraId: string | null;
   onRestore: (revisionId: string) => Promise<void>;
   onRerender: (revisionId: string) => Promise<void>;
+  /** R8 (#198): opens the designer brief for the given variant id. */
+  onShareWithDesigner: (variantId: string) => void;
 }) {
   // Selection is a stable string id (generation/job id, or `rev:`-prefixed
   // revision id) — the 5s poll replaces all objects, so selection must never
@@ -1207,6 +1210,17 @@ export function DesignPanel({
   const selectedVariant =
     variants.find((variant) => variant.id === selectedVariantId) ?? null;
   const compareReady = compareIds.left !== null && compareIds.right !== null;
+
+  // R8 (#198) «Поделиться с дизайнером»: the explicitly selected variant wins
+  // (archived included — an archived variant stays exportable when the owner
+  // points at it); otherwise the approved variant. The fallback matches ONLY
+  // status==="approved": approval is the owner's act of sharing, and an
+  // approved→archived variant must never be auto-picked (no auto-fallback).
+  const approvedVariantId = useMemo(
+    () => variants.find((variant) => variant.status === "approved")?.id ?? null,
+    [variants]
+  );
+  const shareVariantId = selectedVariant?.id ?? approvedVariantId;
 
   // Chip click: select the variant and clear the compare selection (the
   // compare view replaces the detail pane only while both slots are filled).
@@ -1856,6 +1870,21 @@ export function DesignPanel({
 
         <section className="panel rt-detail" aria-label="Выбранный элемент истории">
           <h2>Просмотр</h2>
+          {/* R8 (#198): hands the selected (or approved) variant to the designer
+              brief page. Disabled until a variant is selected or approved. */}
+          <div className="brief-share-row">
+            <button
+              type="button"
+              className="secondary"
+              disabled={!shareVariantId}
+              title={shareVariantId ? undefined : BRIEF_SHARE_HINT}
+              onClick={() => {
+                if (shareVariantId) onShareWithDesigner(shareVariantId);
+              }}
+            >
+              Поделиться с дизайнером
+            </button>
+          </div>
           {compareReady && compareIds.left && compareIds.right ? (
             <VariantCompareView
               projectId={projectId}
