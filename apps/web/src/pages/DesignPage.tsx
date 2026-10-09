@@ -38,6 +38,15 @@ import {
   type EntityLocksPatch
 } from "../sceneIntent";
 import { ruleLabel, summaryLine, topResults } from "../sceneValidation";
+import {
+  buildSelectionContext,
+  buildSetColorCommand,
+  isAppearanceEditableSurface,
+  SURFACE_COLOR_PRESETS,
+  SURFACE_FINISH_PRESETS,
+  type SelectionContext,
+  type SurfaceFinishPreset
+} from "../surfaceEdits";
 import { apiErrorText, redesignResultAssetId, renderRgbAssetId, sortedRendersNewestFirst, uniqueId } from "../twinDesign";
 import {
   buildConceptRedesignInput,
@@ -178,7 +187,10 @@ export function DesignPage({
   uploadProgress: number | null;
   instruction: string;
   onInstructionChange: (value: string) => void;
-  onSubmitInstruction: (event: FormEvent) => void;
+  // R10 (#186): the page builds the selection context from the entity
+  // selected at submit time (undefined = nothing selected → the payload
+  // stays {text}); App still owns the actual submit.
+  onSubmitInstruction: (event: FormEvent, selectionContext?: SelectionContext) => void;
   onAnalyzeStyle: () => void;
   onNavigate: (page: PageId) => void;
 }) {
@@ -195,6 +207,24 @@ export function DesignPage({
   const [intentBusy, setIntentBusy] = useState(false);
   const [intentError, setIntentError] = useState("");
   const [intentConflict, setIntentConflict] = useState(false);
+  // R10 (#186): surface appearance panel (wall/floor/ceiling). One command
+  // channel with the same freshness rule and error surface as the intent
+  // senders above; customColorRef backs the native color input (uncontrolled
+  // — the send is an explicit «Применить» click, one click = one command).
+  const [surfaceBusy, setSurfaceBusy] = useState(false);
+  const [surfaceError, setSurfaceError] = useState("");
+  const [surfaceConflict, setSurfaceConflict] = useState(false);
+  const [surfaceInfo, setSurfaceInfo] = useState("");
+  const customColorRef = useRef<HTMLInputElement | null>(null);
+  // R10 (#186): switching the selection clears the surface panel's stale
+  // hints, so the card for the next entity never shows the previous entity's
+  // error/conflict/success (the intent/locks channel resets its own hints on
+  // send; the panel persists between picks, so it needs this sweep).
+  useEffect(() => {
+    setSurfaceError("");
+    setSurfaceConflict(false);
+    setSurfaceInfo("");
+  }, [selectedEntityId]);
   // R2 design check: the report is fetched only on demand (manual button);
   // drags and commits never re-run it.
   const [checkReport, setCheckReport] = useState<ValidationReport | null>(null);
@@ -620,6 +650,68 @@ export function DesignPage({
     void applyEntityCommand(buildSetLocksCommand(selectedEntity.id, patch));
   }
 
+  // R10 (#186) surface appearance: one command channel for the panel, with
+  // the same freshness rule as applyEntityCommand — a fresh scene read gives
+  // base_revision_id, uniqueId() gives command_id, the builder's command core
+  // is wrapped into the full DesignCommand envelope (origin "user"). A 409
+  // (stale revision or the material lock) surfaces the shared conflict hint;
+  // success points at «Результаты», where the scene version can be undone.
+  async function applySurfaceCommand(command: {
+    operation: "set_color" | "set_material";
+    target_id: string;
+    parameters: Record<string, unknown>;
+  }) {
+    if (surfaceBusy) return;
+    setSurfaceBusy(true);
+    setSurfaceError("");
+    setSurfaceConflict(false);
+    setSurfaceInfo("");
+    try {
+      const fresh = await api.scene(projectId);
+      if (!fresh) {
+        setSurfaceError("Сцена ещё не инициализирована.");
+        return;
+      }
+      await api.applySceneCommand(projectId, {
+        schema_version: "0.1.0",
+        command_id: uniqueId(),
+        base_revision_id: fresh.revision_id,
+        operation: command.operation,
+        target_id: command.target_id,
+        parameters: command.parameters,
+        reference_asset_ids: [],
+        origin: "user",
+        request_text: null
+      });
+      setSurfaceInfo(
+        "Изменение сохранено как версия. Отменить можно на странице «Результаты»."
+      );
+      await onChanged();
+    } catch (reason) {
+      setSurfaceError(apiErrorText(reason));
+      setSurfaceConflict(isConflict(reason));
+    } finally {
+      setSurfaceBusy(false);
+    }
+  }
+
+  // Wall accent: one click on a swatch (or «Применить» for the custom color)
+  // = one set_color command = one scene revision.
+  function applySurfaceColor(color: string) {
+    if (!selectedEntity) return;
+    const trimmed = color.trim();
+    if (!trimmed) return;
+    void applySurfaceCommand(buildSetColorCommand(selectedEntity.id, trimmed));
+  }
+
+  // Floor/ceiling finish: the visible effect is the color (the FE viewer and
+  // the BE render both key off metadata.color), so the panel sends set_color
+  // with the preset's hex — one click stays one scene revision.
+  function applySurfaceFinish(preset: SurfaceFinishPreset) {
+    if (!selectedEntity) return;
+    void applySurfaceCommand(buildSetColorCommand(selectedEntity.id, preset.hex));
+  }
+
   // R2 design check: manual run against the current latest revision.
   async function runDesignCheck() {
     if (checkBusy) return;
@@ -801,6 +893,16 @@ export function DesignPage({
   const selectedEntity = selectedEntityId
     ? revision.scene.entities.find((entity) => entity.id === selectedEntityId) ?? null
     : null;
+
+  // R10 (#186): the material lock freezes the appearance panel (the backend
+  // rejects set_color/set_material with 409 while it is set).
+  const surfaceLocked = selectedEntity?.locks?.material === true;
+
+  // R10 (#186): the entity's current color (metadata.color — the same key the
+  // SceneViewer paints and the render pipeline prefers), used to highlight
+  // the active swatch and to seed the custom color picker.
+  const surfaceColor =
+    (selectedEntity?.metadata?.["color"] as string | undefined) ?? null;
 
   function openAdvanced() {
     const node = advancedRef.current;
@@ -1284,6 +1386,128 @@ export function DesignPage({
                  )}
               </section>
 
+              {/* R10 (#186): appearance of the shell surfaces — placed BEFORE
+                  the selected-object card so it is visible on selection at
+                  1280×800 without rail scrolling. Walls get the «Акцент» color
+                  presets plus a custom color; floor/ceiling get the «Отделка»
+                  finishes. One click = one set_color command = one scene
+                  revision, undoable on «Результаты». The material lock
+                  disables every control (the backend would reject the command
+                  with 409). */}
+              {selectedEntity && isAppearanceEditableSurface(selectedEntity) && (
+                <section className="design-surface" aria-label="Внешний вид поверхности">
+                  <h3>Внешний вид</h3>
+                  {selectedEntity.kind === "wall" && (
+                    <>
+                      <div className="design-surface-group">
+                        <p className="design-surface-title">Акцент</p>
+                        <div
+                          className="design-surface-swatches"
+                          role="group"
+                          aria-label="Цвет стены"
+                        >
+                          {SURFACE_COLOR_PRESETS.map((preset) => (
+                            <button
+                              key={preset.hex}
+                              type="button"
+                              className={
+                                "design-surface-swatch" +
+                                (surfaceColor === preset.hex ? " active" : "")
+                              }
+                              style={{ backgroundColor: preset.hex }}
+                              aria-label={preset.label}
+                              aria-pressed={surfaceColor === preset.hex}
+                              title={preset.label}
+                              disabled={surfaceBusy || surfaceLocked}
+                              onClick={() => void applySurfaceColor(preset.hex)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <div className="design-surface-group">
+                        <p className="design-surface-title">Свой цвет</p>
+                        <div className="design-surface-custom">
+                          <input
+                            key={selectedEntity.id}
+                            ref={customColorRef}
+                            type="color"
+                            defaultValue={surfaceColor ?? SURFACE_COLOR_PRESETS[0].hex}
+                            aria-label="Свой цвет для стены"
+                            disabled={surfaceBusy || surfaceLocked}
+                          />
+                          <button
+                            type="button"
+                            className="secondary design-surface-apply"
+                            disabled={surfaceBusy || surfaceLocked}
+                            onClick={() =>
+                              void applySurfaceColor(customColorRef.current?.value ?? "")
+                            }
+                          >
+                            {surfaceBusy ? "Применяём…" : "Применить"}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {(selectedEntity.kind === "floor" ||
+                    selectedEntity.kind === "ceiling") && (
+                    <div className="design-surface-group">
+                      <p className="design-surface-title">Отделка</p>
+                      <div
+                        className="design-surface-swatches"
+                        role="group"
+                        aria-label={
+                          selectedEntity.kind === "floor"
+                            ? "Отделка пола"
+                            : "Отделка потолка"
+                        }
+                      >
+                        {SURFACE_FINISH_PRESETS.map((preset) => (
+                          <button
+                            key={preset.material_ref}
+                            type="button"
+                            className={
+                              "design-surface-swatch" +
+                              (surfaceColor === preset.hex ? " active" : "")
+                            }
+                            style={{ backgroundColor: preset.hex }}
+                            aria-label={preset.label}
+                            aria-pressed={surfaceColor === preset.hex}
+                            title={preset.label}
+                            disabled={surfaceBusy || surfaceLocked}
+                            onClick={() => void applySurfaceFinish(preset)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {surfaceLocked && (
+                    <p className="hint design-surface-lock-hint">
+                      Цвет закреплён блокировкой «Материал/цвет» — снимите её
+                      в карточке выбранного объекта ниже.
+                    </p>
+                  )}
+                  {surfaceConflict && (
+                    <p className="hint design-surface-conflict">
+                      {DESIGN_CONFLICT_HINT}
+                    </p>
+                  )}
+                  {surfaceError && <div className="error">{surfaceError}</div>}
+                  {surfaceInfo && (
+                    <p className="hint design-surface-info">
+                      {surfaceInfo}{" "}
+                      <button
+                        type="button"
+                        className="design-surface-link"
+                        onClick={() => onNavigate("results")}
+                      >
+                        Результаты
+                      </button>
+                    </p>
+                  )}
+                </section>
+              )}
+
               {selectedEntity ? (
                 <section className="design-selected" aria-label="Выбранный объект">
                   <h3>Выбранный объект</h3>
@@ -1604,11 +1828,15 @@ export function DesignPage({
         </section>
 
         {/* Persistent composer (#154): reachable in both modes; instruction
-            state stays app-level (App.tsx props are unchanged). */}
+            state stays app-level (App.tsx props are unchanged). R10 (#186):
+            the submit carries the selection context of the entity picked at
+            submit time (undefined = nothing selected → body stays {text}). */}
         <form
           className="instruction-bar design-composer"
           aria-label="AI-инструкция к сцене"
-          onSubmit={onSubmitInstruction}
+          onSubmit={(event) =>
+            onSubmitInstruction(event, buildSelectionContext(selectedEntity))
+          }
         >
           <input
             value={instruction}
