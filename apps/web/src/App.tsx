@@ -18,6 +18,7 @@ import { deleteConfirmText, nextStateAfterDelete } from "./projectDelete";
 import { type PageId } from "./nav";
 import { type ReadinessInput } from "./overview";
 import { classifyAssetRole, type SetupStatus } from "./setup";
+import type { SelectionContext } from "./surfaceEdits";
 import { DesignPage } from "./pages/DesignPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -367,12 +368,18 @@ export default function App() {
     }
   }
 
-  async function submitInstruction(event: FormEvent) {
+  // R10 (#186): DesignPage builds the selection context from the entity
+  // selected at submit time and hands it over here; undefined = nothing is
+  // selected, the payload stays exactly {text} as before.
+  async function submitInstruction(
+    event: FormEvent,
+    selectionContext?: SelectionContext
+  ) {
     event.preventDefault();
     if (!selected || !revision || !instruction.trim()) return;
     const text = instruction.trim();
     setInstruction("");
-    await api.designInstruction(selected, text);
+    await api.designInstruction(selected, text, selectionContext);
     setMessage("Правка фото поставлена в обработку");
     await refreshProject(selected);
   }

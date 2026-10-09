@@ -13,6 +13,7 @@ import {
   type ValidationReportEnvelope
 } from "./sceneValidation";
 import type { SetupStatus } from "./setup";
+import type { SelectionContext } from "./surfaceEdits";
 
 // Re-exported so UI code can unwrap validation envelopes without importing
 // the pure module directly (api.ts stays the single browser-side surface).
@@ -1451,10 +1452,16 @@ export const api = {
     return request<Job>(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" });
   },
 
-  designInstruction(projectId: string, text: string) {
+  // R10 (#186): selectionContext is optional — when absent the body stays
+  // exactly {text} (old callers unchanged); when present it rides along as
+  // selection_context {entity_id, kind, title} so the BE resolves deictic
+  // wording («этот/его/здесь») against the selected entity.
+  designInstruction(projectId: string, text: string, selectionContext?: SelectionContext) {
     return request<Job>(`/api/v1/projects/${projectId}/design/instructions`, {
       method: "POST",
-      body: JSON.stringify({ text })
+      body: JSON.stringify(
+        selectionContext ? { text, selection_context: selectionContext } : { text }
+      )
     });
   },
 
