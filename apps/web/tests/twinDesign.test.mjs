@@ -17,8 +17,11 @@ import {
   clampStrength,
   entityIdFromName,
   formatRenderSummary,
+  isConceptGeneration,
+  nonConceptGenerations,
   redesignResultAssetId,
   referenceImageAssets,
+  renderOrdinal,
   renderRgbAssetId,
   sortedRendersNewestFirst,
   uniqueId
@@ -41,9 +44,11 @@ test("formatRenderSummary reports the renderer profile and optional render secon
     "Фоторендер · 84.2 s"
   );
   assert.equal(formatRenderSummary({ renderer_profile: "blender-cycles-v0" }), "Фоторендер");
-  // #188: the profile segment goes through the glossary; unknown-but-present
-  // wire values pass through, a missing/empty profile reads «профиль не указан».
-  assert.equal(formatRenderSummary({ renderer_profile: "future-profile" }), "future-profile");
+  // #188 glossary, retuned by R9 #197: unknown-but-present wire values read
+  // as the neutral «Рендер» (raw ids never leak); a missing/empty profile
+  // still reads «профиль не указан».
+  assert.equal(formatRenderSummary({ renderer_profile: "future-profile" }), "Рендер");
+  assert.equal(formatRenderSummary({ renderer_profile: "blender-eevee-v0" }), "Черновой рендер");
   assert.equal(formatRenderSummary({}), "профиль не указан");
   assert.equal(formatRenderSummary(null), "no manifest");
 });
@@ -254,4 +259,83 @@ test("apiErrorText unwraps the backend detail envelope", () => {
   );
   assert.equal(apiErrorText(new Error('422: {"detail": "bad camera"}')), "bad camera");
   assert.equal(apiErrorText(new Error("network error")), "network error");
+});
+
+// ---------------------------------------------------------------------------
+// R9 (#197): concept detection + created_at ordinals for the details labels.
+// ---------------------------------------------------------------------------
+
+test("#197: isConceptGeneration reads purpose=room_redesign from structured_conditioning", () => {
+  assert.equal(
+    isConceptGeneration({
+      id: "g1",
+      created_at: "2026-01-01T00:00:00Z",
+      manifest: { structured_conditioning: { purpose: "room_redesign" } }
+    }),
+    true
+  );
+  // Regular renders and replacements are not concepts.
+  assert.equal(
+    isConceptGeneration({
+      id: "g2",
+      created_at: "2026-01-01T00:00:00Z",
+      manifest: { structured_conditioning: { purpose: "design_edit" } }
+    }),
+    false
+  );
+  assert.equal(
+    isConceptGeneration({
+      id: "g3",
+      created_at: "2026-01-01T00:00:00Z",
+      manifest: { structured_conditioning: { purpose: "object_replacement" } }
+    }),
+    false
+  );
+  // Missing manifest/conditioning/purpose and nullish inputs: not concepts.
+  assert.equal(isConceptGeneration({ id: "g4", created_at: "2026-01-01T00:00:00Z" }), false);
+  assert.equal(isConceptGeneration({ id: "g5", created_at: "x", manifest: {} }), false);
+  assert.equal(isConceptGeneration(null), false);
+  assert.equal(isConceptGeneration(undefined), false);
+});
+
+test("#197: renderOrdinal counts oldest-first by created_at", () => {
+  const generations = [
+    { id: "c", created_at: "2026-03-01T10:00:00Z" },
+    { id: "a", created_at: "2026-01-01T00:00:00Z" },
+    { id: "b", created_at: "2026-02-01T00:00:00Z" }
+  ];
+  assert.equal(renderOrdinal(generations, "a"), 1);
+  assert.equal(renderOrdinal(generations, "b"), 2);
+  assert.equal(renderOrdinal(generations, "c"), 3);
+  // Stable under equal timestamps (input order kept).
+  const tied = [
+    { id: "x", created_at: "2026-01-01T00:00:00Z" },
+    { id: "y", created_at: "2026-01-01T00:00:00Z" }
+  ];
+  assert.equal(renderOrdinal(tied, "x"), 1);
+  assert.equal(renderOrdinal(tied, "y"), 2);
+  assert.equal(renderOrdinal(generations, "missing"), null);
+  assert.equal(renderOrdinal([], "a"), null);
+});
+
+test("#197: interleaved concepts never inflate render ordinals (nonConceptGenerations)", () => {
+  // A concept landed between two regular renders by created_at: it stays
+  // unnumbered («Эскиз концепта») and the renders keep ordinals 1, 2 —
+  // pin for the DesignPanel renderDetailLabel call sites.
+  const generations = [
+    { id: "r1", created_at: "2026-01-01T00:00:00Z" },
+    {
+      id: "concept",
+      created_at: "2026-02-01T00:00:00Z",
+      manifest: { structured_conditioning: { purpose: "room_redesign" } }
+    },
+    { id: "r2", created_at: "2026-03-01T00:00:00Z" }
+  ];
+  const numbered = nonConceptGenerations(generations);
+  assert.deepEqual(
+    numbered.map((item) => item.id),
+    ["r1", "r2"]
+  );
+  assert.equal(renderOrdinal(numbered, "r1"), 1);
+  assert.equal(renderOrdinal(numbered, "r2"), 2);
 });

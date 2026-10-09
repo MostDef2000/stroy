@@ -20,6 +20,11 @@
   --st-text-xl: 20px;
   --st-weight-medium: 500;
   --st-weight-semibold: 600;
+  /* R9 editorial (#197): line-height leading next to the type scale.
+     tight = headings over prose, body = default, prose = copy-heavy blocks. */
+  --st-leading-tight: 1.2;
+  --st-leading-body: 1.5;
+  --st-leading-prose: 1.65;
 
   /* Surfaces (#168 retune: graphite surfaces lifted toward blue-dark; the
      sidebar/field layers go translucent so the ambient wash shows through) */
@@ -116,14 +121,34 @@ html, body, #root {
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; font-size: var(--st-text-base); color: var(--st-color-text); }
+body { margin: 0; min-width: 320px; min-height: 100vh; font-size: var(--st-text-base); line-height: var(--st-leading-body); color: var(--st-color-text); }
 button, input { font: inherit; }
+
+/* R9 editorial (#197): reading rhythm for copy-heavy surfaces. The .st-prose
+   utility caps the measure of prose blocks (empty states, brief copy) — it is
+   a text utility and must never be applied to canvases or images. */
+.st-prose,
+.empty-state p,
+.brief-text {
+  max-width: 68ch;
+  line-height: var(--st-leading-prose);
+}
+
+/* #197: headings above copy-heavy prose read calmer than the uppercase panel
+   chrome — the softening is scoped to reading surfaces only. */
+.empty-state h2,
+.brief-doc-header h2,
+.brief-section-title {
+  text-transform: none;
+  letter-spacing: normal;
+  line-height: var(--st-leading-tight);
+}
 
 /* Interaction states (#109). :where() contributes ZERO specificity for the
    element list; the trailing pseudo-class still counts like one class, so
    component rules of equal-or-higher specificity (e.g. .instruction-bar
    :disabled) still override individual props. */
-:where(button, input, select, textarea, [tabindex]):focus-visible {
+:where(button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--st-focus-ring);
   outline-offset: 2px;
 }
@@ -148,9 +173,12 @@ button, input { font: inherit; }
 }
 
 /* .skeleton / .skeleton-line: shimmer placeholders for async images and lists.
-   Defined for future use — applying them to <img> while loading is not possible
-   with CSS alone (an <img> with a src still paints its own pixels), so this task
-   does not wire them into DesignPanel's rt-preview. */
+   #197 wiring: ImagePreview accepts a `skeleton` prop and paints the shimmer
+   until the image fires load/error (CSS alone cannot detect an <img> load) —
+   6 sites: the Design render previews (rt-detail-media single + compare
+   До/После + revision detail), the twin-design preview (td-preview), and the
+   mood-result preview on the Design page. Reduced motion turns the shimmer
+   off below. */
 .skeleton {
   position: relative;
   overflow: hidden;
@@ -316,7 +344,7 @@ nav { display: grid; gap: 6px; }
   gap: 4px;
 }
 
-.workspace { min-width: 0; padding: var(--st-space-5); display: grid; gap: 18px; background: var(--st-color-workspace-bg); }
+.workspace { min-width: 0; padding: var(--st-space-5); display: grid; gap: var(--st-space-4); background: var(--st-color-workspace-bg); }
 header { display: flex; justify-content: space-between; gap: var(--st-space-4); align-items: center; }
 h1 { margin: 0 0 4px; font-size: var(--st-text-xl); font-weight: var(--st-weight-semibold); }
 header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm); }
@@ -386,7 +414,8 @@ header span { color: var(--st-color-text-secondary); font-size: var(--st-text-sm
   background: var(--st-color-surface);
   border: 1px solid var(--st-color-border);
   border-radius: var(--st-radius-lg);
-  padding: 14px;
+  /* #197: 14px was off-grid; 16px (--st-space-4) is the nearest token. */
+  padding: var(--st-space-4);
 }
 
 .panel h2 {
@@ -2767,6 +2796,18 @@ textarea.invalid {
   height: 100%;
 }
 
+/* #197: loading shimmer. The absolutely-positioned layer fills the box;
+   the bounded variant keeps a modest floor while its img has no intrinsic
+   height yet, so the placeholder is actually visible during load. */
+.imgpv--loading {
+  min-height: 240px;
+}
+
+.imgpv__skeleton {
+  position: absolute;
+  inset: 0;
+}
+
 .imgpv--selected {
   outline: 2px solid var(--st-focus-ring);
   outline-offset: 2px;
@@ -3459,6 +3500,50 @@ textarea.invalid {
   align-self: center;
   color: var(--st-color-accent);
   font-size: 16px;
+}
+
+/* R9 (#197): mood bar — small editorial selector in the row above the
+   composer. Token-only surfaces; the CTA stays secondary so the composer
+   keeps the primary action. */
+.mood-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+  padding: var(--st-space-3) var(--st-space-4);
+  background: var(--st-color-surface-elevated);
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius-lg);
+}
+
+.mood-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-3);
+  flex-wrap: wrap;
+}
+
+.mood-bar-row .hint {
+  margin: 0;
+}
+
+.mood-bar-scope {
+  color: var(--st-color-muted-text);
+}
+
+.mood-bar-label {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+
+.mood-bar-label select {
+  width: auto;
+}
+
+.mood-result {
+  margin: 0;
 }
 
 @media (min-width: 1101px) {

@@ -351,6 +351,13 @@ export type RedesignInput = {
   strength: number;
   seed?: number;
   negative_prompt?: string;
+  /**
+   * R9 (#197): optional editorial mood preset id (BE services/moods.py).
+   * Unknown ids are rejected with 422 {"code":"unknown_mood"}; absent → the
+   * prompt passes through unchanged. The FE mirrors the preset list in
+   * moodSelect.ts and sends the id only.
+   */
+  mood_id?: string;
 };
 
 export type RedesignResponse = {

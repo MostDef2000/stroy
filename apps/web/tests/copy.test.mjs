@@ -18,13 +18,17 @@ import {
   briefNotesSaveIndicator,
   briefScaleLabel,
   briefSectionTitle,
+  CONCEPT_GENERATED_LABEL,
+  CONCEPT_NEEDS_RENDER_HINT,
   DESIGN_CONFLICT_HINT,
+  MOOD_SCOPE_HINT,
   WORKER_OFFLINE_NOTICE,
   entityKindLabel,
   fileLabel,
   mappingConfidenceLabel,
   openingKindLabel,
   planAnalyzeQueueText,
+  renderDetailLabel,
   renderStageLabel,
   roomHeading,
   saveIndicator,
@@ -86,11 +90,24 @@ test("#188: opening kinds map to RU labels, unknown kinds pass through", () => {
   assert.equal(openingKindLabel("doorway"), "doorway");
 });
 
-test("#188: renderer profile shows «Фоторендер», unknown passes through", () => {
+test("#188: renderer profiles map to owner-facing names, raw ids never leak", () => {
   assert.equal(rendererProfileLabel("blender-cycles-v0"), "Фоторендер");
-  assert.equal(rendererProfileLabel("future-profile"), "future-profile");
-  assert.equal(rendererProfileLabel(null), "");
-  assert.equal(rendererProfileLabel(undefined), "");
+  // R9 #197: eevee drafts read as «Черновой рендер», unknown profiles as the
+  // neutral «Рендер» — raw wire ids never surface in the default UI.
+  assert.equal(rendererProfileLabel("blender-eevee-v0"), "Черновой рендер");
+  assert.equal(rendererProfileLabel("future-profile"), "Рендер");
+  assert.equal(rendererProfileLabel(null), "Рендер");
+  assert.equal(rendererProfileLabel(undefined), "Рендер");
+});
+
+test("#197: results details label — concepts vs numbered renders", () => {
+  assert.equal(renderDetailLabel(true, null), "Эскиз концепта");
+  assert.equal(renderDetailLabel(true, 3), "Эскиз концепта");
+  assert.equal(renderDetailLabel(false, 1), "Рендер 1");
+  assert.equal(renderDetailLabel(false, 12), "Рендер 12");
+  // Unknown ordinal (id missing from the list) still never shows a raw id.
+  assert.equal(renderDetailLabel(false, null), "Рендер");
+  assert.equal(renderDetailLabel(false, undefined), "Рендер");
 });
 
 test("#188: render pass tag never mentions rgb", () => {
@@ -229,4 +246,14 @@ test("#198: privacy note and share hint carry the owner-facing wording", () => {
       "Отметьте те, что можно показать дизайнеру."
   );
   assert.equal(BRIEF_SHARE_HINT, "Сначала выберите или утвердите вариант");
+});
+
+// ---------------------------------------------------------------------------
+// R9 editorial mood (#197): concept CTA copy.
+// ---------------------------------------------------------------------------
+
+test("#197: mood CTA copy carries the ruled wording", () => {
+  assert.equal(CONCEPT_GENERATED_LABEL, "Концепт, сгенерировано");
+  assert.equal(MOOD_SCOPE_HINT, "Влияет только на эскизы концепта");
+  assert.equal(CONCEPT_NEEDS_RENDER_HINT, "Сначала сделайте черновой рендер");
 });
