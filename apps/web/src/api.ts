@@ -673,6 +673,147 @@ export type VariantCommandResponse = {
   variant_head_scene_revision_id: string;
 };
 
+// ---------------------------------------------------------------------------
+// R8 designer brief (#198): read-only aggregate served by
+// GET /api/v1/projects/{id}/design-brief?variant_id=… (BE cross-checked: a
+// missing variant AND no approved variant answers
+// 409 {code:"brief_variant_required"}). Every section is optional on the wire
+// and omitted entirely when empty — the UI mirrors that (no empty headers).
+// ---------------------------------------------------------------------------
+
+export type BriefProject = {
+  id: string;
+  name: string;
+  created_at: string;
+};
+
+export type BriefVariant = {
+  id: string;
+  title: string;
+  status: SceneVariantStatus;
+  base_scene_revision_id: string;
+  head_scene_revision_id: string;
+  /** content_hash of the head revision; null when the row is gone. */
+  head_scene_revision_hash: string | null;
+  head_scene_revision_created_at: string | null;
+};
+
+/** Plan-scale block; label is BE-owned owner copy (UI renders it verbatim). */
+export type BriefScale = {
+  status: "confirmed" | "approximate" | "unknown";
+  source: string;
+  label: string;
+  mm_per_px?: number | null;
+};
+
+export type BriefPlan = {
+  asset_id?: string | null;
+  scale: BriefScale;
+};
+
+export type BriefRoom = {
+  id: string;
+  /** display_name; null for unnamed rooms (UI falls back, never to the id). */
+  name: string | null;
+  notes?: string | null;
+};
+
+/** One furniture/scene entity inside an intent group (id only for React keys). */
+export type BriefFurnitureEntity = {
+  id: string;
+  kind: string;
+  name?: string | null;
+  room_id?: string | null;
+  locks?: Record<string, unknown> | null;
+  provenance?: Record<string, unknown> | null;
+};
+
+/** Entities grouped by keep|remove|replace intent + existence-locked. Only
+ * non-empty groups are present on the wire. */
+export type BriefFurnitureIntents = {
+  keep?: BriefFurnitureEntity[];
+  remove?: BriefFurnitureEntity[];
+  replace?: BriefFurnitureEntity[];
+  locked?: BriefFurnitureEntity[];
+};
+
+export type BriefRender = {
+  id: string;
+  asset_id: string;
+  camera_id: string;
+  /** R7 render stage; null/absent = legacy render (final semantics). */
+  stage: string | null;
+  /** BE already renders this as «Концепт, не фотография». */
+  label: string;
+  renderer_profile?: string | null;
+  workflow_model_provenance?: Record<string, unknown> | null;
+  created_at: string;
+};
+
+/** mapping is the R7 photo-mapping metadata (opaque Record here; the UI reads
+ * only confidence through mappingConfidenceLabel). */
+export type BriefPhoto = {
+  attachment_id: string;
+  asset_id: string;
+  caption?: string | null;
+  mapping?: Record<string, unknown> | null;
+};
+
+export type BriefStyleDirection = {
+  source_text?: string | null;
+  /** Latest profile payload — opaque to the UI, never rendered as text. */
+  summary?: Record<string, unknown> | null;
+  reference_asset_ids?: string[] | null;
+};
+
+export type BriefBudgetItem = {
+  id: string;
+  kind: string;
+  label: string;
+  amount?: number | null;
+  currency?: string | null;
+  quantity?: number | null;
+};
+
+export type BriefBudget = {
+  disclaimer: string;
+  items: BriefBudgetItem[];
+};
+
+/** Owner notes snapshot embedded by BE (truthy keys only, omitted when empty). */
+export type BriefNotesSnapshot = {
+  needs_wishes?: string;
+  questions_to_discuss?: string;
+};
+
+export type BriefDocument = {
+  schema_version: string;
+  project: BriefProject;
+  variant: BriefVariant;
+  notes?: BriefNotesSnapshot | null;
+  plan?: BriefPlan | null;
+  rooms?: BriefRoom[] | null;
+  furniture_intents?: BriefFurnitureIntents | null;
+  renders?: BriefRender[] | null;
+  photos?: BriefPhoto[] | null;
+  style_direction?: BriefStyleDirection | null;
+  budget?: BriefBudget | null;
+  warnings: string[];
+};
+
+/** GET/PATCH /brief-notes payload: nulls before the first write; ≤8000/field. */
+export type BriefNotes = {
+  needs_wishes: string | null;
+  questions_to_discuss: string | null;
+};
+
+/** PATCH body: a field absent from the body leaves the stored value untouched
+ * (partial update); an explicit null (or empty string) clears it. */
+export type BriefNotesPatch = {
+  needs_wishes?: string | null;
+  questions_to_discuss?: string | null;
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
 
@@ -1193,6 +1334,30 @@ export const api = {
     return request<BudgetReport>(
       `/api/v1/projects/${projectId}/variants/${variantId}/budget/report`
     );
+  },
+
+  // R8 designer brief (#198): variant_id is always sent (the page opens from
+  // an explicit variant or the approved one); BE answers 409
+  // {code:"brief_variant_required"} only for callers without either, which
+  // surfaces as a thrown error via request().
+  fetchDesignBrief(projectId: string, variantId: string) {
+    const params = new URLSearchParams({ variant_id: variantId });
+    return request<BriefDocument>(
+      `/api/v1/projects/${projectId}/design-brief?${params.toString()}`
+    );
+  },
+
+  getBriefNotes(projectId: string) {
+    return request<BriefNotes>(`/api/v1/projects/${projectId}/brief-notes`);
+  },
+
+  // Partial notes update; goes through request() so the required X-CSRF-Token
+  // header is attached exactly like every other mutating client method.
+  patchBriefNotes(projectId: string, patch: BriefNotesPatch) {
+    return request<BriefNotes>(`/api/v1/projects/${projectId}/brief-notes`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    });
   },
 
   applySceneCommand(projectId: string, command: Record<string, unknown>) {

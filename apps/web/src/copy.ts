@@ -145,9 +145,10 @@ export function saveIndicator(state: SaveIndicatorState): string {
   return "Есть несохранённые правки";
 }
 
-/** Render stage (R7 #187): wire value → owner-facing chip label. */
+/** Render stage (R7 #187): wire value → owner-facing chip label. Null/absent
+ * (legacy renders without a stage, R8 brief wire) reads as final (#198). */
 export function renderStageLabel(
-  stage: "draft" | "final" | null | undefined
+  stage: string | null | undefined
 ): string {
   return stage === "draft" ? "Черновик" : "Финальный";
 }
@@ -165,4 +166,110 @@ export function mappingConfidenceLabel(
     default:
       return "приблизительно";
   }
+}
+
+// ---------------------------------------------------------------------------
+// R8 designer brief (#198): section titles, intent-group labels and the
+// brief's fixed disclaimer copy. Pure helpers — same test ritual as the
+// glossary above. Wire values stay English; only labels are translated.
+// ---------------------------------------------------------------------------
+
+/** Preview/print section titles keyed by section id (briefView.BriefSectionId). */
+export const BRIEF_SECTION_TITLES: Record<string, string> = {
+  notes: "Потребности и пожелания",
+  plan: "План квартиры",
+  rooms: "Комнаты",
+  furniture: "Мебель и объекты",
+  renders: "Рендеры",
+  photos: "Фотографии квартиры",
+  style: "Стилевое решение",
+  budget: "Смета",
+  questions: "Вопросы для обсуждения"
+};
+
+export function briefSectionTitle(sectionId: string): string {
+  return BRIEF_SECTION_TITLES[sectionId] ?? sectionId;
+}
+
+/** Furniture-intent group keys → owner-facing headings (fixed print order). */
+export function briefIntentGroupLabel(key: string): string {
+  switch (key) {
+    case "keep":
+      return "Сохранить";
+    case "remove":
+      return "Убрать";
+    case "replace":
+      return "Заменить";
+    case "locked":
+      return "Закреплено";
+    default:
+      return key;
+  }
+}
+
+/** Fixed order of the intent groups in the brief (print order, #198). */
+export const BRIEF_INTENT_GROUP_ORDER = [
+  "keep",
+  "remove",
+  "replace",
+  "locked"
+] as const;
+
+/**
+ * Plan scale line: the BE label is owner copy and wins; the RU fallbacks only
+ * cover a missing/empty label so a future BE change can never blank the line.
+ */
+export function briefScaleLabel(
+  scale: { status?: string; label?: string | null } | null | undefined
+): string {
+  const label = typeof scale?.label === "string" ? scale.label.trim() : "";
+  if (label) return label;
+  switch (scale?.status) {
+    case "confirmed":
+      return "Масштаб подтверждён";
+    case "approximate":
+      return "Масштаб приблизительный";
+    case "unknown":
+    default:
+      return "Масштаб неизвестен";
+  }
+}
+
+/** Fixed disclaimer carried on every generated image («Концепт, не фотография»). */
+export const BRIEF_CONCEPT_NOT_PHOTO = "Концепт, не фотография";
+
+/** Fallback banner line — BE always sends warnings; this only covers an
+ * empty array so the document never prints without the disclaimer. */
+export const BRIEF_NOT_BUILDING_DOC =
+  "Бриф не является строительной или рабочей документацией.";
+
+/** BE warnings verbatim; empty list → the fixed fallback disclaimer. */
+export function briefBannerLines(warnings: readonly string[]): string[] {
+  return warnings.length > 0 ? [...warnings] : [BRIEF_NOT_BUILDING_DOC];
+}
+
+/** Attribution note shown next to the style-reference checklist group
+ * (references default to unchecked — authors own the images). */
+export const BRIEF_PRIVACY_NOTE =
+  "Референсы стиля скрыты по умолчанию: изображения принадлежат их авторам. " +
+  "Отметьте те, что можно показать дизайнеру.";
+
+/** Results share button hint when no variant is selected or approved. */
+export const BRIEF_SHARE_HINT = "Сначала выберите или утвердите вариант";
+
+/** Composer rail labels. */
+export const BRIEF_BACK_LABEL = "Назад к результатам";
+export const BRIEF_DOWNLOAD_LABEL = "Скачать PDF";
+export const BRIEF_NEEDS_LABEL = "Потребности и пожелания";
+export const BRIEF_QUESTIONS_LABEL = "Вопросы для обсуждения";
+export const BRIEF_CHECKLIST_TITLE = "Изображения в брифе";
+
+/** Save indicator for the notes composer (autosave pattern, #198). */
+export function briefNotesSaveIndicator(state: {
+  saving: boolean;
+  dirty: boolean;
+}): string {
+  if (state.saving) return "Сохранение…";
+  if (state.dirty) return "Есть несохранённые правки";
+  return "Сохранено";
 }

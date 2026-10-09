@@ -10,6 +10,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  BRIEF_NOT_BUILDING_DOC,
+  BRIEF_PRIVACY_NOTE,
+  BRIEF_SHARE_HINT,
+  briefBannerLines,
+  briefIntentGroupLabel,
+  briefNotesSaveIndicator,
+  briefScaleLabel,
+  briefSectionTitle,
   DESIGN_CONFLICT_HINT,
   WORKER_OFFLINE_NOTICE,
   entityKindLabel,
@@ -160,4 +168,65 @@ test("mappingConfidenceLabel: wire values → badge labels", () => {
   assert.equal(mappingConfidenceLabel("calibrated"), "откалибровано");
   assert.equal(mappingConfidenceLabel(null), "приблизительно");
   assert.equal(mappingConfidenceLabel("garbage"), "приблизительно");
+});
+
+// ---------------------------------------------------------------------------
+// R8 designer brief (#198): labels for the brief document.
+// ---------------------------------------------------------------------------
+
+test("#198: intent groups map to Сохранить/Убрать/Заменить/Закреплено", () => {
+  assert.equal(briefIntentGroupLabel("keep"), "Сохранить");
+  assert.equal(briefIntentGroupLabel("remove"), "Убрать");
+  assert.equal(briefIntentGroupLabel("replace"), "Заменить");
+  assert.equal(briefIntentGroupLabel("locked"), "Закреплено");
+  // Unknown/future group keys pass through (never hidden).
+  assert.equal(briefIntentGroupLabel("repaint"), "repaint");
+});
+
+test("#198: section titles cover every brief section id", () => {
+  assert.equal(briefSectionTitle("notes"), "Потребности и пожелания");
+  assert.equal(briefSectionTitle("plan"), "План квартиры");
+  assert.equal(briefSectionTitle("rooms"), "Комнаты");
+  assert.equal(briefSectionTitle("furniture"), "Мебель и объекты");
+  assert.equal(briefSectionTitle("renders"), "Рендеры");
+  assert.equal(briefSectionTitle("photos"), "Фотографии квартиры");
+  assert.equal(briefSectionTitle("style"), "Стилевое решение");
+  assert.equal(briefSectionTitle("budget"), "Смета");
+  assert.equal(briefSectionTitle("questions"), "Вопросы для обсуждения");
+});
+
+test("#198: scale line — BE label wins, fallbacks only for a blank label", () => {
+  assert.equal(
+    briefScaleLabel({ status: "confirmed", source: "manual", label: "Масштаб задан вручную" }),
+    "Масштаб задан вручную"
+  );
+  assert.equal(briefScaleLabel({ status: "confirmed", label: "" }), "Масштаб подтверждён");
+  assert.equal(briefScaleLabel({ status: "approximate", label: null }), "Масштаб приблизительный");
+  assert.equal(briefScaleLabel({ status: "unknown", label: undefined }), "Масштаб неизвестен");
+  assert.equal(briefScaleLabel(null), "Масштаб неизвестен");
+});
+
+test("#198: warnings render verbatim; an empty list falls back to the disclaimer", () => {
+  const warnings = [
+    "Бриф не является строительной или рабочей документацией; детали требуют проверки специалистом.",
+    "Сгенерированные изображения — концепты, а не фотографии."
+  ];
+  assert.deepEqual(briefBannerLines(warnings), warnings);
+  assert.deepEqual(briefBannerLines([]), [BRIEF_NOT_BUILDING_DOC]);
+  assert.equal(BRIEF_NOT_BUILDING_DOC, "Бриф не является строительной или рабочей документацией.");
+});
+
+test("#198: notes save indicator — saving > dirty > saved", () => {
+  assert.equal(briefNotesSaveIndicator({ saving: true, dirty: true }), "Сохранение…");
+  assert.equal(briefNotesSaveIndicator({ saving: false, dirty: true }), "Есть несохранённые правки");
+  assert.equal(briefNotesSaveIndicator({ saving: false, dirty: false }), "Сохранено");
+});
+
+test("#198: privacy note and share hint carry the owner-facing wording", () => {
+  assert.equal(
+    BRIEF_PRIVACY_NOTE,
+    "Референсы стиля скрыты по умолчанию: изображения принадлежат их авторам. " +
+      "Отметьте те, что можно показать дизайнеру."
+  );
+  assert.equal(BRIEF_SHARE_HINT, "Сначала выберите или утвердите вариант");
 });

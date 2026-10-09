@@ -4934,3 +4934,424 @@ textarea.invalid {
 .viewer-error-boundary .muted {
   margin: 0;
 }
+
+/* ===== R8 designer brief (#198): preview + composer rail, print document ===== */
+
+/* Share entry point in the Results detail pane. */
+.brief-share-row {
+  display: flex;
+  margin: 0 0 var(--st-space-3);
+}
+
+/* Screen: printable preview + composer rail (rail hidden on print). */
+.brief-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-4);
+  min-width: 0;
+}
+
+.brief-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-space-3);
+  flex-wrap: wrap;
+}
+
+.brief-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--st-space-4);
+  align-items: start;
+}
+
+/* Laptop widths: the rail drops below the preview. */
+@media (max-width: 1100px) {
+  .brief-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .brief-composer {
+    order: -1;
+  }
+}
+
+.brief-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-4);
+  min-width: 0;
+}
+
+.brief-doc-header {
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius-lg);
+  background: var(--st-color-surface);
+  padding: var(--st-space-4) var(--st-space-5);
+}
+
+.brief-doc-header h2 {
+  margin: 0 0 var(--st-space-2);
+  font-size: var(--st-text-xl);
+}
+
+.brief-variant-line {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-3);
+  flex-wrap: wrap;
+  color: var(--st-color-text);
+}
+
+.brief-status {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--st-color-border-strong);
+  font-size: var(--st-text-xs);
+  color: var(--st-color-text-secondary);
+}
+
+.brief-provenance {
+  margin: var(--st-space-1) 0 0;
+  font-size: var(--st-text-xs);
+  color: var(--st-color-muted-text);
+}
+
+.brief-warnings {
+  margin-top: var(--st-space-3);
+  padding: var(--st-space-3);
+  border: 1px solid var(--st-color-warn-border, var(--st-color-border-strong));
+  border-radius: var(--st-radius);
+  background: var(--st-color-warn-bg, var(--st-color-surface-inset));
+  color: var(--st-color-warn, var(--st-color-text-secondary));
+}
+
+.brief-warnings p {
+  margin: 0 0 var(--st-space-1);
+  font-size: var(--st-text-sm);
+}
+
+.brief-warnings p:last-child {
+  margin-bottom: 0;
+}
+
+.brief-section {
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius-lg);
+  background: var(--st-color-surface);
+  padding: var(--st-space-4) var(--st-space-5);
+}
+
+.brief-section-title {
+  margin: 0 0 var(--st-space-3);
+  font-size: var(--st-text-lg);
+}
+
+.brief-text {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--st-color-text);
+}
+
+.brief-plan-image {
+  display: block;
+  max-width: 100%;
+  max-height: 120mm;
+  border-radius: var(--st-radius);
+  border: 1px solid var(--st-color-border);
+}
+
+.brief-scale-line {
+  margin: var(--st-space-2) 0 0;
+  color: var(--st-color-text-secondary);
+  font-size: var(--st-text-sm);
+}
+
+.brief-room-list,
+.brief-intent-group ul {
+  margin: 0;
+  padding: 0 0 0 var(--st-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-1);
+}
+
+.brief-intent-group h4 {
+  margin: var(--st-space-2) 0 var(--st-space-1);
+  font-size: var(--st-text-base);
+}
+
+.brief-intent-group h4:first-child {
+  margin-top: 0;
+}
+
+.brief-render-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--st-space-3);
+}
+
+.brief-image-card {
+  margin: 0;
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius);
+  overflow: hidden;
+  background: var(--st-color-surface-inset);
+}
+
+.brief-image-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.brief-image-card figcaption {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  flex-wrap: wrap;
+  padding: var(--st-space-2) var(--st-space-3);
+  font-size: var(--st-text-xs);
+  color: var(--st-color-text-secondary);
+}
+
+.brief-stage-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--st-color-border-strong);
+  color: var(--st-color-text-secondary);
+}
+
+.brief-ref-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-2);
+}
+
+.brief-ref-thumb {
+  max-height: 70mm;
+  max-width: 100%;
+  border-radius: var(--st-radius);
+  border: 1px solid var(--st-color-border);
+}
+
+.brief-disclaimer-line {
+  margin: 0 0 var(--st-space-2);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-muted-text);
+}
+
+.brief-budget-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--st-text-sm);
+}
+
+.brief-budget-table th,
+.brief-budget-table td {
+  text-align: left;
+  padding: var(--st-space-2) var(--st-space-3);
+  border-bottom: 1px solid var(--st-color-border);
+}
+
+.brief-budget-table th {
+  color: var(--st-color-muted-text);
+  font-weight: var(--st-weight-medium);
+}
+
+/* Composer rail (screen only). */
+.brief-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius-lg);
+  background: var(--st-color-surface);
+  padding: var(--st-space-4);
+  position: sticky;
+  top: var(--st-space-4);
+}
+
+.brief-composer-title {
+  margin: 0 0 var(--st-space-2);
+  font-size: var(--st-text-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brief-save-indicator {
+  font-size: var(--st-text-xs);
+  font-weight: var(--st-weight-medium);
+  color: var(--st-color-muted-text);
+}
+
+.brief-field {
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+  margin-top: var(--st-space-2);
+}
+
+.brief-composer textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.brief-checklist {
+  margin-top: var(--st-space-3);
+  border-top: 1px solid var(--st-color-border);
+  padding-top: var(--st-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+}
+
+.brief-checklist h4 {
+  margin: 0;
+  font-size: var(--st-text-base);
+}
+
+.brief-check-group h5 {
+  margin: var(--st-space-2) 0 var(--st-space-1);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+
+.brief-check {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  font-size: var(--st-text-sm);
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.brief-privacy-note {
+  margin: 0 0 var(--st-space-1);
+  font-size: var(--st-text-xs);
+  color: var(--st-color-muted-text);
+}
+
+/* Print: the brief is the document — app chrome and the composer rail never
+   print; sections break onto fresh A4 pages; cards/images never split. */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+  }
+
+  /* App chrome: sidebar, page tabs/header, status strip, composer rail,
+     toolbar buttons. */
+  .sidebar,
+  .project-header,
+  .status-panel,
+  .brief-toolbar,
+  .brief-composer {
+    display: none !important;
+  }
+
+  .app-shell {
+    display: block;
+    min-height: 0;
+  }
+
+  .workspace {
+    display: block;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  .brief-page,
+  .brief-preview {
+    display: block;
+  }
+
+  .brief-doc-header,
+  .brief-section,
+  .brief-image-card,
+  .brief-budget-table th,
+  .brief-budget-table td {
+    border-color: #d4d4d4;
+    background: #ffffff;
+  }
+
+  .brief-doc-header h2,
+  .brief-section-title,
+  .brief-variant-line,
+  .brief-text,
+  .brief-intent-group h4,
+  .brief-checklist,
+  .brief-composer-title {
+    color: #111111;
+  }
+
+  .brief-provenance,
+  .brief-scale-line,
+  .brief-status,
+  .brief-stage-chip,
+  .brief-caption,
+  .brief-disclaimer,
+  .brief-disclaimer-line,
+  .brief-room-notes,
+  .brief-budget-table th,
+  .brief-budget-table td {
+    color: #444444;
+  }
+
+  .brief-warnings {
+    color: #6b5900;
+    background: #fffbe6;
+    border-color: #e3d27a;
+  }
+
+  /* Major sections start on a fresh page (the header stays on page 1). */
+  .brief-section {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  .brief-preview .brief-section:first-of-type {
+    page-break-before: auto;
+    break-before: auto;
+  }
+
+  /* Cards, images and the budget table never split across pages. */
+  .brief-image-card,
+  .brief-plan-image,
+  .brief-ref-thumb,
+  .brief-budget-table,
+  .brief-intent-group {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    box-shadow: none;
+    filter: none;
+  }
+
+  .brief-image-card img,
+  .brief-plan-image,
+  .brief-ref-thumb {
+    box-shadow: none;
+    filter: none;
+  }
+
+  .brief-image-card img {
+    max-height: 70mm;
+    width: auto;
+    max-width: 100%;
+    margin: 0 auto;
+  }
+
+  .brief-plan-image {
+    max-height: 120mm;
+  }
+
+  .brief-ref-thumb {
+    max-height: 45mm;
+  }
+}

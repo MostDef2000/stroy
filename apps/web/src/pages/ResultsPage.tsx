@@ -12,7 +12,8 @@ export function ResultsPage({
   currentRevisionId,
   cameraId,
   onRestore,
-  onRerender
+  onRerender,
+  onShareWithDesigner
 }: {
   projectId: string;
   revisions: RevisionSummary[];
@@ -22,6 +23,8 @@ export function ResultsPage({
   cameraId: string | null;
   onRestore: (revisionId: string) => Promise<void>;
   onRerender: (revisionId: string) => Promise<void>;
+  /** R8 (#198): opens the designer brief for a variant (App-level wiring). */
+  onShareWithDesigner: (variantId: string) => void;
 }) {
   if (revisions.length === 0) {
     return (
@@ -42,6 +45,7 @@ export function ResultsPage({
       cameraId={cameraId}
       onRestore={onRestore}
       onRerender={onRerender}
+      onShareWithDesigner={onShareWithDesigner}
     />
   );
 }
