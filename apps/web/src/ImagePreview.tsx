@@ -2,7 +2,8 @@ import {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
-  useRef
+  useRef,
+  useState
 } from "react";
 
 // Shared bounded image preview (#150). Thumbnail variant: stable aspect-ratio
@@ -31,6 +32,12 @@ export type ImagePreviewProps = {
   /** Called with the trigger element so the host can restore focus to it. */
   onExpand?: (trigger: HTMLElement) => void;
   className?: string;
+  /**
+   * R9 (#197): paint the shared .skeleton shimmer until the image fires
+   * load (or error, so a broken src never shimmers forever). Opt-in — the
+   * default flow stays byte-identical for every other call site.
+   */
+  skeleton?: boolean;
 };
 
 export function ImagePreview({
@@ -47,9 +54,14 @@ export function ImagePreview({
   expandable = false,
   expandLabel = "Развернуть",
   onExpand,
-  className
+  className,
+  skeleton = false
 }: ImagePreviewProps) {
   const expandButtonRef = useRef<HTMLButtonElement | null>(null);
+  // Track which src has settled (load OR error) so a src switch re-arms the
+  // shimmer without an effect: loaded === (the current src has finished).
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const loaded = loadedSrc === src;
 
   const resolvedFit = fit ?? (variant === "thumbnail" ? "cover" : "contain");
   // CSS custom properties drive the component's css (aspect, fit, max-height).
@@ -61,6 +73,7 @@ export function ImagePreview({
   const classes = [
     "imgpv",
     variant === "thumbnail" ? "imgpv--thumbnail" : "imgpv--bounded",
+    skeleton && !loaded ? "imgpv--loading" : "",
     selected ? "imgpv--selected" : "",
     className ?? ""
   ]
@@ -117,7 +130,17 @@ export function ImagePreview({
         : {})}
       onDoubleClick={expandable ? handleDoubleClick : undefined}
     >
-      <img className="imgpv__image" src={src} alt={alt} draggable={false} />
+      {skeleton && !loaded && (
+        <div className="skeleton imgpv__skeleton" aria-hidden="true" />
+      )}
+      <img
+        className="imgpv__image"
+        src={src}
+        alt={alt}
+        draggable={false}
+        onLoad={skeleton ? () => setLoadedSrc(src) : undefined}
+        onError={skeleton ? () => setLoadedSrc(src) : undefined}
+      />
       {caption && <div className="imgpv__caption">{caption}</div>}
       {expandable && (
         <button

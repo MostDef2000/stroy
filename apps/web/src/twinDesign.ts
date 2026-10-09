@@ -213,6 +213,57 @@ export function sortedRendersNewestFirst<T extends RenderLike>(
   return [...renders].sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+/** Minimal structural view of a generation for the results-timeline labels. */
+export type GenerationLike = {
+  id: string;
+  created_at: string;
+  manifest?: {
+    structured_conditioning?: Record<string, unknown> | null;
+  } | null;
+};
+
+/**
+ * True when the generation is an AI concept (whole-room redesign): the
+ * redesign pipeline stamps `purpose: "room_redesign"` into
+ * structured_conditioning (BE generations.py). Absent manifest/purpose —
+ * a regular render, not a concept.
+ */
+export function isConceptGeneration(
+  generation: GenerationLike | null | undefined
+): boolean {
+  const purpose = generation?.manifest?.structured_conditioning?.["purpose"];
+  return purpose === "room_redesign";
+}
+
+/**
+ * 1-based position of the generation in created_at order (oldest = 1) — the
+ * «Рендер N» detail label ordinal. Stable under equal timestamps via the
+ * sort's stability. Null when the id is absent from the list. Concepts are
+ * not numbered: callers pass the non-concept generations only.
+ */
+export function renderOrdinal(
+  generations: readonly GenerationLike[],
+  id: string
+): number | null {
+  const sorted = [...generations].sort((a, b) =>
+    a.created_at.localeCompare(b.created_at)
+  );
+  const index = sorted.findIndex((generation) => generation.id === id);
+  return index === -1 ? null : index + 1;
+}
+
+/**
+ * Generations eligible for a «Рендер N» ordinal: non-concept only. Concepts
+ * are unnumbered (see renderDetailLabel) and must be filtered out before
+ * renderOrdinal, or a concept interleaved between renders by created_at
+ * inflates the later «Рендер N» numbers.
+ */
+export function nonConceptGenerations(
+  generations: readonly GenerationLike[]
+): GenerationLike[] {
+  return generations.filter((generation) => !isConceptGeneration(generation));
+}
+
 /**
  * Slugify a human label into a scene entity id. Non-ASCII labels (e.g. Russian)
  * fall back to "furniture" so the id stays a valid scene key.

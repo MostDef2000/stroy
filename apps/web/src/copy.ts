@@ -60,12 +60,30 @@ export function openingKindLabel(kind: string): string {
 }
 
 /**
- * Renderer profile display name. `blender-cycles-v0` is a wire value — the
- * owner-facing name is «Фоторендер»; unknown profiles pass through unchanged.
+ * Renderer profile display name (R9 #197 glossary). Wire values map to
+ * owner-facing names — «Фоторендер» (cycles) and «Черновой рендер» (eevee).
+ * Unknown/absent profiles never surface raw wire ids in the default UI:
+ * they read as the neutral «Рендер». Raw ids surface only in the Diagnostics
+ * manifest details, not in «Дополнительно».
  */
 export function rendererProfileLabel(profile: string | null | undefined): string {
   if (profile === "blender-cycles-v0") return "Фоторендер";
-  return profile ?? "";
+  if (profile === "blender-eevee-v0") return "Черновой рендер";
+  return "Рендер";
+}
+
+/**
+ * Results-timeline details label (R9 #197 raw-id cleanup): AI concepts read
+ * as «Эскиз концепта», regular renders as «Рендер N» (created_at order,
+ * oldest = 1). Replaces the raw generation id in the default «Детали» block;
+ * ids stay behind «Дополнительно»/Diagnostics.
+ */
+export function renderDetailLabel(
+  isConcept: boolean,
+  ordinal: number | null | undefined
+): string {
+  if (isConcept) return "Эскиз концепта";
+  return typeof ordinal === "number" ? `Рендер ${ordinal}` : "Рендер";
 }
 
 /** Render pass tag: whether the render carries a usable image pass or not. */
@@ -273,3 +291,17 @@ export function briefNotesSaveIndicator(state: {
   if (state.dirty) return "Есть несохранённые правки";
   return "Сохранено";
 }
+
+// ---------------------------------------------------------------------------
+// R9 editorial mood (#197): concept CTA copy. Pure constants — same ritual
+// as the glossary above.
+// ---------------------------------------------------------------------------
+
+/** Badge on the mood-CTA output preview («Сделать эскиз концепта» result). */
+export const CONCEPT_GENERATED_LABEL = "Концепт, сгенерировано";
+
+/** Scope hint: mood presets feed only concept sketches, never the structure. */
+export const MOOD_SCOPE_HINT = "Влияет только на эскизы концепта";
+
+/** Disabled-CTA hint when no render exists to base the concept on. */
+export const CONCEPT_NEEDS_RENDER_HINT = "Сначала сделайте черновой рендер";

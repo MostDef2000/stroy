@@ -439,6 +439,7 @@ export function TwinDesignPanel({ projectId, revision, jobs, onChanged, onEntity
                 src={api.assetUrl(selectedRgbId)}
                 alt={`Рендер ${selectedRender.id}`}
                 expandable
+                skeleton
                 onExpand={(trigger) =>
                   openLightbox(
                     api.assetUrl(selectedRgbId),

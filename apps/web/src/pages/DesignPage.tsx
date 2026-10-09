@@ -4,7 +4,7 @@ import { api, type Asset, type AssetRole, type Generation, type ImportUrlRespons
 import { AttachmentSection } from "../AttachmentSection";
 import { ImagePreview } from "../ImagePreview";
 import { LayerBadge } from "../LayerBadge";
-import { DESIGN_CONFLICT_HINT, WORKER_OFFLINE_NOTICE, renderStageLabel, statusLabel } from "../copy";
+import { CONCEPT_GENERATED_LABEL, CONCEPT_NEEDS_RENDER_HINT, DESIGN_CONFLICT_HINT, MOOD_SCOPE_HINT, WORKER_OFFLINE_NOTICE, renderStageLabel, statusLabel } from "../copy";
 import { computeCameraReadiness, computeRenderReadiness } from "../cameraReadiness";
 import { CameraPanel } from "../CameraPanel";
 import { PhotoEditPanel } from "../PhotoEditPanel";
@@ -38,7 +38,16 @@ import {
   type EntityLocksPatch
 } from "../sceneIntent";
 import { ruleLabel, summaryLine, topResults } from "../sceneValidation";
-import { apiErrorText, uniqueId } from "../twinDesign";
+import { apiErrorText, redesignResultAssetId, renderRgbAssetId, sortedRendersNewestFirst, uniqueId } from "../twinDesign";
+import {
+  buildConceptRedesignInput,
+  captionMoodTitle,
+  DEFAULT_MOOD_ID,
+  loadMoodId,
+  MOOD_PRESETS,
+  saveMoodId,
+  type ConceptGenerationLike
+} from "../moodSelect";
 import type { PageId } from "../nav";
 
 const KIND_LABELS: Record<string, string> = {
@@ -298,6 +307,134 @@ export function DesignPage({
       .then(setRenders)
       .catch(() => undefined);
   }, [jobs, pendingRenderJobId, pendingRenderStage, projectId]);
+
+  // ---------------------------------------------------------------------------
+  // R9 (#197): editorial mood for concept sketches. Presets mirror the BE
+  // registry (services/moods.py); the choice is persisted per project in
+  // localStorage and only feeds the concept CTA near the composer — it never
+  // alters the scene structure.
+  // ---------------------------------------------------------------------------
+  const [moodId, setMoodId] = useState<string>(DEFAULT_MOOD_ID);
+  const [conceptBusy, setConceptBusy] = useState(false);
+  const [conceptJobId, setConceptJobId] = useState<string | null>(null);
+  const [conceptError, setConceptError] = useState("");
+  const [conceptInfo, setConceptInfo] = useState("");
+  const [conceptResultAssetId, setConceptResultAssetId] = useState<string | null>(
+    null
+  );
+  // Mood title snapshot taken from the finished generation itself (see the
+  // success effect below) — never re-derived from the live selector, so
+  // switching the mood cannot relabel an already-generated sketch.
+  const [conceptMoodTitle, setConceptMoodTitle] = useState<string | null>(null);
+
+  // Restore the per-project mood on project switch and reset the concept job
+  // bookkeeping (jobs are project-scoped, so a pending id from the previous
+  // project could never resolve). Persistence itself is written imperatively
+  // in selectMood — never in an effect — so switching projects cannot
+  // flash-write the previous project's mood under the new key.
+  useEffect(() => {
+    setMoodId(loadMoodId(projectId));
+    setConceptJobId(null);
+    setConceptError("");
+    setConceptInfo("");
+    setConceptResultAssetId(null);
+    setConceptMoodTitle(null);
+  }, [projectId]);
+
+  // Ruling: the concept CTA bases on the newest successful render's rgb pass
+  // (renderRgbAssetId over the newest-first render list); without one the CTA
+  // stays disabled with the «Сначала сделайте черновой рендер» hint.
+  const conceptBaseAssetId = useMemo(() => {
+    for (const render of sortedRendersNewestFirst(renders)) {
+      const baseAssetId = renderRgbAssetId(render.manifest);
+      if (baseAssetId) return baseAssetId;
+    }
+    return null;
+  }, [renders]);
+
+  const activeConceptJob = useMemo(
+    () => (conceptJobId ? jobs.find((job) => job.id === conceptJobId) ?? null : null),
+    [jobs, conceptJobId]
+  );
+
+  useEffect(() => {
+    if (!conceptJobId || activeConceptJob?.status !== "succeeded") return;
+    setConceptJobId(null);
+    const resultAssetId = redesignResultAssetId(activeConceptJob);
+    if (resultAssetId) {
+      setConceptResultAssetId(resultAssetId);
+      // Snapshot the mood the sketch was actually generated with: the BE
+      // stamps mood_id/mood_title into the generation's structured_conditioning
+      // (services/generations.py) and mirrors the full manifest into
+      // job.result.generation_manifest (worker/runtime.py). The live selector
+      // is only the fallback for records without a stamped mood_title.
+      const rawManifest = activeConceptJob.result?.["generation_manifest"];
+      const generation: ConceptGenerationLike | null =
+        rawManifest && typeof rawManifest === "object"
+          ? { manifest: rawManifest }
+          : null;
+      setConceptMoodTitle(captionMoodTitle(generation, moodId));
+      setConceptInfo("Эскиз концепта готов — смотрите превью ниже.");
+    } else {
+      setConceptError("Задача завершилась без выходного изображения.");
+    }
+  }, [activeConceptJob, conceptJobId, moodId]);
+
+  useEffect(() => {
+    if (!conceptJobId) return;
+    if (activeConceptJob?.status !== "failed" && activeConceptJob?.status !== "cancelled") {
+      return;
+    }
+    setConceptJobId(null);
+    setConceptError(`Эскиз концепта: ${statusLabel(activeConceptJob.status)}.`);
+  }, [activeConceptJob, conceptJobId]);
+
+  const conceptStatus = useMemo(() => {
+    if (!conceptJobId) return null;
+    if (!activeConceptJob) return statusLabel("queued");
+    const fraction =
+      typeof activeConceptJob.progress["fraction"] === "number"
+        ? Math.round((activeConceptJob.progress["fraction"] as number) * 100)
+        : null;
+    const label = statusLabel(activeConceptJob.status);
+    return fraction === null ? label : `${label} · ${fraction}%`;
+  }, [activeConceptJob, conceptJobId]);
+
+  function selectMood(next: string) {
+    setMoodId(next);
+    saveMoodId(projectId, next);
+  }
+
+  // Same freshness rule as every other sender: base_revision_id must equal
+  // the current latest revision, read fresh, never from the stale prop. The
+  // mood id travels alongside the fixed short prompt; the BE composes the
+  // editorial direction (mood_id only — no prompt text from the preset).
+  async function runConceptSketch() {
+    if (conceptBusy || conceptJobId || !conceptBaseAssetId) return;
+    setConceptError("");
+    setConceptInfo("");
+    setConceptResultAssetId(null);
+    setConceptMoodTitle(null);
+    setConceptBusy(true);
+    try {
+      const fresh = await api.scene(projectId);
+      if (!fresh) throw new Error("Сцена ещё не инициализирована.");
+      const response = await api.createRedesign(
+        projectId,
+        buildConceptRedesignInput({
+          baseRevisionId: fresh.revision_id,
+          baseAssetId: conceptBaseAssetId,
+          moodId
+        })
+      );
+      setConceptJobId(response.job.id);
+      await onChanged();
+    } catch (reason) {
+      setConceptError(apiErrorText(reason));
+    } finally {
+      setConceptBusy(false);
+    }
+  }
 
   // R3: which review-form fields stay highlighted as missing —
   // server-reported gaps until the user fills them in, plus the dimensions
@@ -1408,6 +1545,63 @@ export function DesignPage({
             />
           </section>
         </details>
+
+        {/* R9 (#197): mood bar — small editorial selector near the composer.
+            Presets mirror the BE registry (moodSelect.ts); the choice persists
+            per project and feeds only the concept CTA (label above), never
+            the scene structure. */}
+        <section className="mood-bar" aria-label="Настроение эскизов концепта">
+          <div className="mood-bar-row">
+            <label className="mood-bar-label">
+              Настроение
+              <select
+                value={moodId}
+                onChange={(event) => selectMood(event.target.value)}
+              >
+                {MOOD_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id} title={preset.hint}>
+                    {preset.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="secondary"
+              disabled={conceptBusy || conceptJobId !== null || !conceptBaseAssetId}
+              onClick={() => void runConceptSketch()}
+            >
+              {conceptBusy || conceptJobId
+                ? "Готовим эскиз…"
+                : "Сделать эскиз концепта"}
+            </button>
+            <p className="hint mood-bar-scope">{MOOD_SCOPE_HINT}</p>
+          </div>
+          {!conceptBaseAssetId && <p className="hint">{CONCEPT_NEEDS_RENDER_HINT}</p>}
+          {conceptStatus && <p className="muted">Эскиз концепта: {conceptStatus}</p>}
+          {conceptError && <div className="error">{conceptError}</div>}
+          {conceptInfo && <p className="hint">{conceptInfo}</p>}
+          {conceptResultAssetId && (
+            <figure className="mood-result">
+              <ImagePreview
+                variant="bounded"
+                maxHeight="320px"
+                caption={
+                  conceptMoodTitle
+                    ? `${CONCEPT_GENERATED_LABEL} · ${conceptMoodTitle}`
+                    : CONCEPT_GENERATED_LABEL
+                }
+                src={api.assetUrl(conceptResultAssetId)}
+                alt={
+                  conceptMoodTitle
+                    ? `${CONCEPT_GENERATED_LABEL}: ${conceptMoodTitle}`
+                    : CONCEPT_GENERATED_LABEL
+                }
+                skeleton
+              />
+            </figure>
+          )}
+        </section>
 
         {/* Persistent composer (#154): reachable in both modes; instruction
             state stays app-level (App.tsx props are unchanged). */}

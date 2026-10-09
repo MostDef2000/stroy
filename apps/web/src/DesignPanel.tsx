@@ -15,14 +15,20 @@ import {
 } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
-import { BRIEF_SHARE_HINT, statusLabel } from "./copy";
+import { BRIEF_SHARE_HINT, renderDetailLabel, statusLabel } from "./copy";
 import {
   CHECK_SEVERITIES,
   groupResults,
   ruleLabel,
   summaryLine
 } from "./sceneValidation";
-import { apiErrorText, renderRgbAssetId } from "./twinDesign";
+import {
+  apiErrorText,
+  isConceptGeneration,
+  nonConceptGenerations,
+  renderOrdinal,
+  renderRgbAssetId
+} from "./twinDesign";
 import {
   BUDGET_KIND_LABELS,
   budgetDeltaLabel,
@@ -1555,6 +1561,7 @@ export function DesignPanel({
               src={api.assetUrl(assetId)}
               alt={entry.label}
               expandable
+              skeleton
               onExpand={(trigger) =>
                 openLightbox(api.assetUrl(assetId), entry.label, entry.label, trigger)
               }
@@ -1580,6 +1587,7 @@ export function DesignPanel({
                   src={api.assetUrl(beforeAssetId)}
                   alt="До"
                   expandable
+                  skeleton
                   onExpand={(trigger) =>
                     openLightbox(api.assetUrl(beforeAssetId), "До", "До", trigger)
                   }
@@ -1599,6 +1607,7 @@ export function DesignPanel({
                 src={api.assetUrl(assetId)}
                 alt="После"
                 expandable
+                skeleton
                 onExpand={(trigger) =>
                   openLightbox(api.assetUrl(assetId), "После", "После", trigger)
                 }
@@ -1614,7 +1623,17 @@ export function DesignPanel({
 
         <details className="rt-details">
           <summary>Детали</summary>
-          <div>Рендер: {entry.id}</div>
+          {/* #197: human label instead of the raw generation id — concepts
+              read as «Эскиз концепта», renders as «Рендер N» by created_at
+              order; the id itself stays behind Дополнительно/Diagnostics. */}
+          <div>
+            {renderDetailLabel(
+              isConceptGeneration(generation),
+              isConceptGeneration(generation)
+                ? null
+                : renderOrdinal(nonConceptGenerations(generations), entry.id)
+            )}
+          </div>
           <div>Ревизия: {entry.designRevisionId}</div>
           {generation && <div>Камера: {generation.camera_id}</div>}
         </details>
@@ -1675,6 +1694,7 @@ export function DesignPanel({
               src={api.assetUrl(assetId)}
               alt={`Рендер версии от ${created}`}
               expandable
+              skeleton
               onExpand={(trigger) =>
                 openLightbox(
                   api.assetUrl(assetId),
@@ -1696,7 +1716,15 @@ export function DesignPanel({
         {generation && (
           <details className="rt-details">
             <summary>Детали</summary>
-            <div>Рендер: {generation.id}</div>
+            {/* #197: human label instead of the raw generation id. */}
+            <div>
+              {renderDetailLabel(
+                isConceptGeneration(generation),
+                isConceptGeneration(generation)
+                  ? null
+                  : renderOrdinal(nonConceptGenerations(generations), generation.id)
+              )}
+            </div>
             <div>Ревизия: {selection.revision.revision_id}</div>
             <div>Камера: {generation.camera_id}</div>
           </details>
