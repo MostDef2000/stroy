@@ -25,6 +25,7 @@ from stroy.editing.replacement import ReplacementRegion
 from stroy.generation import WorkflowManifest
 from stroy.security import sha256_text
 from stroy.services.assets import MemoryObjectStore
+from stroy.services.moods import MOOD_PRESETS, get_mood
 
 
 @pytest.fixture
@@ -3694,6 +3695,366 @@ async def test_noop_revision_conflict_returns_409(settings, monkeypatch):
             )
             assert response.status_code == 409
             assert response.json()["detail"]["code"] == "revision_conflict"
+
+
+@pytest.mark.asyncio
+async def test_redesign_with_mood_preset_composes_prompt(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Mood"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.mood",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            mood = get_mood("warm-minimal")
+            assert mood is not None
+            prompt = "скандинавская гостиная"
+            redesign = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "prompt": prompt,
+                    "mood_id": "warm-minimal",
+                },
+            )
+            assert redesign.status_code == 201, redesign.json()
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                composed = f"{mood.prompt_prefix} {prompt}"
+                assert payload["inputs"]["prompt"] == composed
+                conditioning = payload["generation"]["structured_conditioning"]
+                assert conditioning["request_text"] == composed
+                assert mood.prompt_prefix in payload["inputs"]["prompt"]
+                assert payload["inputs"]["prompt"].endswith(prompt)
+                assert conditioning["mood_id"] == "warm-minimal"
+                assert conditioning["mood_title"] == mood.title
+
+
+@pytest.mark.asyncio
+async def test_redesign_unknown_mood_rejected(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Mood unknown"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.mood.unknown",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            redesign = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "prompt": "любой запрос",
+                    "mood_id": "no-such-mood",
+                },
+            )
+            assert redesign.status_code == 422
+            assert redesign.json()["detail"]["code"] == "unknown_mood"
+
+            # Rejected before any side effect: no job was queued and no
+            # synthetic black-reference asset was created for the project.
+            async with app.state.session_factory() as db:
+                jobs = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalars()
+                assert list(jobs) == []
+                assets = (
+                    await db.execute(
+                        select(AssetRow).where(AssetRow.project_id == project_id)
+                    )
+                ).scalars()
+                black_references = [
+                    asset
+                    for asset in assets
+                    if asset.metadata_json.get("source")
+                    in ("redesign_black_reference", "replacement_black_reference")
+                ]
+                assert black_references == []
+
+
+@pytest.mark.asyncio
+async def test_redesign_without_mood_unchanged(settings):
+    """Absent mood_id keeps the legacy payload byte-compatible: raw prompt,
+    no mood keys in structured_conditioning."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json={"name": "Mood absent"},
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.mood.absent",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            redesign = await client.post(
+                f"/api/v1/projects/{project_id}/redesigns",
+                headers=headers,
+                json={
+                    "base_revision_id": base_revision_id,
+                    "prompt": "minimalist restyle",
+                },
+            )
+            assert redesign.status_code == 201, redesign.json()
+
+            async with app.state.session_factory() as db:
+                job_row = (
+                    await db.execute(
+                        select(JobRow).where(JobRow.job_type == "image.edit")
+                    )
+                ).scalar_one()
+                payload = job_row.payload
+                assert payload["inputs"]["prompt"] == "minimalist restyle"
+                conditioning = payload["generation"]["structured_conditioning"]
+                assert conditioning["request_text"] == "minimalist restyle"
+                assert "mood_id" not in conditioning
+                assert "mood_title" not in conditioning
+
+
+@pytest.mark.asyncio
+async def test_redesign_accepts_all_mood_presets(settings):
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+            project = await client.post(
+                "/api/v1/projects", headers=headers, json={"name": "Mood all"}
+            )
+            project_id = project.json()["id"]
+            scene = await client.post(
+                f"/api/v1/projects/{project_id}/scene",
+                headers=headers,
+                json={
+                    "scene_id": "scene.mood.all",
+                    "project_id": project_id,
+                    "entities": [],
+                    "cameras": [],
+                },
+            )
+            base_revision_id = scene.json()["revision_id"]
+            base_buffer = BytesIO()
+            Image.new("RGB", (1024, 1024), "lightgray").save(
+                base_buffer, format="PNG"
+            )
+            base_upload = await client.post(
+                f"/api/v1/projects/{project_id}/assets",
+                headers=headers,
+                data={"role": "derived"},
+                files={"file": ("room.png", base_buffer.getvalue(), "image/png")},
+            )
+            base_asset_id = base_upload.json()["id"]
+            async with app.state.session_factory() as db:
+                db.add(
+                    GenerationManifestRow(
+                        id=str(uuid4()),
+                        project_id=project_id,
+                        job_id=str(uuid4()),
+                        scene_revision_id=base_revision_id,
+                        design_revision_id=base_revision_id,
+                        camera_id="camera.main",
+                        manifest_json={
+                            "generation_id": "gen-base",
+                            "scene_revision_id": base_revision_id,
+                            "design_revision_id": base_revision_id,
+                            "camera_id": "camera.main",
+                            "workflow": {"id": "flux-redesign-v0", "version": "0.2.0"},
+                            "model_profile": "flux-dev-family",
+                            "seed": 0,
+                            "input_asset_ids": [],
+                            "output_asset_ids": [base_asset_id],
+                            "structured_conditioning": {},
+                        },
+                    )
+                )
+                await db.commit()
+
+            prompt = "перепланировка гостиной"
+            for mood in MOOD_PRESETS:
+                redesign = await client.post(
+                    f"/api/v1/projects/{project_id}/redesigns",
+                    headers=headers,
+                    json={
+                        "base_revision_id": base_revision_id,
+                        "prompt": prompt,
+                        "mood_id": mood.id,
+                    },
+                )
+                assert redesign.status_code == 201, redesign.json()
+                body = redesign.json()
+                base_revision_id = body["revision_id"]
+
+                async with app.state.session_factory() as db:
+                    job_row = await db.get(JobRow, body["job"]["id"])
+                    assert job_row is not None
+                    payload = job_row.payload
+                    composed = f"{mood.prompt_prefix} {prompt}"
+                    assert payload["inputs"]["prompt"] == composed
+                    conditioning = payload["generation"]["structured_conditioning"]
+                    assert conditioning["mood_id"] == mood.id
+                    assert conditioning["mood_title"] == mood.title
 
 
 @pytest.mark.asyncio
