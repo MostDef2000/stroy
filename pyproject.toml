@@ -43,8 +43,12 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Кэш — вне репо (умирает с песочницей, не грязнит git-статус)
+cache_dir = "/tmp/opencode/toolcache/stroy/pytest"
 
 [tool.ruff]
+# Кэш — вне репо (умирает с песочницей, не грязнит git-статус)
+cache-dir = "/tmp/opencode/toolcache/stroy/ruff"
 target-version = "py312"
 line-length = 100
 
