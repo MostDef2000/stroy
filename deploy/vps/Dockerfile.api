@@ -18,4 +18,5 @@ RUN useradd --create-home --uid 10001 stroy
 
 USER stroy
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn stroy.api.main:app --host 0.0.0.0 --port 8000"]
+# Migrations are executed by the deploy wrapper (explicit pre-switch step), not at container start.
+CMD ["sh", "-c", "uvicorn stroy.api.main:app --host 0.0.0.0 --port 8000"]

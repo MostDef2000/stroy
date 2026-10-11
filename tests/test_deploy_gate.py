@@ -599,8 +599,21 @@ def _write_fake_bins(bin_dir: Path) -> None:
             'case "$1" in\n'
             "  image) printf '%s\\n' \"$FAKE_IMAGE_ID\" ;;\n"
             "  compose)\n"
-            '    if [ "${FAKE_DOCKER_COMPOSE_FAIL:-0}" = "1" ]; then\n'
-            '      echo "fake docker compose failure" >&2\n'
+            '    # failure flags are scoped to the compose subcommand: the\n'
+            '    # pre-switch migration (`compose run`) and the switch\n'
+            '    # (`compose up`) are separate failure domains in the wrapper.\n'
+            '    # The subcommand follows the -p/-f/--env-file/--project-directory\n'
+            '    # flag block, so scan for the first `up`/`run` token.\n'
+            '    sub=""\n'
+            '    for arg in "$@"; do\n'
+            '      case "$arg" in up|run) sub="$arg"; break ;; esac\n'
+            "    done\n"
+            '    if [ "${FAKE_DOCKER_COMPOSE_FAIL:-0}" = "1" ] && [ "$sub" = "up" ]; then\n'
+            '      echo "compose up failed" >&2\n'
+            "      exit 1\n"
+            "    fi\n"
+            '    if [ "${FAKE_DOCKER_COMPOSE_RUN_FAIL:-0}" = "1" ] && [ "$sub" = "run" ]; then\n'
+            '      echo "fake docker compose run failure" >&2\n'
             "      exit 1\n"
             "    fi ;;\n"
             "esac\n"
@@ -1008,16 +1021,73 @@ def test_wrapper_nginx_t_failure_restores_config_and_rollback(tmp_path: Path) ->
     assert state["sha"] == shas["A"]
 
     # (3) apply C with docker compose failing post-switch: automatic rollback
-    # must restore config A from its unique history snapshot.
+    # must restore config A from its unique history snapshot.  The flag now
+    # fails ONLY `compose up`: the pre-switch migration (`compose run`) succeeds
+    # first, so the rollback path is reached because the DEPLOY-path compose up
+    # failed — not because the migration step failed.
     env_c = _wrapper_env(tmp_path, bin_dir, log, headers, sha=shas["C"])
     env_c["FAKE_DOCKER_COMPOSE_FAIL"] = "1"
     proc_c = _run_wrapper(env_c)
     assert proc_c.returncode != 0
+    assert "alembic upgrade head ok" in proc_c.stdout
     assert "compose up failed" in proc_c.stderr
     assert config_file.read_bytes() == sentinel_a
     assert nginx_vhost.read_bytes() == nginx_a
     state = json.loads(current_json.read_text(encoding="utf-8"))
     assert state["status"] in {"failed", "rolled_back_to"}
+
+
+def test_wrapper_migration_failure_rolls_back_and_exits_nonzero(tmp_path: Path) -> None:
+    # The explicit pre-switch migration is its own failure domain: with
+    # FAKE_DOCKER_COMPOSE_RUN_FAIL=1 (compose up fine) the wrapper must name the
+    # migration step as the failure reason, invoke the rollback path, and exit
+    # non-zero — the deploy-path "compose up failed" reason must never appear.
+    shas = {"A": "a" * 40, "B": "b" * 40}
+    releases_dir = tmp_path / "releases"
+    releases_dir.mkdir()
+    for tag, sha in shas.items():
+        _stage_release(releases_dir, sha, compose_body=f"# config {tag}\n".encode())
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    log = tmp_path / "fakes.log"
+    headers = tmp_path / "headers.txt"
+    headers.write_text(FAKE_HEADERS, encoding="utf-8")
+    _write_fake_bins(bin_dir)
+
+    config_file = tmp_path / "config" / "docker-compose.yml"
+    nginx_vhost = tmp_path / "nginx" / "available" / "stroy.mostdef.ru"
+    current_json = tmp_path / "current.json"
+
+    # (1) apply A cleanly.
+    proc_a = _run_wrapper(_wrapper_env(tmp_path, bin_dir, log, headers, sha=shas["A"]))
+    assert proc_a.returncode == 0, f"stdout:\n{proc_a.stdout}\nstderr:\n{proc_a.stderr}"
+    assert "apply-ok" in proc_a.stdout
+    sentinel_a = config_file.read_bytes()
+    assert b"config A" in sentinel_a
+    nginx_a = nginx_vhost.read_bytes()
+
+    # (2) apply B with the one-off migration failing while compose up stays
+    # healthy: the wrapper must report the migration failure reason and roll
+    # back to A.
+    env_b = _wrapper_env(tmp_path, bin_dir, log, headers, sha=shas["B"])
+    env_b["FAKE_DOCKER_COMPOSE_RUN_FAIL"] = "1"
+    proc_b = _run_wrapper(env_b)
+    assert proc_b.returncode != 0
+    assert "alembic upgrade head failed" in proc_b.stderr
+    assert "docker compose up failed" not in proc_b.stderr
+    # The migration ran as a one-off compose run from the new API image.
+    fake_calls = log.read_text(encoding="utf-8")
+    assert "docker compose" in fake_calls
+    assert "alembic upgrade head" in fake_calls
+    # Rollback path: candidate config + nginx restored to A.  The rollback's
+    # own compose up succeeds (only `run` is flagged), so the host is recorded
+    # as rolled back to the previous release.
+    assert config_file.read_bytes() == sentinel_a
+    assert nginx_vhost.read_bytes() == nginx_a
+    state = json.loads(current_json.read_text(encoding="utf-8"))
+    assert state["status"] == "rolled_back_to"
+    assert state["sha"] == shas["A"]
 
 
 # --------------------------------------------------------------------------- #
