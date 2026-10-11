@@ -48,6 +48,12 @@ certbot/nginx and is independent of every release.
      calls the root-owned wrapper: `receive-v1 <sha>`, `apply-v1 <sha>`,
      `status-v1`. `ssh-keyscan` is forbidden and never used.
 
+> **DB migrations** run as an explicit wrapper pre-switch step, not at container
+> start: `apply-v1` executes `alembic upgrade head` once via a one-off
+> `docker compose run --rm --no-deps -T api` from the newly loaded API image,
+> before `compose up`. Migrations are forward-only — a rollback restores the
+> previous code, not the schema (expand/contract within one release).
+
 Owner setup (one time): create the `production` environment (optionally with
 required reviewers / a wait timer) and set secrets `DEPLOY_SSH_KEY`,
 `DEPLOY_HOST`, `DEPLOY_USER`, plus repository variable `DEPLOY_KNOWN_HOSTS`

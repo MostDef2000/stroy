@@ -170,6 +170,23 @@ fail_pre_transition() {
     err "$reason"
 }
 
+# wait_api_health — the deploy health cycle: poll $HEALTH_URL (with the
+# production Host header) up to 30 attempts, 2s apart.  Single source of truth
+# for BOTH the normal deploy path and the post-rollback health check; returns
+# non-zero if the API never became ready (caller decides how to fail).
+wait_api_health() {
+    local attempt
+    for attempt in $(seq 1 30); do
+        if curl -fsS -m 5 -H "Host: $PUBLIC_HOST" "$HEALTH_URL" >/dev/null 2>&1; then
+            return 0
+        fi
+        if [ "$attempt" -ge 30 ]; then
+            return 1
+        fi
+        sleep 2
+    done
+}
+
 # rollback_previous <prev_sha> <nginx_backup> <config_backup> <compose_project>
 # Best-effort; never masks the caller.  Restores the PREVIOUS deploy config
 # (compose + nginx + symlinks) BEFORE bringing the previous image back up.
@@ -219,6 +236,18 @@ rollback_previous() {
         echo "WRAP: rollback nginx -t + reload ok"
     else
         echo "WRAP-ERR: rollback nginx -t/reload failed" >&2
+        rc=1
+    fi
+    # Post-rollback health: the SAME health cycle the normal deploy path uses
+    # (wait_api_health) — a rollback that brings the previous release up
+    # without it answering is not an accepted rollback.  Either outcome still
+    # means the DEPLOY failed (caller exits non-zero); a health failure also
+    # keeps rc=1 so current.json never records "rolled_back_to" for an
+    # unverified host state.
+    if wait_api_health; then
+        echo "ROLLBACK_ACCEPTED"
+    else
+        echo "ROLLBACK_FAILED reason=health_failed" >&2
         rc=1
     fi
     set -e
@@ -466,6 +495,30 @@ apply_v1() {
             "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
     export STROY_API_IMAGE="stroy-api:$sha"
+    # ---- (4a) explicit DB migration, pre-switch ---------------------------- #
+    # `alembic upgrade head` runs ONCE here, against the production DB, in a
+    # one-off container from the newly loaded + verified API image — NOT at
+    # container start (Dockerfile.api CMD only starts uvicorn now).  compose
+    # `run` reuses the api service definition (env incl. STROY_DATABASE_URL,
+    # networks, non-root user) so no secrets touch the wrapper's argv.
+    # --no-deps: postgres/redis/minio already run under this project and must
+    # not be reordered by a one-off; -T: no TTY under the forced command.
+    # MIGRATION SAFETY: migrations are forward-only — a rollback restores the
+    # previous CODE but not the schema.  Accepted under expand/contract
+    # discipline: within one release, the new code must work with the old
+    # schema (comment only; deliberately not enforced).
+    # TRANSITION WINDOW (one-time): until the previous prod image (built with
+    # the OLD CMD that ran alembic at container start) is superseded, a
+    # rollback to it can fail at startup (its alembic tree cannot resolve a
+    # revision stamped by a newer release).  Keep the first release after this
+    # change migration-free; the window closes after one successful deploy.
+    if ! docker compose -p "$compose_project" -f "$CONFIG_DIR/docker-compose.yml" \
+        --env-file "$ENV_FILE" --project-directory "$CONFIG_DIR" \
+        run --rm --no-deps -T api alembic upgrade head; then
+        fail_and_rollback "alembic upgrade head failed" "$prev" "$sha" \
+            "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+    fi
+    echo "WRAP: alembic upgrade head ok"
     if ! docker compose -p "$compose_project" -f "$CONFIG_DIR/docker-compose.yml" \
         --env-file "$ENV_FILE" --project-directory "$CONFIG_DIR" \
         up -d --no-build; then
@@ -551,16 +604,10 @@ apply_v1() {
     if ! systemctl reload nginx; then
         fail_and_rollback "systemctl reload nginx failed" "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
-    for attempt in $(seq 1 30); do
-        if curl -fsS -m 5 -H "Host: $PUBLIC_HOST" "$HEALTH_URL" >/dev/null 2>&1; then
-            break
-        fi
-        if [ "$attempt" -ge 30 ]; then
-            fail_and_rollback "api /health did not become ready" \
-                "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
-        fi
-        sleep 2
-    done
+    if ! wait_api_health; then
+        fail_and_rollback "api /health did not become ready" \
+            "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+    fi
     headers="$(curl -sk -m 20 -D - -o /dev/null -H "Host: $PUBLIC_HOST" "$PUBLIC_URL" || true)"
     code="$(printf '%s\n' "$headers" | head -1 | awk '{print $2}')"
     if [ "$code" != "200" ]; then
