@@ -14,6 +14,17 @@ import {
 } from "./sceneValidation";
 import type { SetupStatus } from "./setup";
 import type { SelectionContext } from "./surfaceEdits";
+import type {
+  ProgressAcceptPostBody,
+  ProgressAcceptResponse,
+  ProgressCompare,
+  ProgressDeviation,
+  ProgressDeviationPatchBody,
+  ProgressDeviationPostBody,
+  ProgressSnapshot,
+  ProgressSnapshotPostBody,
+  ProgressStage
+} from "./progress";
 
 // Re-exported so UI code can unwrap validation envelopes without importing
 // the pure module directly (api.ts stays the single browser-side surface).
@@ -822,6 +833,37 @@ export type BriefNotesPatch = {
   questions_to_discuss?: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// R12 renovation progress (#162): snapshots + planned-vs-observed deviations.
+// Wire types live in the pure progress module (unit-tested without a browser,
+// attachments.ts pattern); api.ts re-exports them so UI code keeps a single
+// import surface. Shapes cross-checked against services/progress.py views.
+// ---------------------------------------------------------------------------
+
+export type {
+  AcceptChangeCore,
+  AcceptCommandEnvelope,
+  ProgressAcceptPostBody,
+  ProgressAcceptResponse,
+  ProgressCompare,
+  ProgressCompareDeviation,
+  ProgressCompareTarget,
+  ProgressConfidence,
+  ProgressDeviation,
+  ProgressDeviationPatchBody,
+  ProgressDeviationPostBody,
+  ProgressDeviationStatus,
+  ProgressObservedKind,
+  ProgressPlannedRef,
+  ProgressProvenance,
+  ProgressSnapshot,
+  ProgressSnapshotPostBody,
+  ProgressStage
+} from "./progress";
+
+// Re-exported for the panel's error mapping (single browser-side surface).
+export { ACCEPT_UNAVAILABLE_HINT } from "./progress";
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
 
@@ -1366,6 +1408,98 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch)
     });
+  },
+
+  // R12 renovation progress (#162): snapshots + deviations under
+  // /projects/{id}/progress. Same project-child conventions as variants —
+  // writes via request() (CSRF), status-sensitive reads resolve 404 to null,
+  // 204 deletes resolve to undefined.
+  listProgressSnapshots(
+    projectId: string,
+    filters: { stage?: ProgressStage; include_deleted?: boolean } = {}
+  ) {
+    const params = new URLSearchParams();
+    if (filters.stage) params.set("stage", filters.stage);
+    if (filters.include_deleted) params.set("include_deleted", "true");
+    const query = params.toString();
+    return request<ProgressSnapshot[]>(
+      `/api/v1/projects/${projectId}/progress/snapshots${query ? `?${query}` : ""}`
+    );
+  },
+
+  createProgressSnapshot(projectId: string, body: ProgressSnapshotPostBody) {
+    return request<ProgressSnapshot>(
+      `/api/v1/projects/${projectId}/progress/snapshots`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  },
+
+  // Status-sensitive like getVariant(): a snapshot deleted in another tab
+  // must not crash a refetch — 404 resolves to null. The detail view carries
+  // snapshot + deviations[]; the compare endpoint serves the review summary.
+  async getProgressSnapshot(
+    projectId: string,
+    snapshotId: string
+  ): Promise<ProgressSnapshot | null> {
+    const response = await fetch(
+      apiPath(`/api/v1/projects/${projectId}/progress/snapshots/${snapshotId}`),
+      { credentials: "include" }
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+    return response.json();
+  },
+
+  deleteProgressSnapshot(projectId: string, snapshotId: string) {
+    return request<void>(
+      `/api/v1/projects/${projectId}/progress/snapshots/${snapshotId}`,
+      { method: "DELETE" }
+    );
+  },
+
+  createProgressDeviation(
+    projectId: string,
+    snapshotId: string,
+    body: ProgressDeviationPostBody
+  ) {
+    return request<ProgressDeviation>(
+      `/api/v1/projects/${projectId}/progress/snapshots/${snapshotId}/deviations`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  },
+
+  patchProgressDeviation(
+    projectId: string,
+    deviationId: string,
+    patch: ProgressDeviationPatchBody
+  ) {
+    return request<ProgressDeviation>(
+      `/api/v1/projects/${projectId}/progress/deviations/${deviationId}`,
+      { method: "PATCH", body: JSON.stringify(patch) }
+    );
+  },
+
+  // Accept a confirmed deviation: applies the embedded scene change (canonical
+  // or approved-variant CAS target) and marks the deviation accepted. 409s
+  // (deviation_not_confirmed, variant_not_approved, variant_archived,
+  // revision_conflict) surface as thrown errors for the panel to map.
+  acceptProgressDeviation(
+    projectId: string,
+    deviationId: string,
+    body: ProgressAcceptPostBody
+  ) {
+    return request<ProgressAcceptResponse>(
+      `/api/v1/projects/${projectId}/progress/deviations/${deviationId}/accept`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  },
+
+  // Review payload for one snapshot: pinned-target scene vs every deviation
+  // (planned.dangling flags) + the per-status summary.
+  compareProgressSnapshot(projectId: string, snapshotId: string) {
+    return request<ProgressCompare>(
+      `/api/v1/projects/${projectId}/progress/snapshots/${snapshotId}/compare`
+    );
   },
 
   applySceneCommand(projectId: string, command: Record<string, unknown>) {

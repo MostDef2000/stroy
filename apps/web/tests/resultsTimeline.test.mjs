@@ -43,6 +43,10 @@ test("humanizeOperations maps known operations joined with a middle dot", () => 
   assert.equal(humanizeOperations(["replace_object_from_reference"]), "замена по референсу");
 });
 
+test("humanizeOperations labels the R12 accept_confirmed_deviation operation", () => {
+  assert.equal(humanizeOperations(["accept_confirmed_deviation"]), "принятие отклонения");
+});
+
 test("humanizeOperations skips create_design_revision bookkeeping", () => {
   assert.equal(
     humanizeOperations(["add_object", "create_design_revision"]),

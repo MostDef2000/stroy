@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImagePreview } from "./ImagePreview";
+import { ProgressSnapshotsPanel } from "./ProgressSnapshotsPanel";
 import { BRIEF_SHARE_HINT, renderDetailLabel, statusLabel } from "./copy";
 import {
   CHECK_SEVERITIES,
@@ -1940,6 +1941,17 @@ export function DesignPanel({
           )}
         </section>
       </div>
+
+      {/* R12 (#162): renovation progress — snapshots + deviation review. Full-
+          width section AFTER the master-detail workspace (kept LAST so the
+          history/detail layout above is untouched). Variants are already
+          fetched here, so they hand down for compare-target picking. */}
+      <ProgressSnapshotsPanel
+        projectId={projectId}
+        variants={variants}
+        currentRevisionId={currentRevisionId}
+        openLightbox={openLightbox}
+      />
 
       <ImageLightbox
         open={lightbox !== null}

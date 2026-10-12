@@ -54,6 +54,9 @@ const OPERATION_LABELS: Record<string, string | null> = {
   set_material: "смена материала",
   replace_object_from_reference: "замена по референсу",
   set_light_intent: "настройка света",
+  // R12 (#162): accept-confirmed-deviation rides only the deviation accept
+  // endpoint; when such a command surfaces in job results it reads as this.
+  accept_confirmed_deviation: "принятие отклонения",
   create_design_revision: null
 };
 
