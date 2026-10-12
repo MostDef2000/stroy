@@ -5598,3 +5598,288 @@ textarea.invalid {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---------------------------------------------------------------------------
+   R12 (#162) renovation progress: snapshots + deviation review. Token-only
+   block at EOF: every color/space/type value comes from the --st-* system
+   (#139); chip/badge/pill language mirrors the R4 variant-bar and .tag
+   patterns. Status tones: open → warn (needs review), confirmed →
+   processing (in flight), accepted → ok (done), discarded → muted.
+--------------------------------------------------------------------------- */
+.progress-panel {
+  margin-top: var(--st-space-4);
+}
+.progress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--st-space-2) var(--st-space-3);
+}
+.progress-head h2 {
+  margin: 0;
+}
+.progress-create {
+  margin-top: var(--st-space-3);
+  padding: var(--st-space-3);
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-3);
+}
+.progress-create-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-3);
+}
+.progress-create-row .progress-create-field {
+  flex: 1 1 200px;
+}
+.progress-create-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-1);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+.progress-create-field > span {
+  font-size: var(--st-text-xs);
+}
+.progress-create-actions {
+  display: flex;
+  gap: var(--st-space-2);
+}
+.progress-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-1) var(--st-space-3);
+  max-height: 132px;
+  overflow-y: auto;
+  padding: var(--st-space-2);
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-color-field);
+}
+.progress-pick-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--st-space-1);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text);
+  cursor: pointer;
+}
+.progress-list {
+  margin-top: var(--st-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-3);
+}
+.progress-card {
+  border: 1px solid var(--st-color-border);
+  border-radius: var(--st-radius);
+  background: var(--st-color-surface-inset);
+  padding: var(--st-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+}
+.progress-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--st-space-2);
+}
+.progress-card-name {
+  font-size: var(--st-text-base);
+  font-weight: var(--st-weight-semibold);
+}
+.progress-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-2);
+  margin-left: auto;
+}
+.progress-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--st-space-2);
+}
+.progress-target {
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+.progress-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--st-color-border);
+  background: var(--st-color-processing-bg);
+  color: var(--st-color-processing);
+  font-size: var(--st-text-xs);
+  white-space: nowrap;
+}
+.progress-badge--completed {
+  background: var(--st-color-ok-bg);
+  color: var(--st-color-ok);
+  border-color: var(--st-color-ok-border);
+}
+.progress-badge--current {
+  background: var(--st-color-warn-bg);
+  color: var(--st-color-warn);
+  border-color: var(--st-color-warn-border);
+}
+.progress-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-1) var(--st-space-2);
+}
+.progress-count {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--st-text-xs);
+  background: var(--st-color-processing-bg);
+  color: var(--st-color-processing);
+  white-space: nowrap;
+}
+.progress-count--open {
+  background: var(--st-color-warn-bg);
+  color: var(--st-color-warn);
+}
+.progress-count--confirmed {
+  background: var(--st-color-field);
+  color: var(--st-color-text);
+  border: 1px solid var(--st-color-border-strong);
+}
+.progress-count--accepted {
+  background: var(--st-color-ok-bg);
+  color: var(--st-color-ok);
+}
+.progress-count--discarded {
+  background: transparent;
+  color: var(--st-color-muted-text);
+}
+.progress-note {
+  margin: 0;
+  font-size: var(--st-text-sm);
+  color: var(--st-color-muted-text);
+  white-space: pre-wrap;
+}
+.progress-photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-2);
+}
+.progress-compare {
+  margin-top: var(--st-space-2);
+  padding-top: var(--st-space-3);
+  border-top: 1px solid var(--st-color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+}
+.progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-1) var(--st-space-2);
+}
+.progress-notice {
+  margin: 0;
+  color: var(--st-color-ok);
+}
+.progress-dev {
+  border: 1px solid var(--st-color-border-subtle);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-color-field);
+  padding: var(--st-space-2) var(--st-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+}
+.progress-dev--dangling {
+  border-color: var(--st-color-warn-border);
+}
+.progress-dev--accepted {
+  opacity: 0.82;
+}
+.progress-dev-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--st-space-2);
+}
+.progress-status {
+  flex: 0 0 auto;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--st-text-xs);
+  white-space: nowrap;
+  background: var(--st-color-processing-bg);
+  color: var(--st-color-processing);
+}
+.progress-status--open {
+  background: var(--st-color-warn-bg);
+  color: var(--st-color-warn);
+}
+.progress-status--confirmed {
+  background: var(--st-color-field);
+  color: var(--st-color-text);
+  border: 1px solid var(--st-color-border-strong);
+}
+.progress-status--accepted {
+  background: var(--st-color-ok-bg);
+  color: var(--st-color-ok);
+}
+.progress-status--discarded {
+  background: transparent;
+  color: var(--st-color-muted-text);
+  border: 1px solid var(--st-color-border-subtle);
+}
+.progress-dev-line {
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text);
+  min-width: 0;
+}
+.progress-dev-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-1) var(--st-space-2);
+}
+.progress-dev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--st-space-2);
+}
+.progress-dev-trigger {
+  margin-left: auto;
+}
+.progress-accepted-info {
+  font-size: var(--st-text-sm);
+  color: var(--st-color-ok);
+}
+.progress-accept {
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-space-2);
+  padding: var(--st-space-2);
+  border: 1px solid var(--st-color-border-strong);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-color-surface-inset);
+}
+.progress-accept .hint {
+  margin: 0;
+}
+.progress-accept-target {
+  display: flex;
+  align-items: center;
+  gap: var(--st-space-2);
+  font-size: var(--st-text-sm);
+  color: var(--st-color-text-secondary);
+}
+.progress-accept-hint {
+  margin: 0;
+}
