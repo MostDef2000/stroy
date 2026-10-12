@@ -164,6 +164,11 @@ class CommandOperation(StrEnum):
     REPLACE_OBJECT_FROM_REFERENCE = "replace_object_from_reference"
     MOVE_OBJECT = "move_object"
     SET_LIGHT_INTENT = "set_light_intent"
+    # R12 (#162): accept-confirmed-deviation wrapper. It carries the
+    # accepted change EMBEDDED in parameters.change and delegates to the
+    # regular per-operation logic; nesting it again is rejected at runtime
+    # (and one level deep in the JSON schema).
+    ACCEPT_CONFIRMED_DEVIATION = "accept_confirmed_deviation"
 
 
 class CommandOrigin(StrEnum):

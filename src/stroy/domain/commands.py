@@ -165,4 +165,31 @@ def apply_command(scene: Scene, command: DesignCommand) -> Scene:
             target.metadata["temperature_k"] = command.parameters["temperature_k"]
         return result
 
+    if op is CommandOperation.ACCEPT_CONFIRMED_DEVIATION:
+        # R12 envelope-only operation: it never mutates the scene itself, it
+        # validates its parameters shape and delegates to the EMBEDDED change
+        # through the same per-operation logic above. Recursion into accept
+        # is rejected (an accept cannot carry another accept).
+        deviation_id = command.parameters.get("deviation_id")
+        if not isinstance(deviation_id, str) or not deviation_id:
+            raise CommandRejected(
+                "accept_confirmed_deviation requires parameters.deviation_id"
+            )
+        raw_change = command.parameters.get("change")
+        if not isinstance(raw_change, dict):
+            raise CommandRejected(
+                "accept_confirmed_deviation requires parameters.change"
+            )
+        try:
+            change = DesignCommand.model_validate(raw_change)
+        except ValueError as exc:
+            raise CommandRejected(
+                f"accept_confirmed_deviation has an invalid embedded change: {exc}"
+            ) from exc
+        if change.operation is CommandOperation.ACCEPT_CONFIRMED_DEVIATION:
+            raise CommandRejected(
+                "embedded change must not be accept_confirmed_deviation"
+            )
+        return apply_command(result, change)
+
     raise CommandRejected(f"unsupported operation: {op}")

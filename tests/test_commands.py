@@ -395,3 +395,81 @@ def test_set_state_design_allowed_with_remove_intent() -> None:
     )
     sofa = next(entity for entity in result.entities if entity.id == "object.sofa.main")
     assert sofa.state is EntityState.DESIGN
+
+
+# ---------------------------------------------------------------------------
+# R12 (#162): accept_confirmed_deviation ENGINE branch (apply_command) —
+# envelope-shape rejects exercised directly against the engine, not the API.
+
+
+def _accept_envelope(**parameter_overrides) -> DesignCommand:
+    """Engine-level accept envelope: deviation_id + embedded plain change."""
+    parameters = {
+        "deviation_id": "deviation-1",
+        "change": {
+            "command_id": "cmd-embedded",
+            "base_revision_id": "rev-1",
+            "operation": "set_color",
+            "target_id": "object.sofa.main",
+            "parameters": {"color": "#D7C4AB"},
+            "origin": "user",
+        },
+    }
+    parameters.update(parameter_overrides)
+    return DesignCommand(
+        command_id="cmd-accept-engine",
+        base_revision_id="rev-1",
+        operation="accept_confirmed_deviation",
+        # Must resolve to a real entity: the engine validates the target
+        # BEFORE dispatching to the accept branch.
+        target_id="object.sofa.main",
+        parameters=parameters,
+        origin="user",
+    )
+
+
+def test_accept_envelope_requires_deviation_id() -> None:
+    envelope = _accept_envelope()
+    del envelope.parameters["deviation_id"]
+    with pytest.raises(CommandRejected, match="deviation_id"):
+        apply_command(scene(), envelope)
+
+
+def test_accept_envelope_requires_change() -> None:
+    envelope = _accept_envelope()
+    del envelope.parameters["change"]
+    with pytest.raises(CommandRejected, match="change"):
+        apply_command(scene(), envelope)
+
+
+def test_accept_envelope_rejects_embedded_accept() -> None:
+    envelope = _accept_envelope(
+        change={
+            "command_id": "cmd-nested",
+            "base_revision_id": "rev-1",
+            "operation": "accept_confirmed_deviation",
+            "target_id": "room.living",
+            "parameters": {},
+            "origin": "user",
+        }
+    )
+    with pytest.raises(CommandRejected, match="embedded change"):
+        apply_command(scene(), envelope)
+
+
+def test_accept_envelope_propagates_embedded_lock_rejection() -> None:
+    # The engine delegates to the embedded change through the same logic —
+    # a lock-violating change is rejected by the ENGINE branch (not the API
+    # envelope validator).
+    envelope = _accept_envelope(
+        change={
+            "command_id": "cmd-embedded",
+            "base_revision_id": "rev-1",
+            "operation": "move_object",
+            "target_id": "surface.wall.living.north",
+            "parameters": {"translation_mm": [1, 2, 3]},
+            "origin": "agent",
+        }
+    )
+    with pytest.raises(CommandRejected, match="locked"):
+        apply_command(scene(), envelope)

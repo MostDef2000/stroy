@@ -71,8 +71,31 @@ from stroy.services.variants import (
     variant_lineage_ids,
     variant_view,
 )
+from stroy.services.progress import (
+    ProgressError,
+    accept_deviation,
+    compare_snapshot,
+    create_deviation,
+    create_snapshot,
+    deviation_counts,
+    deviation_view,
+    get_snapshot,
+    list_snapshot_deviations,
+    list_snapshots,
+    patch_deviation,
+    snapshot_view,
+    soft_delete_snapshot,
+)
 from stroy.domain.commands import CommandConflict, CommandRejected
-from stroy.domain.models import Camera, DesignCommand, EntityIntent, EntityKind, Scene, SceneEntity
+from stroy.domain.models import (
+    Camera,
+    CommandOperation,
+    DesignCommand,
+    EntityIntent,
+    EntityKind,
+    Scene,
+    SceneEntity,
+)
 from stroy.domain.plan import PlanDraft
 from stroy.security import random_token, sha256_text, verify_password
 from stroy.services.agent import apply_design_agent_result
@@ -145,6 +168,22 @@ def _domain_conflict(exc: ValueError) -> HTTPException:
         status_code=409,
         detail={"code": code, "detail": str(exc)},
     )
+
+
+def _reject_accept_operation(command: DesignCommand) -> None:
+    """R12 (#162): ``accept_confirmed_deviation`` rides ONLY the progress
+    deviation accept endpoint — generic command routes must never apply it."""
+    if command.operation is CommandOperation.ACCEPT_CONFIRMED_DEVIATION:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "use_deviation_accept_endpoint",
+                "detail": (
+                    "accept_confirmed_deviation is restricted to the progress "
+                    "deviation accept endpoint"
+                ),
+            },
+        )
 
 
 # Room shell kinds are always off-limits for the image-edit pipeline.
@@ -520,6 +559,93 @@ class BudgetItemPatch(BaseModel):
     currency: str | None = Field(default=None, max_length=12)
     quantity: float | None = Field(default=None, ge=0)
     metadata: dict[str, Any] | None = None
+
+
+class ProgressCompareTarget(BaseModel):
+    """R12: what a progress snapshot is pinned against. Omitted → the
+    canonical scene's latest revision is pinned ONCE (never re-resolved)."""
+
+    kind: Literal["canonical", "variant"] = "canonical"
+    variant_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_variant_target(self) -> "ProgressCompareTarget":
+        if self.kind == "variant" and not self.variant_id:
+            raise ValueError("variant compare target requires variant_id")
+        return self
+
+
+class ProgressSnapshotCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    stage: Literal["original", "demolition", "rough", "fitout", "current", "completed"]
+    stage_label: str | None = Field(default=None, max_length=120)
+    # ISO datetime (required): when the site state was captured.
+    captured_at: datetime
+    provenance: Literal["observed", "manually_measured", "model_inferred", "confirmed"] = (
+        "observed"
+    )
+    note: str | None = Field(default=None, max_length=8000)
+    # Attachment rows of THIS project (validated project-scoped → 404).
+    attachment_ids: list[str] = Field(default_factory=list)
+    compare_target: ProgressCompareTarget | None = None
+
+
+class ProgressDeviationPlanned(BaseModel):
+    target_type: Literal["scene", "room", "entity"]
+    # Dangling ids are allowed (compare surfaces them as "dangling").
+    entity_id: str | None = Field(default=None, max_length=255)
+    room_id: str | None = Field(default=None, max_length=255)
+    property_path: str | None = Field(default=None, max_length=255)
+    value: Any = None
+
+
+class ProgressDeviationObserved(BaseModel):
+    kind: Literal["missing", "unexpected", "property_diff", "state_diff", "note"]
+    value: Any
+
+
+class ProgressDeviationCreate(BaseModel):
+    planned: ProgressDeviationPlanned
+    observed: ProgressDeviationObserved
+    # accepted is NOT creatable — reachable only via the accept endpoint.
+    status: Literal["open", "confirmed", "discarded"] = "open"
+    provenance: Literal["observed", "manually_measured", "model_inferred", "confirmed"]
+    confidence: Literal["low", "medium", "high"]
+    evidence_attachment_ids: list[str] = Field(default_factory=list)
+    note: str | None = Field(default=None, max_length=8000)
+
+
+class ProgressDeviationPatch(BaseModel):
+    # accepted is not patchable (immutable; accept endpoint only).
+    status: Literal["open", "confirmed", "discarded"] | None = None
+    provenance: (
+        Literal["observed", "manually_measured", "model_inferred", "confirmed"] | None
+    ) = None
+    confidence: Literal["low", "medium", "high"] | None = None
+    observed: ProgressDeviationObserved | None = None
+    note: str | None = Field(default=None, max_length=8000)
+
+
+class ProgressAcceptTarget(BaseModel):
+    kind: Literal["canonical", "variant"]
+    variant_id: str | None = Field(default=None, min_length=1)
+    # Optimistic-lock head the caller observed (required for variant targets).
+    expected_head_revision_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_variant_target(self) -> "ProgressAcceptTarget":
+        if self.kind == "variant" and not (
+            self.variant_id and self.expected_head_revision_id
+        ):
+            raise ValueError(
+                "variant accept target requires variant_id and expected_head_revision_id"
+            )
+        return self
+
+
+class ProgressAcceptRequest(BaseModel):
+    target: ProgressAcceptTarget
+    command: DesignCommand
 
 
 class JobCreate(BaseModel):
@@ -1184,6 +1310,7 @@ async def scene_command(
     session: DbSession,
     owner: OwnerSession,
 ):
+    _reject_accept_operation(command)
     try:
         revision = await apply_scene_command(
             session,
@@ -1915,6 +2042,13 @@ def _budget_http_error(exc: BudgetError) -> HTTPException:
     )
 
 
+def _progress_http_error(exc: ProgressError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "detail": exc.detail},
+    )
+
+
 async def _resolve_variant_scoped_revision(
     session: AsyncSession,
     project_id: str,
@@ -2135,6 +2269,7 @@ async def variant_command(
 ):
     # Variant-scoped application reusing the existing command engine: same
     # ops, same locks/intents. The canonical scene is never read or written.
+    _reject_accept_operation(payload.command)
     try:
         revision = await apply_variant_command(
             session,
@@ -2252,6 +2387,181 @@ async def budget_item_delete(
     if not deleted:
         raise HTTPException(status_code=404, detail="budget item not found")
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Renovation progress: snapshots + planned-vs-actual deviations (R12, #162)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/progress/snapshots",
+    dependencies=[Depends(require_owner)],
+)
+async def progress_snapshot_list(
+    project_id: str,
+    session: DbSession,
+    stage: str | None = None,
+    include_deleted: bool = False,
+):
+    rows = await list_snapshots(
+        session, project_id, stage=stage, include_deleted=include_deleted
+    )
+    counts = await deviation_counts(session, project_id, [row.id for row in rows])
+    views = []
+    for row in rows:
+        view = snapshot_view(row)
+        view["deviation_counts"] = counts.get(row.id, {})
+        views.append(view)
+    return views
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/progress/snapshots",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def progress_snapshot_create(
+    project_id: str,
+    payload: ProgressSnapshotCreate,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        row = await create_snapshot(session, project_id, payload.model_dump())
+    except ProgressError as exc:
+        raise _progress_http_error(exc) from exc
+    return snapshot_view(row)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/progress/snapshots/{snapshot_id}/compare",
+    dependencies=[Depends(require_owner)],
+)
+async def progress_snapshot_compare(
+    project_id: str, snapshot_id: str, session: DbSession
+):
+    snapshot = await get_snapshot(session, project_id, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    try:
+        return await compare_snapshot(session, project_id, snapshot)
+    except ProgressError as exc:
+        raise _progress_http_error(exc) from exc
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/progress/snapshots/{snapshot_id}",
+    dependencies=[Depends(require_owner)],
+)
+async def progress_snapshot_get(project_id: str, snapshot_id: str, session: DbSession):
+    snapshot = await get_snapshot(session, project_id, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    view = snapshot_view(snapshot)
+    view["deviations"] = [
+        deviation_view(row)
+        for row in await list_snapshot_deviations(session, project_id, snapshot.id)
+    ]
+    return view
+
+
+@router.delete(
+    "/api/v1/projects/{project_id}/progress/snapshots/{snapshot_id}",
+    status_code=204,
+    dependencies=[Depends(require_csrf)],
+)
+async def progress_snapshot_delete(
+    project_id: str, snapshot_id: str, session: DbSession, owner: OwnerSession
+):
+    deleted = await soft_delete_snapshot(session, project_id, snapshot_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/progress/snapshots/{snapshot_id}/deviations",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def progress_deviation_create(
+    project_id: str,
+    snapshot_id: str,
+    payload: ProgressDeviationCreate,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    snapshot = await get_snapshot(session, project_id, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    try:
+        row = await create_deviation(session, project_id, snapshot, payload.model_dump())
+    except ProgressError as exc:
+        raise _progress_http_error(exc) from exc
+    return deviation_view(row)
+
+
+@router.patch(
+    "/api/v1/projects/{project_id}/progress/deviations/{deviation_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def progress_deviation_patch(
+    project_id: str,
+    deviation_id: str,
+    payload: ProgressDeviationPatch,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        row = await patch_deviation(
+            session, project_id, deviation_id, payload.model_dump(exclude_unset=True)
+        )
+    except ProgressError as exc:
+        raise _progress_http_error(exc) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="deviation not found")
+    return deviation_view(row)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/progress/deviations/{deviation_id}/accept",
+    dependencies=[Depends(require_csrf)],
+)
+async def progress_deviation_accept(
+    project_id: str,
+    deviation_id: str,
+    payload: ProgressAcceptRequest,
+    session: DbSession,
+    owner: OwnerSession,
+):
+    try:
+        deviation, revision = await accept_deviation(
+            session,
+            project_id,
+            deviation_id,
+            target_kind=payload.target.kind,
+            variant_id=payload.target.variant_id,
+            expected_head_revision_id=payload.target.expected_head_revision_id,
+            command=payload.command,
+        )
+    except ProgressError as exc:
+        raise _progress_http_error(exc) from exc
+    except VariantError as exc:
+        raise _variant_http_error(exc) from exc
+    except (ValueError, CommandRejected) as exc:
+        raise _domain_conflict(exc) from exc
+    return {
+        "deviation": deviation_view(deviation),
+        "revision": {
+            "revision_id": revision.id,
+            "parent_revision_id": revision.parent_revision_id,
+            "content_hash": revision.content_hash,
+            "scene": revision.scene_json,
+        },
+    }
 
 
 @router.post(
