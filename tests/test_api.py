@@ -4340,3 +4340,116 @@ async def test_design_instruction_selection_context(settings):
                 "Выбран объект: «wall» (wall, id surface.wall.living.north)."
                 in context_message["content"]
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/v1/projects/{pid}/variants",
+        "/api/v1/projects/{pid}/progress/snapshots",
+        "/api/v1/projects/{pid}/scene/revisions",
+        "/api/v1/projects/{pid}/assets",
+        "/api/v1/projects/{pid}/geometry-diagnostics",
+        "/api/v1/projects/{pid}/renders",
+        "/api/v1/projects/{pid}/generations",
+        "/api/v1/projects/{pid}/style-profiles",
+        "/api/v1/projects/{pid}/jobs",
+    ],
+)
+async def test_unknown_project_is_404_on_collections(settings, path_template):
+    """Prod acceptance probe (2026-10-12) failed: GET snapshots of an unknown
+    project returned 200 [] instead of 404. Adversarial sweep found the same
+    missing project-existence guard on 7 more collection lists (pre-existing
+    since R4); scene_initialize's orphan-write gap is covered by
+    test_unknown_project_scene_init_writes_nothing (it needs a valid body to
+    get past request validation and reach the guard). Every project-scoped
+    collection list now 404s with the house detail string. Routes that
+    already 404/409 via project-scoped row fetches (scene GET, cameras,
+    budget, plan, …) are intentionally not re-guarded here."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await login(client)
+
+            missing = uuid4()
+            path = path_template.format(pid=missing)
+            response = await client.get(path)
+            assert response.status_code == 404, f"GET {path}: {response.text}"
+            assert response.json()["detail"] == "project not found"
+
+
+@pytest.mark.asyncio
+async def test_unknown_project_scene_init_writes_nothing(settings):
+    """The scene_initialize guard must prevent the orphan write entirely:
+    after a 404, no SceneRevisionRow for the unknown project may exist."""
+    from sqlalchemy import select as sa_select
+
+    from stroy.db.models import SceneRevisionRow
+
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+
+            missing = uuid4()
+            scene = {
+                "scene_id": "scene.main",
+                "project_id": str(missing),
+                "entities": [],
+                "cameras": [],
+            }
+            response = await client.post(
+                f"/api/v1/projects/{missing}/scene",
+                json=scene,
+                headers={"X-CSRF-Token": csrf},
+            )
+            assert response.status_code == 404
+            assert response.json()["detail"] == "project not found"
+
+            async with app.state.session_factory() as db_session:
+                orphans = (
+                    await db_session.execute(
+                        sa_select(SceneRevisionRow).where(
+                            SceneRevisionRow.project_id == str(missing)
+                        )
+                    )
+                ).scalars().all()
+            assert orphans == []
+
+
+@pytest.mark.asyncio
+async def test_scene_double_initialize_is_409(settings):
+    """Pin the pre-existing 409 on re-initialize: the new unknown-project
+    guard (404) must not shadow the CommandConflict path for an existing
+    project whose scene is already initialized."""
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            csrf = await login(client)
+            headers = {"X-CSRF-Token": csrf}
+
+            project = await client.post(
+                "/api/v1/projects", json={"name": "Double init"}, headers=headers
+            )
+            project_id = project.json()["id"]
+            scene = {
+                "scene_id": "scene.main",
+                "project_id": project_id,
+                "entities": [],
+                "cameras": [],
+            }
+            first = await client.post(
+                f"/api/v1/projects/{project_id}/scene", json=scene, headers=headers
+            )
+            assert first.status_code == 201
+            second = await client.post(
+                f"/api/v1/projects/{project_id}/scene", json=scene, headers=headers
+            )
+            assert second.status_code == 409

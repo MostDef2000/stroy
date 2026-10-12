@@ -1237,6 +1237,11 @@ async def design_brief_get(
 
 @router.post("/api/v1/projects/{project_id}/scene", status_code=201, dependencies=[Depends(require_csrf)])
 async def scene_initialize(project_id: str, scene: Scene, session: DbSession, owner: OwnerSession):
+    # Unknown project → 404 (not 201 + orphan revision): sqlite runs without
+    # enforced FKs, so without this guard a scene for a nonexistent project
+    # would be committed and be uncleanable via the API.
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     try:
         revision = await initialize_scene(session, project_id, scene)
     except (ValueError, CommandRejected) as exc:
@@ -1262,6 +1267,8 @@ async def scene_get(project_id: str, session: DbSession):
     dependencies=[Depends(require_owner)],
 )
 async def scene_revisions(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_revisions(session, project_id)
     return [
         {
@@ -1489,6 +1496,8 @@ async def asset_upload(
     dependencies=[Depends(require_owner)],
 )
 async def asset_list(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     result = await session.execute(
         select(AssetRow)
         .where(AssetRow.project_id == project_id)
@@ -2127,6 +2136,11 @@ async def variant_list(
     status: str | None = None,
     include_archived: bool = False,
 ):
+    # Same project-existence guard as attachment_list: an unknown project is
+    # 404, not an empty variant list (pre-existing gap since R4, found while
+    # investigating the R12 acceptance probe failure).
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_variants(
         session, project_id, status=status, include_archived=include_archived
     )
@@ -2404,6 +2418,10 @@ async def progress_snapshot_list(
     stage: str | None = None,
     include_deleted: bool = False,
 ):
+    # Unknown project → 404, not an empty list (list endpoints must not
+    # double as project-existence oracles; same guard as create/attachments).
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_snapshots(
         session, project_id, stage=stage, include_deleted=include_deleted
     )
@@ -2628,6 +2646,8 @@ async def geometry_diagnostic_create(
     dependencies=[Depends(require_owner)],
 )
 async def geometry_diagnostic_list(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_geometry_diagnostics(session, project_id)
     return [
         {
@@ -2732,6 +2752,8 @@ async def render_create(
     dependencies=[Depends(require_owner)],
 )
 async def render_list(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_render_manifests(session, project_id)
     return [
         {
@@ -3388,6 +3410,8 @@ async def generation_create(
     dependencies=[Depends(require_owner)],
 )
 async def generation_list(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_generation_manifests(session, project_id)
     return [
         {
@@ -3486,6 +3510,8 @@ async def style_profile_analyze(
     dependencies=[Depends(require_owner)],
 )
 async def style_profile_list(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     rows = await list_style_profiles(session, project_id)
     return [
         {
@@ -3728,6 +3754,8 @@ async def job_create(
     dependencies=[Depends(require_owner)],
 )
 async def job_list(project_id: str, session: DbSession):
+    if await session.get(ProjectRow, project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
     result = await session.execute(
         select(JobRow)
         .where(JobRow.project_id == project_id)

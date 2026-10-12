@@ -1457,3 +1457,27 @@ async def test_progress_pinned_behaviors_on_deleted_targets(settings) -> None:
             assert (
                 accepted.json()["revision"]["revision_id"] != revision_id
             )  # a NEW canonical revision was created
+
+
+# ---------------------------------------------------------------------------
+# Acceptance-probe regression (prod, 2026-10-12): the snapshots LIST route
+# returned 200 [] for an unknown project — a project-existence oracle and a
+# contract breach (every other progress route 404s). Same guard as
+# create/attachments now.
+
+
+@pytest.mark.asyncio
+async def test_snapshot_list_unknown_project_is_404(settings) -> None:
+    app = create_app(settings=settings, object_store=MemoryObjectStore())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await login(client)
+
+            missing = uuid4()
+            response = await client.get(
+                f"/api/v1/projects/{missing}/progress/snapshots"
+            )
+            assert response.status_code == 404
+            assert response.json()["detail"] == "project not found"
