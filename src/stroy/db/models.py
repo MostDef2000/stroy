@@ -388,6 +388,119 @@ class BudgetItemRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ProgressSnapshotRow(Base):
+    """R12 (#162) renovation progress snapshot: a named site observation.
+
+    Pinned at creation against ONE immutable revision — the canonical latest
+    (``compare_target_kind="canonical"``) or an approved variant's head
+    (``kind="variant"``) — and never re-resolved to "latest" afterwards.
+    Progress data lives entirely outside ``scene_json`` (canonical_hash
+    semantics untouched). Soft delete via ``deleted_at``; attachments and
+    deviations are never touched by deletion.
+    """
+
+    __tablename__ = "progress_snapshots"
+    __table_args__ = (
+        # Composite lookups: newest-first listing, stage filter, and
+        # compare-target lineage (which snapshots pin a revision).
+        Index("ix_progress_snapshots_project_created", "project_id", "created_at"),
+        Index("ix_progress_snapshots_project_stage", "project_id", "stage"),
+        Index(
+            "ix_progress_snapshots_project_target",
+            "project_id",
+            "compare_target_kind",
+            "compare_target_revision_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    # original | demolition | rough | fitout | current | completed
+    # (validated in services.progress).
+    stage: Mapped[str] = mapped_column(String(20))
+    stage_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # observed | manually_measured | model_inferred | confirmed (same
+    # vocabulary as deviation provenance; validated in services.progress).
+    provenance: Mapped[str] = mapped_column(String(30), default="observed")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Plain string references to attachments.id (no FK): attachment deletion
+    # never cascades into snapshots; dangling ids are surfaced by the API.
+    attachment_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # canonical | variant.
+    compare_target_kind: Mapped[str] = mapped_column(String(20))
+    # Plain string reference to scene_variants.id (NULL for canonical).
+    compare_target_variant_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    # The pinned immutable revision: resolved ONCE at creation.
+    compare_target_revision_id: Mapped[str] = mapped_column(String(36))
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Soft delete: set by DELETE, hides the row from list/get unless
+    # include_deleted; attachments/deviations stay untouched.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class DeviationRow(Base):
+    """R12 (#162) planned-vs-actual deviation against a progress snapshot.
+
+    ``planned_revision_id`` is copied from the snapshot's pinned target at
+    creation (never re-resolved). ``planned_entity_id``/``planned_room_id``
+    are plain string references (no FK): dangling planned ids are allowed and
+    surfaced as ``dangling`` by compare. ``snapshot_id`` is likewise FK-less
+    so snapshot soft delete stays a row-only operation. ``accepted_*`` columns
+    are filled only by the accept endpoint; accepted rows are immutable.
+    """
+
+    __tablename__ = "deviations"
+    __table_args__ = (
+        # Composite lookups: per-snapshot status board, planned-entity lookup
+        # (which deviations touch an entity), accept lineage.
+        Index("ix_deviations_project_snapshot_status", "project_id", "snapshot_id", "status"),
+        Index("ix_deviations_project_planned_entity", "project_id", "planned_entity_id"),
+        Index("ix_deviations_project_accepted_revision", "project_id", "accepted_revision_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(36), index=True)
+    # open | confirmed | accepted | discarded (transition table + accept
+    # endpoint in services.progress).
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    planned_revision_id: Mapped[str] = mapped_column(String(36))
+    # scene | room | entity.
+    planned_target_type: Mapped[str] = mapped_column(String(20))
+    planned_entity_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    planned_room_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    planned_property_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    planned_value_json: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    # missing | unexpected | property_diff | state_diff | note.
+    observed_kind: Mapped[str] = mapped_column(String(30))
+    observed_value_json: Mapped[dict | list] = mapped_column(JSON)
+    # observed | manually_measured | model_inferred | confirmed.
+    provenance: Mapped[str] = mapped_column(String(30))
+    # low | medium | high.
+    confidence: Mapped[str] = mapped_column(String(20))
+    evidence_attachment_ids: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Filled by the accept endpoint only; NULL otherwise.
+    accepted_target_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    accepted_variant_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    accepted_command_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    accepted_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class AuthSessionRow(Base):
     __tablename__ = "auth_sessions"
 
