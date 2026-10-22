@@ -11,11 +11,12 @@
 #   command="/usr/local/sbin/stroy-deploy-wrapper",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding ssh-ed25519 AAAA... deploy@stroy
 #
 # BLAST RADIUS (honest): the wrapper itself runs as root, because it loads
-# docker images, writes /etc/nginx and reloads systemd units.  The forced
-# command is the ONLY channel the key grants, but every allowlisted verb runs
-# as root: compromise of the key is host-root compromise.  This single-owner
-# trust model is accepted (issue #130 validator).  Break-glass (direct root
-# console) is unchanged and independent of this key.
+# docker images and — in the default nginx edge mode — writes /etc/nginx and
+# reloads systemd units.  The forced command is the ONLY channel the key
+# grants, but every allowlisted verb runs as root: compromise of the key is
+# host-root compromise.  This single-owner trust model is accepted (issue
+# #130 validator).  Break-glass (direct root console) is unchanged and
+# independent of this key.
 #
 # The wrapper NEVER prints secret values and NEVER writes to the ACME webroot
 # /var/www/stroy-acme (owned by certbot/nginx).
@@ -30,12 +31,49 @@ CURRENT_JSON="${STROY_DEPLOY_CURRENT:-/var/opt/stroy-deploy/current.json}"
 CONFIG_DIR="${STROY_DEPLOY_CONFIG_DIR:-/opt/stroy-deploy/config}"
 CONFIG_HISTORY="${STROY_DEPLOY_CONFIG_HISTORY:-/var/opt/stroy-deploy/config-history}"
 ENV_FILE="${STROY_DEPLOY_ENV_FILE:-/opt/stroy/deploy/vps/.env}"
+# Edge mode: "nginx" (default) = single-host topology; the wrapper installs
+# the pinned nginx pair, runs nginx -t and reloads nginx. "external" = the TLS
+# edge lives OUTSIDE this host (e.g. a reverse proxy on a separate box); the
+# wrapper then never touches nginx/ACME/systemd-nginx, and the public ingress
+# check runs only when STROY_DEPLOY_PUBLIC_URL is explicitly set (127.0.0.1
+# no longer terminates the edge on this host).
+EDGE_MODE="${STROY_DEPLOY_EDGE:-nginx}"
+case "$EDGE_MODE" in
+    nginx | external) ;;
+    *)
+        echo "WRAP-ERR: invalid STROY_DEPLOY_EDGE: $EDGE_MODE (nginx|external)" >&2
+        exit 1
+        ;;
+esac
+# Web mode: "local" (default) = the wrapper publishes the web release under
+# $WEB_ROOT and flips the `current` symlink here. "external" = static files
+# are published outside this host (edge host serves them itself); the wrapper
+# skips the web extract/publish/symlink steps in apply-v1 AND the web repoint
+# in rollback.
+WEB_MODE="${STROY_DEPLOY_WEB:-local}"
+case "$WEB_MODE" in
+    local | external) ;;
+    *)
+        echo "WRAP-ERR: invalid STROY_DEPLOY_WEB: $WEB_MODE (local|external)" >&2
+        exit 1
+        ;;
+esac
 WEB_ROOT="${STROY_DEPLOY_WEB_ROOT:-/var/www/stroy.mostdef.ru}"
 ACME_ROOT="${STROY_DEPLOY_ACME_ROOT:-/var/www/stroy-acme}"
 NGINX_AVAILABLE="${STROY_DEPLOY_NGINX_AVAILABLE:-/etc/nginx/sites-available}"
 NGINX_ENABLED="${STROY_DEPLOY_NGINX_ENABLED:-/etc/nginx/sites-enabled}"
 NGINX_CONFD="${STROY_DEPLOY_NGINX_CONFD:-/etc/nginx/conf.d}"
-HEALTH_URL="${STROY_DEPLOY_HEALTH_URL:-http://127.0.0.1:8000/health}"
+# The API is reached on the host's loopback; the host port comes from the
+# same variable compose interpolates (STROY_API_HOST_PORT, see env.example).
+# An explicit STROY_DEPLOY_HEALTH_URL always wins.
+HEALTH_URL="${STROY_DEPLOY_HEALTH_URL:-http://127.0.0.1:${STROY_API_HOST_PORT:-8000}/health}"
+# PUBLIC_URL_SET marks an EXPLICITLY configured PUBLIC_URL; in external-edge
+# mode the ingress check is skipped unless the operator points the wrapper at
+# a reachable public URL.
+PUBLIC_URL_SET=0
+if [ -n "${STROY_DEPLOY_PUBLIC_URL+x}" ] && [ -n "$STROY_DEPLOY_PUBLIC_URL" ]; then
+    PUBLIC_URL_SET=1
+fi
 PUBLIC_URL="${STROY_DEPLOY_PUBLIC_URL:-https://127.0.0.1/}"
 PUBLIC_HOST="${STROY_DEPLOY_PUBLIC_HOST:-stroy.mostdef.ru}"
 ENVELOPE_CAP="${STROY_DEPLOY_ENVELOPE_CAP:-4294967296}"   # 4 GiB
@@ -202,22 +240,30 @@ rollback_previous() {
         echo "WRAP-ERR: rollback could not restore previous deploy config" >&2
         rc=1
     fi
-    if restore_nginx "$nginx_backup"; then
-        echo "WRAP: rollback restored previous nginx config"
-    else
-        echo "WRAP-ERR: rollback could not restore previous nginx config" >&2
-        rc=1
-    fi
-    if [ -n "$prev" ] && [ -d "$WEB_ROOT/releases/$prev" ]; then
-        if ln -sfn -- "$WEB_ROOT/releases/$prev" "$WEB_ROOT/current"; then
-            echo "WRAP: rollback repointed web current -> $prev"
+    if [ "$EDGE_MODE" = "nginx" ]; then
+        if restore_nginx "$nginx_backup"; then
+            echo "WRAP: rollback restored previous nginx config"
         else
-            echo "WRAP-ERR: rollback could not repoint web symlink" >&2
+            echo "WRAP-ERR: rollback could not restore previous nginx config" >&2
             rc=1
         fi
     else
-        echo "WRAP-ERR: rollback web symlink skipped (no previous release ${prev:-none})" >&2
-        rc=1
+        echo "WRAP: rollback skips nginx restore (edge external)"
+    fi
+    if [ "$WEB_MODE" = "local" ]; then
+        if [ -n "$prev" ] && [ -d "$WEB_ROOT/releases/$prev" ]; then
+            if ln -sfn -- "$WEB_ROOT/releases/$prev" "$WEB_ROOT/current"; then
+                echo "WRAP: rollback repointed web current -> $prev"
+            else
+                echo "WRAP-ERR: rollback could not repoint web symlink" >&2
+                rc=1
+            fi
+        else
+            echo "WRAP-ERR: rollback web symlink skipped (no previous release ${prev:-none})" >&2
+            rc=1
+        fi
+    else
+        echo "WRAP: rollback skips web symlink (web external)"
     fi
     if [ -n "$prev" ] && docker image inspect "stroy-api:$prev" >/dev/null 2>&1; then
         if STROY_API_IMAGE="stroy-api:$prev" docker compose -p "$compose_project" \
@@ -232,11 +278,15 @@ rollback_previous() {
         echo "WRAP-ERR: rollback compose skipped (image stroy-api:${prev:-none} absent)" >&2
         rc=1
     fi
-    if nginx -t && systemctl reload nginx; then
-        echo "WRAP: rollback nginx -t + reload ok"
+    if [ "$EDGE_MODE" = "nginx" ]; then
+        if nginx -t && systemctl reload nginx; then
+            echo "WRAP: rollback nginx -t + reload ok"
+        else
+            echo "WRAP-ERR: rollback nginx -t/reload failed" >&2
+            rc=1
+        fi
     else
-        echo "WRAP-ERR: rollback nginx -t/reload failed" >&2
-        rc=1
+        echo "WRAP: rollback skips nginx -t/reload (edge external)"
     fi
     # Post-rollback health: the SAME health cycle the normal deploy path uses
     # (wait_api_health) — a rollback that brings the previous release up
@@ -339,7 +389,10 @@ apply_v1() {
     local compose_project expected_web_sha actual_web_sha
 
     mkdir -p "$RELEASES_DIR" "$CONFIG_HISTORY" "$CONFIG_DIR" "$WEB_ROOT/releases" \
-        "$NGINX_AVAILABLE" "$NGINX_ENABLED" "$NGINX_CONFD" || err "cannot create dirs"
+        || err "cannot create dirs"
+    if [ "$EDGE_MODE" = "nginx" ]; then
+        mkdir -p "$NGINX_AVAILABLE" "$NGINX_ENABLED" "$NGINX_CONFD" || err "cannot create nginx dirs"
+    fi
 
     # Serialize applies; never run two switches concurrently.
     exec 9>"$APPLY_LOCK" || err "cannot open apply lock"
@@ -437,11 +490,16 @@ apply_v1() {
     fi
 
     # ---- (2) install + validate nginx BEFORE any prod switch --------------- #
-    # On `nginx -t` failure BOTH previous nginx files are restored (created
-    # sites-enabled symlink removed), the pre-apply deploy config is restored,
-    # and nothing serving has been touched yet.  The same applies to every
-    # failure in this phase: config is always restored, nginx only once the
-    # pre-install backup exists and the live files may have been replaced.
+    # nginx edge mode only.  On `nginx -t` failure BOTH previous nginx files
+    # are restored (created sites-enabled symlink removed), the pre-apply
+    # deploy config is restored, and nothing serving has been touched yet.
+    # The same applies to every failure in this phase: config is always
+    # restored, nginx only once the pre-install backup exists and the live
+    # files may have been replaced.  In external-edge mode this whole phase
+    # is skipped: the TLS edge lives on another host and the wrapper must
+    # never touch a foreign nginx.
+    nginx_backup=""
+    if [ "$EDGE_MODE" = "nginx" ]; then
     [ -f "$CONFIG_DIR/nginx/stroy.mostdef.ru.conf.example" ] \
         || fail_pre_transition "nginx vhost missing" "$cfg_backup"
     [ -f "$CONFIG_DIR/nginx/stroy-ratelimit.conf.example" ] \
@@ -476,6 +534,9 @@ apply_v1() {
             "$cfg_backup" "$nginx_backup" yes
     fi
     echo "WRAP: nginx -t ok"
+    else
+        echo "WRAP: edge external — nginx install/validate skipped"
+    fi
 
     # ---- (3) transition marker BEFORE the host-serving mutations ----------- #
     write_current_json "transitioning" "$prev" "$sha" "$prev" "$manifest"
@@ -534,6 +595,13 @@ apply_v1() {
     # existing tree (`cmp -s`).  A tampered or partial tree must never be
     # published under a verified identity; extra files in the existing tree are
     # tolerated.  Any mismatch keeps the existing tree and fails closed.
+    # WEB external mode skips this phase entirely: static files are published
+    # outside this host (the edge host serves them itself), so staging a tree
+    # here and flipping a symlink nobody serves would be a lie.  The block
+    # body is deliberately NOT re-indented to keep the mode-gate diff readable.
+    if [ "$WEB_MODE" = "external" ]; then
+        echo "WRAP: web external — web publish/symlink skipped"
+    else
     web_stage="$WEB_ROOT/releases/.staging.${sha}.$$"
     web_release="$WEB_ROOT/releases/$sha"
     rm -rf -- "$web_stage"
@@ -599,15 +667,27 @@ apply_v1() {
         fail_and_rollback "cannot switch current symlink" "$prev" "$sha" \
             "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
+    fi
 
     # ---- (6) reload nginx + health/header checks --------------------------- #
-    if ! systemctl reload nginx; then
-        fail_and_rollback "systemctl reload nginx failed" "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+    if [ "$EDGE_MODE" = "nginx" ]; then
+        if ! systemctl reload nginx; then
+            fail_and_rollback "systemctl reload nginx failed" "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
+        fi
+    else
+        echo "WRAP: edge external — nginx reload skipped"
     fi
     if ! wait_api_health; then
         fail_and_rollback "api /health did not become ready" \
             "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
     fi
+    # Public ingress check: meaningful only when something on/near this host
+    # terminates the edge.  In external-edge mode with no explicitly
+    # configured PUBLIC_URL there is no local edge to probe — the deploy
+    # workflow's external acceptance probes own the public-side verification.
+    if [ "$EDGE_MODE" = "external" ] && [ "$PUBLIC_URL_SET" = "0" ]; then
+        echo "WRAP: edge external — ingress check skipped (STROY_DEPLOY_PUBLIC_URL unset)"
+    else
     headers="$(curl -sk -m 20 -D - -o /dev/null -H "Host: $PUBLIC_HOST" "$PUBLIC_URL" || true)"
     code="$(printf '%s\n' "$headers" | head -1 | awk '{print $2}')"
     if [ "$code" != "200" ]; then
@@ -621,6 +701,7 @@ apply_v1() {
                 "$prev" "$sha" "$nginx_backup" "$cfg_backup" "$compose_project" "$manifest"
         fi
     done
+    fi
 
     # ---- (7) success record + retention ------------------------------------ #
     write_current_json "deployed" "$prev" "$sha" "$sha" "$manifest"

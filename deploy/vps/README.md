@@ -27,6 +27,47 @@ ACME webroot (stable, nginx :80 only): /var/www/stroy-acme/.well-known/acme-chal
 The wrapper **never** writes to `/var/www/stroy-acme`; it is owned by
 certbot/nginx and is independent of every release.
 
+## Topologies (nginx edge vs external edge)
+
+The single-host topology above (nginx terminates TLS on the API host, serves
+static from `/var/www`, proxies the API on `127.0.0.1:8000`) remains the
+**default** wrapper mode (`STROY_DEPLOY_EDGE=nginx`, `STROY_DEPLOY_WEB=local`).
+
+The re-targeted topology (2026-10 migration; the original VDS was
+decommissioned) splits the roles across two hosts:
+
+```text
+Browser
+  |
+  | HTTPS (443)
+  v
+Edge host (separate machine, Caddy)
+  |  serves static /var/www/stroy.mostdef.ru/current   <- published by the operator
+  |  proxies API traffic over the tailnet
+  v
+API host (GPU box, compose stack) : STROY_API_HOST_PORT=8002
+  +--> API container (image stroy-api:<sha>, container port 8000)
+  +--> PostgreSQL / Redis / MinIO (private net)
+```
+
+Wrapper configuration for the API host (set in the wrapper's host
+environment, e.g. `/etc/environment`):
+
+```text
+STROY_DEPLOY_EDGE=external    # never touch nginx/ACME/systemd-nginx on this host
+STROY_DEPLOY_WEB=external     # static files are published on the edge host, not here
+```
+
+In this mode the wrapper deploys and health-checks only the API stack
+(`HEALTH_URL` defaults to `http://127.0.0.1:$STROY_API_HOST_PORT/health` —
+set `STROY_API_HOST_PORT=8002` in `deploy/vps/.env`, matching the edge's
+upstream). The public ingress/security-header check is skipped unless
+`STROY_DEPLOY_PUBLIC_URL` is explicitly configured; public-side acceptance is
+owned by the operator's external probes. Web release publication on the edge
+host is an operator (sysadmin) step — the pipeline deploys the API; static
+content is synced to the edge host separately until an edge-receive protocol
+lands (see issue #211).
+
 ## Canonical deploy flow (GitHub Actions)
 
 1. Merge to `main` and wait for `ci.yml` to go green (all five jobs:
