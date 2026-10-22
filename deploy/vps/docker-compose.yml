@@ -17,7 +17,12 @@ services:
       # disabled server-side since the u2net rollout (ops 1cc6c49).
       ORT_DISABLE_TELEMETRY: "1"
     ports:
-      - "127.0.0.1:8000:8000"
+      # Loopback-only publish. The host port is configurable so the same
+      # compose serves both topologies: single-host nginx edge (default 8000)
+      # and the re-targeted API host behind an external edge (8002). The
+      # in-container healthcheck below stays on 8000 — it runs inside the
+      # container, before any port remapping.
+      - "127.0.0.1:${STROY_API_HOST_PORT:-8000}:8000"
     networks:
       - edge
       - private
