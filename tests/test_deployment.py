@@ -128,12 +128,15 @@ def test_wrapper_rollback_skips_nginx_and_web_in_external_modes():
 def test_compose_api_port_is_loopback_and_parametrized():
     # #211: same compose must serve the legacy 8000 topology by default and
     # the re-targeted 8002 API host via STROY_API_HOST_PORT; container port
-    # stays 8000 either way.
+    # stays 8000 either way. Bind address is parametrized too: default
+    # 127.0.0.1 (loopback-only, single-host edge), tailnet IP for the
+    # external-edge topology.
     content = COMPOSE.read_text()
-    assert '"127.0.0.1:${STROY_API_HOST_PORT:-8000}:8000"' in content
+    assert '"${STROY_API_BIND:-127.0.0.1}:${STROY_API_HOST_PORT:-8000}:8000"' in content
 
 
 def test_env_example_documents_api_host_port_default():
     content = ENV_EXAMPLE.read_text()
+    assert "STROY_API_BIND=127.0.0.1" in content
     assert "STROY_API_HOST_PORT=8000" in content
     assert "STROY_DEPLOY_EDGE" in content  # pointer to wrapper-side config

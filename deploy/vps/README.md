@@ -46,6 +46,7 @@ Edge host (separate machine, Caddy)
   |  proxies API traffic over the tailnet
   v
 API host (GPU box, compose stack) : STROY_API_HOST_PORT=8002
+  |                               (bind) STROY_API_BIND=10.123.239.102 <- tailnet IP, edge upstream
   +--> API container (image stroy-api:<sha>, container port 8000)
   +--> PostgreSQL / Redis / MinIO (private net)
 ```
